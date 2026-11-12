@@ -34,6 +34,9 @@ export function CloseDay({ onBack }: { onBack: () => void }) {
   const countedCents = counted.trim() ? toCents(counted) : null;
   const expected = expectedCash(day, floatCents ?? 0);
   const paidWays = (['cash', 'transfer', 'card', 'qr', 'comp'] as const).filter((t) => day.byTender[t].orders);
+  /** Pay out today: all of it, and the part that left the drawer (it is not "short"). */
+  /** Cash out today: it left the drawer, so it is not "short". */
+  const cashOut = day.cashOut?.total ?? 0;
 
   const canClose = floatCents !== null && countedCents !== null;
   /** A manager or the owner signs the close; anyone else at the screen is asked for one's PIN. */
@@ -66,12 +69,18 @@ export function CloseDay({ onBack }: { onBack: () => void }) {
           <div className="closeday__total"><dt>Total <span>{day.orders} {day.orders === 1 ? 'order' : 'orders'}</span></dt><dd className="num">{fmt(day.total)}</dd></div>
           <div><dt>Items cancelled</dt><dd className="num">{day.voids}</dd></div>
           <div><dt>Discounts and free orders</dt><dd className="num">{day.discounts}</dd></div>
+          {cashOut > 0 && (
+            <div><dt>Cash out <span>{day.cashOut!.lines.length} {day.cashOut!.lines.length === 1 ? 'item' : 'items'}</span></dt><dd className="num">{fmt(cashOut)}</dd></div>
+          )}
         </dl>
 
         <section className="closeday__count" aria-label="Count the cash">
           <label className="setup__field"><span>Cash in the drawer at opening</span>
             <input className="num" inputMode="numeric" value={float} onChange={(e) => setFloat(e.target.value)} placeholder="0" /></label>
-          <p className="closeday__expected">Cash expected now <b className="num">Rs {fmt(expected)}</b></p>
+          <p className="closeday__expected">
+            Cash expected now <b className="num">Rs {fmt(expected)}</b>
+            {cashOut > 0 && <span className="closeday__after">after Rs {fmt(cashOut)} cash out</span>}
+          </p>
           <label className="setup__field"><span>Cash counted now</span>
             <input className="num" inputMode="numeric" value={counted} onChange={(e) => setCounted(e.target.value)} placeholder="Count it, then type it" autoFocus /></label>
           {(floatCents === null || (counted.trim() && countedCents === null)) && <p className="setup__error" role="alert">Whole rupees, like 12500.</p>}

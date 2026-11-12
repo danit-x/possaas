@@ -14,6 +14,8 @@ import { FAKE_SHOP_ID, FAKE_STAFF } from './data.ts';
  * insight has something to show: fewer sales than a usual same weekday, a
  * burst of voids by one manager, a slow kitchen in the last two hours, two
  * items running low, and one pizza nobody has ordered for three weeks.
+ * Cash out, like the owner's paper list: fish and vegetables every morning, chicken every third
+ * day, gas now and then, and the day's cash to the bank in the afternoon.
  * Ravi closes most past days at 10:45 pm (Owner view → Past days): usually exact, now and then
  * a little short or over, and one day in seven nobody closes.
  * Nothing here is real, and none of it is ever synced.
@@ -47,6 +49,8 @@ export function demoHistory(now: number, shopId = FAKE_SHOP_ID): SyncEvent[] {
   let orderNumber = 1001;
   let n = 0;
   const id = (p: string) => `demo-${p}-${++n}`;
+  const cashOut = (name: string, amount: number, at: number) =>
+    events.push({ type: 'cash.out', id: id('cash'), shopId, at, actor: ravi, orderNumber: 0, name, amount });
 
   for (let back = 35; back >= 0; back--) {
     const day = new Date(today); day.setDate(day.getDate() - back);
@@ -57,6 +61,14 @@ export function demoHistory(now: number, shopId = FAKE_SHOP_ID): SyncEvent[] {
     const weekend = day.getDay() === 5 || day.getDay() === 6;
     let orders = Math.round((weekend ? 44 : 30) * (0.9 + rand() * 0.2));
     if (isToday) orders = Math.round(orders * 0.7); // a slow day
+
+    // Cash out, before the day's sales (no random numbers: the sales stay as they were).
+    const at = (h: number, m = 0) => dayStart + (h * 60 + m) * MIN;
+    cashOut('Fish', 400000 + (back % 4) * 50000, at(7, 40));
+    cashOut('Vegetables', 230000 + (back % 3) * 20000, at(8, 15));
+    if (back % 3 === 0) cashOut('Chicken', 1200000 + (back % 2) * 50000, at(9, 5));
+    if (back % 6 === 2) cashOut('Gas', 550000, at(11));
+    if (back % 2 === 1) cashOut('Bank', 2000000, at(16, 30));
 
     const menu = MENU.filter((m) => !(m.id === FORGOTTEN && back <= 21));
     const weights = menu.map((m) => POPULAR[m.id] ?? 1);

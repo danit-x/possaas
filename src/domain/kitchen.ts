@@ -1,4 +1,5 @@
 import { SAMPLE_SECTIONS, itemById, menuSections, sectionOf } from './menu.ts';
+import { features } from './features.ts';
 import type { SyncEvent } from './sync.ts';
 import type { Category, OnlineMark, OrderLine, Station } from './types.ts';
 import { leaveOutsOf, lineItemName, secondHalf } from './halves.ts';
@@ -73,8 +74,9 @@ export const elapsedLabel = (elapsedMs: number): string => {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 };
 
-/** The kitchen that makes an item: its section's. Absent = the only kitchen. */
-export const stationOf = (itemId: string): Station | undefined => sectionOf(itemById(itemId).category)?.station;
+/** The kitchen that makes an item: its section's. Absent = the only kitchen (always, while Two kitchens is off). */
+export const stationOf = (itemId: string): Station | undefined =>
+  features().twoKitchens ? sectionOf(itemById(itemId).category)?.station : undefined;
 
 /**
  * A shop with two kitchens sends each kitchen its own ticket, so each one's Done is its own.
@@ -89,8 +91,8 @@ export const splitByStation = <L extends Pick<OrderLine, 'itemId'>>(lines: reado
     .filter((g) => g.lines.length > 0);
 };
 
-/** The shop has a right kitchen as well as the left one: a section of its menu is made there. */
-export const twoKitchens = (): boolean => menuSections().some((x) => x.station === 'right');
+/** The shop has a right kitchen as well as the left one: the part is on, and a section of its menu is made there. */
+export const twoKitchens = (): boolean => features().twoKitchens && menuSections().some((x) => x.station === 'right');
 
 /** A kitchen screen set to one kitchen shows that kitchen's tickets; unset, it shows them all. */
 export const forStation = (tickets: KitchenTicket[], station: Station | null): KitchenTicket[] =>

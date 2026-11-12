@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PRODUCT_NAME } from '../domain/brand.ts';
+import { businessDayStart } from '../domain/cashUp.ts';
 import { rulesSuggestions, type Insight } from '../domain/insights.ts';
+import { cashOutsBetween, type CashOutDay } from '../domain/cashOut.ts';
 import { fmt } from '../domain/money.ts';
 import { useInstall } from '../services/ownerApp.ts';
 import { adminShop } from '../services/pairing.ts';
@@ -8,6 +10,7 @@ import { useShopEvents } from '../services/ownerData.ts';
 import { OwnerNav } from './OwnerNav.tsx';
 import { PastDays } from './PastDays.tsx';
 import { ShopBrand } from './Brand.tsx';
+import { isDemo } from './storage.ts';
 
 /**
  * The Owner view. Serves the owner: they know the shop, not the screens, and
@@ -54,6 +57,30 @@ function Detail({ insight, onClose }: { insight: Insight; onClose: () => void })
   );
 }
 
+const clockOf = (t: number) => new Date(t).toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit' });
+
+/**
+ * Cash out at a glance, first under Today: what left the drawer today and in how many lines.
+ * One tap: on the counter, the Cash out screen; elsewhere (the phone, the demo), the list itself.
+ */
+function CashOutBox({ day, onOpen }: { day: CashOutDay; onOpen: () => void }) {
+  const n = day.lines.length;
+  const items = n === 0 ? 'nothing yet today' : `${n} ${n === 1 ? 'item' : 'items'}`;
+  return (
+    <button type="button" className="cashbox" onClick={onOpen} aria-label={`Cash out today: Rs ${fmt(day.total)}, ${items}`}>
+      <span className="cashbox__head"><span className="owner__label">Cash out today</span><span aria-hidden className="cashbox__go">›</span></span>
+      <span className="cashbox__big num">Rs {fmt(day.total)}</span>
+      <span className="cashbox__sub">{day.lines.slice(-3).map((l) => l.name).join(', ') || items}{n > 3 ? ` and ${n - 3} more` : ''}</span>
+    </button>
+  );
+}
+
+/** The list behind the box where there is no Cash out screen (the phone, the demo): today's lines, oldest first. */
+const cashOutList = (day: CashOutDay): Insight => ({
+  id: 'cashout', tone: 'info', title: `Cash out today · Rs ${fmt(day.total)}`, detail: '',
+  action: { label: 'Open', items: day.lines.map((l) => ({ primary: l.name, secondary: `${clockOf(l.at)} · ${l.by}`, amount: l.amount })) },
+});
+
 /**
  * `phone`: on the owner's phone (the cloud site): no links to the counter's screens.
  * `onBack`: back to the Register (F3 does the same).
@@ -79,7 +106,18 @@ export function OwnerView({ phone = false, onBack, shop }: {
     const shop = { events, now: at, clockOffMs };
     return { summary: rulesSuggestions.summary(shop), insights: rulesSuggestions.insights(shop) };
   }, [events, at, clockOffMs]);
-  const opened = insights.find((i) => i.id === open) ?? null;
+  /** Today's cash out; no box at all for a shop that has never written one. */
+  const cashOut = useMemo(() => {
+    if (!events?.some((e) => e.type === 'cash.out')) return null;
+    const from = businessDayStart(at);
+    return cashOutsBetween(events, from, from + 24 * 60 * 60_000);
+  }, [events, at]);
+  const opened = open === 'cashout' && cashOut ? cashOutList(cashOut) : insights.find((i) => i.id === open) ?? null;
+  /**
+   * The counter goes to the Cash out screen; the phone, the developer's views and the demo (made-up
+   * history the Cash out screen does not have) list it instead.
+   */
+  const openCashOut = () => { if (!phone && !shop && !isDemo()) location.hash = '#cashout'; else setOpen('cashout'); };
 
   return (
     <div className="owner">
@@ -113,6 +151,8 @@ export function OwnerView({ phone = false, onBack, shop }: {
             <span className="owner__big skeleton" aria-label="Loading" />
           )}
         </section>
+
+        {cashOut && <CashOutBox day={cashOut} onOpen={openCashOut} />}
 
         {offerInstall && install.kind === 'button' && (
           <p className="owner__install">

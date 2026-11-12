@@ -7,7 +7,7 @@ export function ShopBrand() {
   return (
     <span className="brand">
       {logo && <img className="brand__logo" src={logo} alt="" width={32} height={32} />}
-      {useShopName()}
+      <span className="brand__name">{useShopName()}</span>
     </span>
   );
 }

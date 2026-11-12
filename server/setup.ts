@@ -1,3 +1,4 @@
+import { cleanFeatures, type ShopFeatures } from '../src/domain/features.ts';
 import type { IncomingMessage } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
@@ -46,7 +47,7 @@ export interface SetupContext {
 }
 
 /** What every screen and the receipt show (GET /api/v1/shop-details): the shop's own name, never the product's. */
-export interface ShopInfo { name: string; place: string; footer: string; paper: PaperWidth; payFirst: boolean; logo?: string }
+export interface ShopInfo { name: string; place: string; footer: string; paper: PaperWidth; payFirst: boolean; logo?: string; features: Partial<ShopFeatures> }
 
 /** The logo the counter has already made small (256 px): a PNG, JPEG or WebP data: URL. */
 export const MAX_LOGO = 200_000;
@@ -97,7 +98,7 @@ export function setupApi(ctx: SetupContext) {
     const logo = s.logo ?? ctx.defaultLogo;
     return s.shopId
       ? { id: s.shopId, name: s.shopName ?? s.shopId, place: s.place ?? '', footer: s.receiptFooter ?? DEFAULT_FOOTER, paper: s.paperWidth ?? 80,
-        payFirst: s.payFirst !== false, ...(logo ? { logo } : {}) }
+        payFirst: s.payFirst !== false, ...(logo ? { logo } : {}), features: cleanFeatures(s.features) }
       : null;
   };
   const requireShop = () => {
@@ -131,7 +132,7 @@ export function setupApi(ctx: SetupContext) {
     /** For every screen on the shop's network (no PIN: it is printed on every receipt anyway). */
     publicShop(): ShopInfo | null {
       const s = shop();
-      return s ? { name: s.name, place: s.place, footer: s.footer, paper: s.paper, payFirst: s.payFirst, ...(s.logo ? { logo: s.logo } : {}) } : null;
+      return s ? { name: s.name, place: s.place, footer: s.footer, paper: s.paper, payFirst: s.payFirst, ...(s.logo ? { logo: s.logo } : {}), features: s.features } : null;
     },
 
     async state(): Promise<SetupState> {

@@ -153,7 +153,7 @@ test('a pay-first counter: paid meals wait on the serving list, grouped; one tap
 
 test('two kitchens: biriyani goes left, kottu goes right; each flies its way and shows on its own screen', async () => {
   setStartingMenu(FAKE_RICE_START);
-  setShopDetails({ name: 'Bata Kade', place: '', footer: '', payFirst: true });
+  setShopDetails({ name: 'Bata Kade', place: '', footer: '', payFirst: true, features: { twoKitchens: true } });
   try {
     const user = userEvent.setup();
     render(<Root />);
@@ -188,5 +188,26 @@ test('two kitchens: biriyani goes left, kottu goes right; each flies its way and
     const serving = within(screen.getByRole('main', { name: 'Paid, to hand over' }));
     expect(serving.getByRole('article', { name: 'Chicken Kottu, Full: 1 paid' })).toBeTruthy();
     expect(serving.queryByRole('article', { name: /Biriyani/ })).toBeNull();
+  } finally { setStartingMenu(SAMPLE_START); setShopDetails({ name: 'Bata Kade', place: '', footer: '', features: {} }); }
+});
+
+test('Two kitchens switched off (Bata Kade for now): one Kitchen key, one ticket, nothing flies', async () => {
+  setStartingMenu(FAKE_RICE_START);
+  setShopDetails({ name: 'Bata Kade', place: '', footer: '', payFirst: true, features: {} });
+  try {
+    const user = userEvent.setup();
+    render(<Root />);
+    await user.click(screen.getByRole('button', { name: 'String Hoppers, Roti & Rolls' }));
+    await user.click(screen.getByRole('button', { name: '500' })); // Biriyani (left)
+    await user.click(screen.getByRole('button', { name: 'Kottu' }));
+    await user.click(screen.getAllByRole('button', { name: 'Full 800' })[0]); // Chicken Kottu (right, when switched on)
+    await user.click(panel().getByRole('button', { name: 'Charge' }));
+    await user.click(screen.getByRole('button', { name: /Exact/ }));
+    const sent = readAll().filter((e) => e.type === 'order.sent');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toHaveProperty('station');
+    expect(document.querySelector('.flight')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Right kitchen/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /^Serving: 2 to hand over/ })).toBeTruthy(); // one key (a pay-first counter calls it Serving)
   } finally { setStartingMenu(SAMPLE_START); }
 });

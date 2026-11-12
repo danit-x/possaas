@@ -87,3 +87,24 @@ test('past days: closed days with their difference, unclosed days from their sal
   assert.equal(days[1].difference, 'Rs 200 short');
   assert.equal(days[1].report.closed, 'Closed by Ravi at 22:00');
 });
+
+test('Cash out: what left the drawer is not "short"; the report lists each line as written', () => {
+  const taken = { ...ev('cash.out', at(11), { name: 'Gas', amount: 550000 }), orderNumber: 0 };
+  const events = [
+    ev('order.paid', at(12), { total: 5200000, tender: 'cash' }),
+    { ...ev('cash.out', at(7, 40), { name: 'Fish', amount: 450000 }), orderNumber: 0 },
+    { ...ev('cash.out', at(14, 30), { name: 'Bank', amount: 2000000 }), orderNumber: 0 },
+    taken,
+    { ...ev('cash.out_undone', at(11, 5), { undoneEventId: taken.id }), orderNumber: 0 }, // taken off: not counted
+  ];
+  const d = dayCount(events, at(5), at(5, 0, 22));
+  assert.equal(expectedCash(d, 500000), 3250000, 'opening 5,000 + cash sales 52,000 - cash out 24,500');
+  const report = dayReport(d, { float: 500000, counted: 3250000, by: 'Ravi', closedAt: at(23) });
+  assert.deepEqual(report.sections.find((s) => s.title === 'Cash out')?.rows.map((r) => [r.label, r.value]), [
+    ['Fish', '4,500'], ['Bank', '20,000'], ['Total cash out', '24,500'],
+  ]);
+  assert.deepEqual(report.sections.find((s) => s.title === 'Cash')?.rows.map((r) => r.value), ['5,000', '- 24,500', '32,500', '32,500', 'Exact']);
+  // A close kept before Cash out (no cashOut) still reads as before.
+  const { cashOut: _none, ...old } = d;
+  assert.equal(expectedCash(old, 500000), 5700000);
+});

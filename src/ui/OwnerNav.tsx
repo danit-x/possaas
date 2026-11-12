@@ -1,16 +1,17 @@
 import { ShopBrand } from './Brand.tsx';
 
 /**
- * The one header for the owner's and manager's screens (Owner view, Menu, Shop setup):
+ * The one header for the owner's and manager's screens (Owner view, Menu, Cash out, Shop setup):
  * the same links in the same place on every one, the current one marked. No key hints
  * in it, so nothing shifts between screens (F3 and Esc still work where they did).
  */
 
-export type Section = 'owner' | 'menu' | 'close' | 'setup';
+export type Section = 'owner' | 'menu' | 'cashout' | 'close' | 'setup';
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: 'owner', label: 'Owner' },
   { id: 'menu', label: 'Menu' },
+  { id: 'cashout', label: 'Cash out' },
   { id: 'close', label: 'Close the day' },
   { id: 'setup', label: 'Shop setup' },
 ];
