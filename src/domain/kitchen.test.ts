@@ -5,6 +5,7 @@ import {
   TICKET_HORIZON_MS, ack, amendLine, bump, cookState, kitchenLine, restoreLine, elapsedLabel, fire, needsAttention, prune, queue, recall,
   cancelledToServe, forStation, serve, servingRows, splitByStation, ticketLines, ticketsFromEvents, toServe, unbump, unserve, urgency,
 } from './kitchen.ts';
+import { setFeatures } from './features.ts';
 import { SAMPLE_START, setStartingMenu } from './menu.ts';
 import type { MenuItem, Section } from './types.ts';
 import type { SyncEvent } from './sync.ts';
@@ -306,14 +307,19 @@ const twoKitchens = () => {
 
 test('two kitchens: an order splits into one ticket per kitchen; no kitchen named = the left one', () => {
   twoKitchens();
+  // Switched off (Bata Kade for now): one kitchen, whatever the sections say.
+  assert.deepEqual(splitByStation([portion('a', 'chicken-rice'), portion('b', 'chicken-kottu')]).map((g) => [g.station, g.lines.length]), [[undefined, 2]]);
+  setFeatures({ twoKitchens: true });
   try {
     const order = [portion('a', 'chicken-rice'), portion('b', 'chicken-kottu', 2), portion('c', 'roll')];
     assert.deepEqual(splitByStation(order).map((g) => [g.station, g.lines.map((l) => l.id)]), [['left', ['a', 'c']], ['right', ['b']]]);
     assert.deepEqual(splitByStation([portion('b', 'chicken-kottu')]).map((g) => g.station), ['right'], 'only the kitchen that has something');
     assert.deepEqual(splitByStation([]), []);
-  } finally { setStartingMenu(SAMPLE_START); }
+  } finally { setStartingMenu(SAMPLE_START); setFeatures({}); }
+  setFeatures({ twoKitchens: true });
   // One kitchen (no section names one): one ticket, no station, as before.
   assert.deepEqual(splitByStation([portion('a', 'margherita'), portion('b', 'devilled-chicken')]).map((g) => [g.station, g.lines.length]), [[undefined, 2]]);
+  setFeatures({});
 });
 
 test("each kitchen's screen shows its own tickets; the station folds from the event", () => {

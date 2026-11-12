@@ -1,6 +1,6 @@
-# CheesyBeez ERP — POS module
+# Bata Kade POS (possaas, product name Lume POS)
 
-Product design + engineering for a point-of-sale system for the pizza shop CheesyBeez (Thalwila). It is the first module of a larger ERP. Do not name it "BeePOS". Team of 4, tracked in Jira (space "My Scrum Space", key SCRUM, project named "ERP"). Owner is Anton (computer engineering student, Sri Lanka); he knows MySQL. Counter: a shared Windows 10 PC, one screen, keyboard first (touch still works, 48px targets); kitchen on its own screen.
+Product design + engineering for the point-of-sale system of **Bata Kade**, a rice & curry and kottu shop at **Hapugala, Galle**, near the developer's university. This repo is Bata Kade's only. **CheesyBeez (pizza, Thalwila) is a completely different project** (the ERP repo this was copied from): never bring its names, menu, place or plans in here. Leftover technical names (`cheesybeez-cloud` Cloudflare subdomain, MySQL db `cheesybeez`, old notes below) are infrastructure only. Do not name it "BeePOS". Counter: a shared Windows 10 PC, one screen, keyboard first (touch still works, 48px targets); the kitchen shares it for now.
 
 Goal: the most advanced, premium POS the shop could use: faster than any competitor, almost no UI, built around how people actually think.
 

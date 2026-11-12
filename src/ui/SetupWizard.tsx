@@ -1,8 +1,8 @@
+import { twoKitchens as hasTwoKitchens } from '../domain/kitchen.ts';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { PIN_LENGTH, type Role } from '../domain/auth.ts';
 import { DEFAULT_FOOTER, PRODUCT_NAME } from '../domain/brand.ts';
 import { printerAdvice, type Advice } from '../domain/printerHelp.ts';
-import { menuSections } from '../domain/menu.ts';
 import type { Station } from '../domain/types.ts';
 import { pairAsCounter } from '../services/pairing.ts';
 import { openDrawer, printReceipt } from '../services/printer.ts';
@@ -663,8 +663,8 @@ function HelpTab({ ownerPin }: { ownerPin?: string }) {
 function DevicesStep({ state, ownerPin, onFinish }: { state: SetupState; ownerPin?: string; onFinish?: () => void }) {
   const [links, setLinks] = useState<Partial<Record<Device, string>>>({});
   const [error, setError] = useState('');
-  // A menu with a section in the right kitchen means two kitchens: one screen for each.
-  const twoKitchens = menuSections().some((x) => x.station === 'right');
+  // Two kitchens switched on and a section in the right one: one screen for each.
+  const twoKitchens = hasTwoKitchens();
   const show = async (device: Device) => {
     setError('');
     try {

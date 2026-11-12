@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { DEFAULT_FOOTER, PRODUCT_NAME } from '../domain/brand.ts';
+import { cleanFeatures, setFeatures, type ShopFeatures } from '../domain/features.ts';
 import { PAPER_CHARS, type PaperWidth, type ShopHeader } from '../domain/receipt.ts';
 import { FAKE_RICE_SHOP_DETAILS, FAKE_SHOP_DETAILS } from '../fake/data.ts';
 import bataKadeLogo from '../shop/bata-kade-logo.webp';
@@ -17,6 +18,8 @@ export interface ShopDetails {
   payFirst?: boolean;
   /** The shop's logo beside its name (Shop setup → Printer): an image URL; absent or '' = none. */
   logo?: string;
+  /** The parts of the POS this shop has switched on (src/domain/features.ts); absent = the defaults. */
+  features?: Partial<ShopFeatures>;
 }
 
 const KEY = () => storageKey('shop.v1');
@@ -34,6 +37,7 @@ const cached = (): ShopDetails | null => {
 };
 
 let current: ShopDetails | null = cached();
+setFeatures(current?.features);
 
 export const shopDetails = (): ShopDetails | null => current;
 
@@ -57,7 +61,8 @@ export const shopLogo = (): string => current?.logo ?? '';
 
 /** What the screens show; anything not given (the paper, when to pay, the logo) stays as it was. */
 export function setShopDetails(next: ShopDetails): void {
-  current = { ...next, paper: next.paper ?? current?.paper, payFirst: next.payFirst ?? current?.payFirst, logo: next.logo ?? current?.logo };
+  current = { ...next, paper: next.paper ?? current?.paper, payFirst: next.payFirst ?? current?.payFirst, logo: next.logo ?? current?.logo, features: next.features ?? current?.features };
+  setFeatures(current.features);
   try { localStorage.setItem(KEY(), JSON.stringify(current)); } catch { /* blocked: this session still has it */ }
   listeners.forEach((l) => l());
 }
@@ -72,7 +77,7 @@ export async function loadShopDetails(): Promise<void> {
     if (typeof s.name === 'string' && s.name) {
       setShopDetails({
         name: s.name, place: s.place ?? '', footer: s.footer ?? DEFAULT_FOOTER, paper: s.paper === 58 ? 58 : 80, payFirst: s.payFirst === true,
-        logo: typeof s.logo === 'string' ? s.logo : '',
+        logo: typeof s.logo === 'string' ? s.logo : '', features: cleanFeatures(s.features),
       });
     }
   } catch { /* the server is away: the cached copy stands */ }

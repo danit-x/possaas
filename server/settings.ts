@@ -1,3 +1,4 @@
+import type { ShopFeatures } from '../src/domain/features.ts';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -29,6 +30,8 @@ export interface ShopSettings {
   cloudSecret?: string;
   /** The counter is taking online orders. */
   onlineOpen?: boolean;
+  /** Parts of the POS switched on for this shop (src/domain/features.ts); absent = the defaults. */
+  features?: Partial<ShopFeatures>;
 }
 
 export function settingsFile(file: string) {
