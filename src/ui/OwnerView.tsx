@@ -7,6 +7,8 @@ import { fmt } from '../domain/money.ts';
 import { useInstall } from '../services/ownerApp.ts';
 import { adminShop } from '../services/pairing.ts';
 import { useShopEvents } from '../services/ownerData.ts';
+import { sendWaiting, settle, usePhoneWaiting } from '../services/phonePayOut.ts';
+import { PayOutSheet } from './PayOutPhone.tsx';
 import { OwnerNav } from './OwnerNav.tsx';
 import { PastDays } from './PastDays.tsx';
 import { ShopBrand } from './Brand.tsx';
@@ -117,11 +119,26 @@ export function OwnerView({ phone = false, onBack, shop }: {
     const shop = { events, now: at, clockOffMs };
     return { summary: rulesSuggestions.summary(shop), insights: rulesSuggestions.insights(shop) };
   }, [events, at, clockOffMs]);
-  const payOut = useMemo(() => (events ? payOutSummary(events, businessDayStart(at), at) : null), [events, at]);
-  const opened = open === 'payout' && payOut ? payOutList(payOut, at) : insights.find((i) => i.id === open) ?? null;
+  /** The owner records Pay out here on the phone (and in the demo); the developer's views only look. */
+  const records = !shop && (phone ? !adminShop() : isDemo());
+  const waiting = usePhoneWaiting();
+  // What the shop has sent back stops waiting on the phone; whatever has not gone yet goes now.
+  useEffect(() => {
+    if (!records || !events) return;
+    settle(new Set(events.map((e) => e.id)));
+    void sendWaiting();
+  }, [records, events]);
+  /** The shop's events, and this phone's own entries the shop has not sent back yet (counted at once). */
+  const withMine = useMemo(() => {
+    if (!events || !records || !waiting.length) return events;
+    const known = new Set(events.map((e) => e.id));
+    return [...events, ...waiting.filter((w) => !known.has(w.event.id)).map((w) => w.event)];
+  }, [events, records, waiting]);
+  const payOut = useMemo(() => (withMine ? payOutSummary(withMine, businessDayStart(at), at) : null), [withMine, at]);
+  const opened = open === 'payout' && payOut && !records ? payOutList(payOut, at) : insights.find((i) => i.id === open) ?? null;
   /**
-   * The counter goes to the Pay out screen; the phone, the developer's views and the demo (made-up
-   * history the Pay out screen does not have) list it instead.
+   * The counter goes to the Pay out screen; the phone and the demo (made-up history the Pay out
+   * screen does not have) open the phone's Pay out; the developer's views list it.
    */
   const openPayOut = () => { if (!phone && !shop && !isDemo()) location.hash = '#payout'; else setOpen('payout'); };
 
@@ -196,6 +213,9 @@ export function OwnerView({ phone = false, onBack, shop }: {
       </main>
 
       {opened && <Detail insight={opened} onClose={() => setOpen(null)} />}
+      {open === 'payout' && records && withMine && (
+        <PayOutSheet events={withMine} now={at} waiting={isDemo() ? 0 : waiting.filter((w) => !events?.some((e) => e.id === w.event.id)).length} onClose={() => setOpen(null)} />
+      )}
       {past && events && <PastDays events={events} now={at} onClose={() => setPast(false)} />}
     </div>
   );

@@ -10,10 +10,12 @@ import { BATA_KADE_MENU } from '../src/shop/bataKade.ts';
 import { BATA_KADE_LOGO } from './shopLogo.ts';
 import { dailyReports, defaultReportsDir } from './dailyReport.ts';
 import { startReplicator } from './replicator.ts';
+import { startInbox } from './inbox.ts';
+import type { SyncEvent, SyncedEvent } from '../src/domain/sync.ts';
 import { settingsFile } from './settings.ts';
 import { setupApi } from './setup.ts';
 import { sqliteStore } from './sqliteStore.ts';
-import { memoryStore, mysqlStore, type EventStore } from './store.ts';
+import { memoryStore, mysqlStore, type Device, type EventStore } from './store.ts';
 import { activeUpdate } from '../src/domain/updating.ts';
 import { saveSupportFile } from './supportFile.ts';
 import { usbBackup } from './usbBackup.ts';
@@ -72,10 +74,26 @@ const updates = updatesApi({
 });
 let replicator: ReturnType<typeof startReplicator> | null = null;
 let online: Online | null = null;
+let inbox: ReturnType<typeof startInbox> | null = null;
+/** Streams events the server stored itself to the counter (set by createApp). */
+let deliver: (tenantId: string, stored: SyncedEvent[]) => void = () => {};
+/** Pay out from the owner's phone is stored under one device of its own, made the first time. */
+const phoneDevice = async (tenantId: string): Promise<Device> => {
+  const s = settings.get();
+  if (s.phoneDeviceId) return { id: s.phoneDeviceId, tenantId, kind: 'owner' };
+  const { device } = await store.addDevice(tenantId, s.shopName || tenantId, 'owner');
+  settings.set({ phoneDeviceId: device.id });
+  return device;
+};
+const takeFromPhone = async (tenantId: string, events: SyncEvent[]): Promise<void> => {
+  const { stored } = await store.push(await phoneDevice(tenantId), events, Date.now());
+  if (stored.length) { console.log(`Pay out from the owner's phone: ${stored.length} stored`); deliver(tenantId, stored); }
+};
 /** Copy to the cloud, and take online orders, when there is a link and a shop; again when the wizard connects it. */
 const startCloud = () => {
   replicator?.stop();
   online?.stop();
+  inbox?.stop();
   const link = cloudLink();
   const shop = cloudShop();
   replicator = link && shop ? startReplicator({
@@ -87,6 +105,7 @@ const startCloud = () => {
     isOpen: () => settings.get().onlineOpen === true,
     setOpen: (open) => { settings.set({ onlineOpen: open }); },
   }) : null;
+  inbox = link && shop ? startInbox({ url: link.url, token: link.token, tenantId: shop, take: (events) => takeFromPhone(shop, events) }) : null;
 };
 
 // The developer's Shops screen: only where server/.env has the admin password (the developer's laptop).
@@ -123,6 +142,7 @@ const server = createApp({
   fleet,
   // possaas is Bata Kade's POS: its menu is added once, when a shop without one first connects its counter.
   firstMenu: firstMenu({ store, menu: BATA_KADE_MENU, shopId: () => settings.get().shopId }),
+  incoming: (d) => { deliver = d; },
 });
 startCloud();
 reports.start();
@@ -140,6 +160,6 @@ server.listen(port, '0.0.0.0', () => {
   console.log(`  cloud copy: ${replicator ? `${cloudShop()} -> ${cloudLink()!.url}` : 'not connected (the setup wizard connects it)'}`);
 });
 
-const stop = () => { reports.stop(); replicator?.stop(); online?.stop(); server.close(() => { void store.close().then(() => process.exit(0)); }); };
+const stop = () => { reports.stop(); replicator?.stop(); online?.stop(); inbox?.stop(); server.close(() => { void store.close().then(() => process.exit(0)); }); };
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);

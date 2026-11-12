@@ -71,7 +71,17 @@ that holds only the Owner view, so nobody on the internet reaches a register the
   It prints `…/?owner=<secret>#owner`. Send it privately; opening it on the phone keeps the secret
   there and removes it from the address bar. "Add to Home Screen" makes it an app icon.
 - The phone reads the cloud copy: the first visit loads the shop's history, then every minute only
-  what is new. The secret can read that shop's events and nothing else; it can never write.
+  what is new. The secret can read that shop's events and nothing else; the only thing it can
+  write is Pay out (below).
+- **Pay out from the phone:** Owner view → the Pay out box → a supplier → **Paid by bank** or
+  **Add bill**. The phone sends only what happened (`POST /api/v1/inbox`, `supply.*` only); the
+  cloud fills in who (`Owner (phone)`, role owner), when (its own clock) and which shop, checks it
+  like the shop server would, and keeps it in `inbox` (migration `0011_inbox.sql` adds `taken_at`).
+  The shop server takes what is waiting every 10 seconds (`server/inbox.ts`: `GET /api/v1/inbox`,
+  then `POST /api/v1/inbox/taken`), stores it under one local device of kind `owner` (made the first
+  time, `phoneDeviceId` in the settings), streams it to the counter and copies it back up. Until it
+  comes back, the phone counts it already and says it is on the way; offline, it waits on the phone.
+  **Before deploying this Worker, apply the migration** (`npm run migrate`).
 - **For the examiners:** `https://melo.cheesybeez-cloud.workers.dev/?demo#owner` shows the
   demo feed (made-up sales), no secret needed. The bare address shows a short welcome page.
 - A lost phone: there is no screen yet to withdraw a link; until there is, delete that device's row
