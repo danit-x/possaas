@@ -63,3 +63,10 @@ test('a server that is simply down shows nothing here', async () => {
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(screen.queryByRole('status')).toBeNull();
 });
+
+test('with nothing to show, the screens ask the server once and then wait (not as fast as it answers)', async () => {
+  render(<UpdateScreen />); // the counter's own props: the default reload and timings
+  await answer({ ok: true, version: '1.0.9' });
+  await answer({ ok: true, version: '1.0.9' });
+  expect(vi.mocked(fetch).mock.calls.length).toBe(1);
+});
