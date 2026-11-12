@@ -1,3 +1,4 @@
+import { useFeatures } from '../services/shop.ts';
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { flushSync } from 'react-dom';
 import { seesTakings } from '../domain/auth.ts';
@@ -103,6 +104,7 @@ function NotConnected() {
  */
 export function Root() {
   useMenu();
+  const parts = useFeatures();
   const [hash, setHash] = useState(location.hash);
   /** Came here from the Register, so the Kitchen offers a way back. */
   const [fromRegister, setFromRegister] = useState(false);
@@ -148,11 +150,11 @@ export function Root() {
       if (e.target instanceof HTMLElement && e.target.closest('[role="dialog"]')) return;
       if (e.key === 'F3' && seesOwner) { e.preventDefault(); go(hash === OWNER ? '' : OWNER); }
       if (e.key === 'F4' && needsLogin && staff) { e.preventDefault(); lock(); }
-      if (e.key === 'F7' && !kitchenOnly && (!needsLogin || staff)) { e.preventDefault(); go(hash === CASH_OUT ? '' : CASH_OUT); }
+      if (e.key === 'F7' && parts.cashOut && !kitchenOnly && (!needsLogin || staff)) { e.preventDefault(); go(hash === CASH_OUT ? '' : CASH_OUT); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [hash, go, seesOwner, needsLogin, staff, kitchenOnly]);
+  }, [hash, go, seesOwner, needsLogin, staff, kitchenOnly, parts.cashOut]);
 
   // The cloud site is the owner's phone page and nothing else (the demo for examiners too).
   if (isCloudSite()) return ownerToken() || isDemo() || adminShop() ? <OwnerView phone /> : <OwnerWelcome />;
@@ -178,7 +180,7 @@ export function Root() {
   // Closing the day: the owner or a manager counts the drawer.
   if (hash === '#close' && seesOwner) return <CloseDay onBack={() => go('')} />;
   // Cash out: anyone opens it when someone is paid from the drawer; writing takes a manager's or the owner's PIN.
-  if (hash === CASH_OUT) return <CashOut nav={seesOwner} onBack={() => go('')} />;
+  if (hash === CASH_OUT && parts.cashOut) return <CashOut nav={seesOwner} onBack={() => go('')} />;
   // The owner and managers change the menu (also on the Register, in manager mode).
   if (hash === '#menu' && (!needsLogin || (staff !== null && seesTakings(staff.role)))) {
     return <MenuView onBack={() => go('')} />;

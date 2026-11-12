@@ -26,6 +26,8 @@ setUpOwnerApp(); // after pairing: the owner's key goes into the phone app's des
 const token = syncToken();
 if (token) startSync(httpTransport(token));
 void loadShopDetails(); // the shop's own name for the corner and the receipt
+// Again every half minute: the parts of the POS can change from the cloud's /admin while the shop sells.
+setInterval(() => { void loadShopDetails(); }, 30_000);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

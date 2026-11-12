@@ -10,6 +10,7 @@ import { BATA_KADE_MENU } from '../src/shop/bataKade.ts';
 import { BATA_KADE_LOGO } from './shopLogo.ts';
 import { dailyReports, defaultReportsDir } from './dailyReport.ts';
 import { startReplicator } from './replicator.ts';
+import { cleanFeatures } from '../src/domain/features.ts';
 import { settingsFile } from './settings.ts';
 import { setupApi } from './setup.ts';
 import { sqliteStore } from './sqliteStore.ts';
@@ -80,7 +81,13 @@ const startCloud = () => {
   const shop = cloudShop();
   replicator = link && shop ? startReplicator({
     store, tenantId: shop, url: link.url, token: link.token,
-    about: () => ({ version: updates.current(), update: updates.status() }),
+    about: () => ({ version: updates.current(), update: updates.status(), features: cleanFeatures(settings.get().features) }),
+    // The parts /admin switched for this shop: kept, so they hold without internet; the screens pick them up.
+    onFeatures: (features) => {
+      if (JSON.stringify(cleanFeatures(settings.get().features)) === JSON.stringify(features)) return;
+      settings.set({ features });
+      console.log(`Parts of the POS changed from the cloud: ${JSON.stringify(features)}`);
+    },
   }) : null;
   online = link && shop ? startOnline({
     url: link.url, token: link.token,

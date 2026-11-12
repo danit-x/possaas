@@ -1,4 +1,5 @@
 import { PULL_LIMIT, PUSH_BATCH, type ApiError, type PullResponse, type SyncedEvent } from '../../src/domain/sync.ts';
+import { cleanFeatures, type ShopFeatures } from '../../src/domain/features.ts';
 import { validatePush } from '../../server/validate.ts';
 import { HttpError, json, sha256Hex } from './http.ts';
 import { onlineRoutes } from './online.ts';
@@ -32,7 +33,24 @@ export interface CloudDevice { id: string; tenantId: string; kind: Kind }
 
 /** POST /api/v1/replica: events exactly as the shop server holds them, oldest first. */
 export interface ReplicaPush { events: SyncedEvent[] }
-export interface ReplicaState { lastSourceSeq: number; serverTime: number }
+export interface ReplicaState {
+  lastSourceSeq: number;
+  serverTime: number;
+  /** The parts of the POS switched for this shop on /admin (absent ones: the defaults). */
+  features: Partial<ShopFeatures>;
+}
+
+/** A shop's parts as /admin set them; {} when never set. */
+export const shopFeatures = async (db: D1Like, tenantId: string): Promise<Partial<ShopFeatures>> => {
+  const raw = (await db.prepare('SELECT features FROM shops WHERE id = ?').bind(tenantId).first<{ features: string | null }>())?.features;
+  try { return raw ? cleanFeatures(JSON.parse(raw)) : {}; } catch { return {}; }
+};
+
+/** The parts a shop server says it has (x-station-features), cleaned, as stored text; null when it did not say. */
+const seenFeatures = (raw: string | null): string | null => {
+  if (!raw || raw.length > 500) return null;
+  try { return JSON.stringify(cleanFeatures(JSON.parse(raw))); } catch { return null; }
+};
 
 
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v);
@@ -108,9 +126,9 @@ export function createCloud(db: D1Like, options: CloudOptions | (() => number) =
     const t = now();
     // The PC's clock as it sent this, against ours (the trip itself is a second or two: far below what matters).
     const clock = Number(req.headers.get('x-station-clock'));
-    await db.prepare('UPDATE devices SET last_seen_at = ?, version = COALESCE(?, version), update_status = COALESCE(?, update_status), clock_off_ms = COALESCE(?, clock_off_ms) WHERE id = ?')
+    await db.prepare('UPDATE devices SET last_seen_at = ?, version = COALESCE(?, version), update_status = COALESCE(?, update_status), clock_off_ms = COALESCE(?, clock_off_ms), features_seen = COALESCE(?, features_seen) WHERE id = ?')
       .bind(t, version && /^[\w.+-]{1,32}$/.test(version) ? version : null, updateStatus(req.headers.get('x-station-update')),
-        Number.isSafeInteger(clock) && clock > 0 ? clock - t : null, device.id)
+        Number.isSafeInteger(clock) && clock > 0 ? clock - t : null, seenFeatures(req.headers.get('x-station-features')), device.id)
       .run();
   };
 
@@ -129,7 +147,9 @@ export function createCloud(db: D1Like, options: CloudOptions | (() => number) =
       await seen(device, req);
       if (req.method === 'GET') {
         await fileSales(device.tenantId); // the shop's heartbeat also catches up the ledger
-        return json(200, { lastSourceSeq: await lastSourceSeq(device.tenantId), serverTime: now() } satisfies ReplicaState);
+        return json(200, {
+          lastSourceSeq: await lastSourceSeq(device.tenantId), serverTime: now(), features: await shopFeatures(db, device.tenantId),
+        } satisfies ReplicaState);
       }
       if (req.method !== 'POST') throw new HttpError(405, 'server', 'method not allowed');
       let body: unknown;

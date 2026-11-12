@@ -1,3 +1,4 @@
+import { useFeatures } from '../services/shop.ts';
 import { twoKitchens as hasTwoKitchens } from '../domain/kitchen.ts';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { PIN_LENGTH, type Role } from '../domain/auth.ts';
@@ -665,6 +666,7 @@ function DevicesStep({ state, ownerPin, onFinish }: { state: SetupState; ownerPi
   const [error, setError] = useState('');
   // Two kitchens switched on and a section in the right one: one screen for each.
   const twoKitchens = hasTwoKitchens();
+  const parts = useFeatures();
   const show = async (device: Device) => {
     setError('');
     try {
@@ -690,7 +692,7 @@ function DevicesStep({ state, ownerPin, onFinish }: { state: SetupState; ownerPi
         {twoKitchens
           ? <>{card('kitchen-left', 'Left kitchen', kitchenHow, true, '')}{card('kitchen-right', 'Right kitchen', kitchenHow, true, '')}</>
           : card('kitchen', 'Kitchen tablet', "Scan it with the tablet's camera. The tablet must be on the shop's Wi-Fi.", true, '')}
-        {card('owner', "Owner's phone", "Scan it with the owner's phone. It then shows the Owner view, from anywhere.", state.cloud,
+        {parts.ownerPhone && card('owner', "Owner's phone", "Scan it with the owner's phone. It then shows the Owner view, from anywhere.", state.cloud,
           'Connect to the cloud first (the step before), then come back here.')}
       </div>
       <p className="setup__hint">You can do this later too: Manager mode → Ctrl+K → Shop setup.</p>

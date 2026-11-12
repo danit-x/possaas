@@ -1,3 +1,4 @@
+import { useFeatures } from '../services/shop.ts';
 import { ShopBrand } from './Brand.tsx';
 
 /**
@@ -21,11 +22,12 @@ export function OwnerNav({ current, onRegister }: {
   /** Back to selling. Without it, a plain link to the Register. */
   onRegister?: () => void;
 }) {
+  const parts = useFeatures();
   return (
     <header className="owner__head">
       <ShopBrand />
       <nav className="owner__nav" aria-label="Owner sections">
-        {SECTIONS.map((s) => (
+        {SECTIONS.filter((s) => s.id !== 'cashout' || parts.cashOut).map((s) => (
           <a key={s.id} href={`#${s.id}`} aria-current={s.id === current ? 'page' : undefined}>{s.label}</a>
         ))}
         {onRegister

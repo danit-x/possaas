@@ -1,3 +1,4 @@
+import { useFeatures } from '../services/shop.ts';
 import { useEffect, useMemo, useState } from 'react';
 import { PRODUCT_NAME } from '../domain/brand.ts';
 import { businessDayStart } from '../domain/cashUp.ts';
@@ -92,6 +93,7 @@ export function OwnerView({ phone = false, onBack, shop }: {
   shop?: string;
 } = {}) {
   const data = useShopEvents();
+  const parts = useFeatures();
   const install = useInstall();
   /** The developer's admin view of a shop: not an owner's phone, so no home-screen offer. */
   const offerInstall = phone && !adminShop();
@@ -152,7 +154,7 @@ export function OwnerView({ phone = false, onBack, shop }: {
           )}
         </section>
 
-        {cashOut && <CashOutBox day={cashOut} onOpen={openCashOut} />}
+        {cashOut && parts.cashOut && <CashOutBox day={cashOut} onOpen={openCashOut} />}
 
         {offerInstall && install.kind === 'button' && (
           <p className="owner__install">
