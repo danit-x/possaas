@@ -39,7 +39,7 @@ test('health needs no token', async () => {
 
 test('the shop server copies its events in; a repeat stores nothing twice', async () => {
   const { call } = await setup();
-  assert.deepEqual(await (await call('/api/v1/replica', 'server-a')).json(), { lastSourceSeq: 0, serverTime: 9000 });
+  assert.deepEqual(await (await call('/api/v1/replica', 'server-a')).json(), { lastSourceSeq: 0, serverTime: 9000, features: {} }); // no parts set: the shop keeps its defaults
 
   const first = await (await call('/api/v1/replica', 'server-a', { events: [synced('a', 3), synced('b', 7)] })).json();
   assert.deepEqual(first, { stored: 2, lastSourceSeq: 7, serverTime: 9000 });

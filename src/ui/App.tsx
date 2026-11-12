@@ -1,3 +1,4 @@
+import { useFeatures } from '../services/shop.ts';
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { seesTakings } from '../domain/auth.ts';
 import { DISCOUNT_CHIPS, type ManagerChange } from '../domain/manager.ts';
@@ -95,7 +96,9 @@ export function App({
     const paid = reg.pay(tender, tendered);
     if (paid) print(paid);
   }, [reg, print]);
-  const busy = useBusy();
+  const parts = useFeatures();
+  /** Busy mode counts only while the shop has the part. */
+  const busy = useBusy() && parts.busyMode;
   /** Busy mode: cash taken, order to its kitchen, next order on screen. No change screen, no receipt; the drawer opens. */
   const collect = useCallback(() => {
     if (reg.pay('cash', orderTotal(reg.order), { next: true }) && canPrint()) void openDrawer();
@@ -245,7 +248,7 @@ export function App({
         else if (payFirst ? reg.order.lines.length > 0 : canCharge) setSheet({ kind: 'pay' }); else if (hasNew) reg.send();
         return;
       }
-      if (e.key === 'F6' && !sheet) { e.preventDefault(); setBusy(!busy); return; }
+      if (e.key === 'F6' && !sheet && parts.busyMode) { e.preventDefault(); setBusy(!busy); return; }
       // Alt+1 … Alt+9: Popular, then the sections in their order (digits alone start typing an order).
       if (e.altKey && !mod && /^[1-9]$/.test(e.key) && !sheet) {
         const id = ['popular', ...sectionsNow().map((x) => x.id)][Number(e.key) - 1];
@@ -258,7 +261,7 @@ export function App({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [reg, sheet, typed, hasNew, canCharge, payFirst, busy, collect, manager, mode, palette, menuEdit, menuToast, adjusting, pendingVoid, listing, lines.length,
+  }, [reg, sheet, typed, hasNew, canCharge, payFirst, busy, parts.busyMode, collect, manager, mode, palette, menuEdit, menuToast, adjusting, pendingVoid, listing, lines.length,
     selected, selectedLine, askVoid, askAdjust, toggleChip, manage]);
 
   // Tapping empty space outside an opened order goes back to the "Waiting to pay" list.
@@ -309,7 +312,7 @@ export function App({
       // The developer's laptop only (its server holds the admin password).
       ...(fleet ? [{ id: 'shops', label: "Shops: every shop's sales (developer)", run: () => { location.hash = '#shops'; } }] : []),
       { id: 'menu', label: 'Menu: every item on one list', run: () => { location.hash = '#menu'; } },
-      { id: 'cashout', label: 'Cash out: fish, bank, gas, paid from the drawer', hint: 'F7', run: () => { location.hash = '#cashout'; } },
+      ...(parts.cashOut ? [{ id: 'cashout', label: 'Cash out: fish, bank, gas, paid from the drawer', hint: 'F7', run: () => { location.hash = '#cashout'; } }] : []),
       { id: 'close', label: 'Close the day: count the cash', run: () => { location.hash = '#close'; } },
       // This screen's look; the current choice says "On".
       ...(['light', 'dark', 'auto'] as ThemeChoice[]).map((t) => ({
@@ -321,7 +324,7 @@ export function App({
       { id: 'leave', label: 'Leave manager mode', hint: 'Esc', run: mode.exit },
     );
     return list;
-  }, [manager, listing, reg, selectedLine, sound, manage, askAdjust, askVoid, mode.exit, fleet]);
+  }, [manager, listing, reg, selectedLine, sound, manage, askAdjust, askVoid, mode.exit, fleet, parts.cashOut]);
 
   const busyKey = (
     <button type="button" className={`corner__key${busy ? ' corner__key--on' : ''}`} aria-pressed={busy} onClick={() => setBusy(!busy)}
@@ -343,15 +346,15 @@ export function App({
           </span>
         ) : (
           <span className="corner">
-            <OnlineChip state={online} looking={sheet?.kind === 'online'} onOpen={() => setSheet({ kind: 'online' })} />
+            {parts.onlineOrders && <OnlineChip state={online} looking={sheet?.kind === 'online'} onOpen={() => setSheet({ kind: 'online' })} />}
             {onKitchen && (twoKitchens()
               ? (['left', 'right'] as const).map((k) => <KitchenChip key={k} tickets={tickets} station={k} onOpen={() => onKitchen(k)} />)
               : <KitchenChip tickets={tickets} onOpen={() => onKitchen()} />)}
             <SyncSign />
-            {busy && busyKey}
+            {parts.busyMode && busy && busyKey}
             <span className={`corner__rest${more ? ' corner__rest--open' : ''}`} id="corner-rest" onClick={() => setMore(false)}>
-              {!busy && busyKey}
-              {onCashOut && <button type="button" className="corner__key" onClick={onCashOut}>Cash out <kbd>F7</kbd></button>}
+              {parts.busyMode && !busy && busyKey}
+              {onCashOut && parts.cashOut && <button type="button" className="corner__key" onClick={onCashOut}>Cash out <kbd>F7</kbd></button>}
               {/* The owner and managers see their own screen without any shortcut. */}
               {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Owner view <kbd>F3</kbd></button>}
               {onSwitch

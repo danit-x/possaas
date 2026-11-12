@@ -1,4 +1,5 @@
 import { PRODUCT_NAME } from '../../src/domain/brand.ts';
+import { cleanFeatures, DEFAULT_FEATURES, PARTS, sameFeatures, type ShopFeatures } from '../../src/domain/features.ts';
 import { salesWindows, severity, shopProblems, type ShopProblem } from '../../src/domain/shopHealth.ts';
 import { PULL_LIMIT, type PullResponse } from '../../src/domain/sync.ts';
 import { isNewer } from '../../src/domain/version.ts';
@@ -11,8 +12,16 @@ import { json, sha256Hex } from './http.ts';
  * (src/domain/shopHealth.ts; those shops come first), and one tap into a shop's Owner view, read-only.
  * Every sign-in and every shop opened is kept in an audit log (/admin/log), and a shop that leaves
  * can be removed with everything of it (/admin/shops/<id>/remove), by typing its id.
+ * Each shop's parts of the POS (src/domain/features.ts) are switched at /admin/shops/<id>/parts; its
+ * server picks them up within 30 s and says which it has. Systems on other code (CheesyBeez: the
+ * ERP repo, its own cloud) are listed apart under Other systems, a link to their own admin: none of
+ * their data is here.
  *
- * Signed in with one long random password (the Worker secret ADMIN_KEY, made by
+ * Wrong passwords are braked: 5 from one address, or 30 from anywhere, within 15 minutes shut the
+ * sign-in (and the laptop's key) for the rest of those 15 minutes, so even a short password cannot
+ * be guessed by trying.
+ *
+ * Signed in with one password (the Worker secret ADMIN_KEY, at least 10 characters; a random one is made by
  * `npm run admin-key` in cloud/). Typed once, it becomes a signed session cookie for
  * 30 days: HttpOnly (no script reads it), Secure, SameSite=Strict, only for /admin,
  * and never in the address. Without ADMIN_KEY, /admin does not exist. The data under
@@ -71,7 +80,34 @@ export interface ShopRow {
   eventsToday: number;
   /** What looks wrong, worst first; empty for a shop that is fine. */
   problems: ShopProblem[];
+  /** Its parts as set here ({} = all at their defaults), and what its server last said it has (null: not yet). */
+  features: Partial<ShopFeatures>;
+  featuresSeen: Partial<ShopFeatures> | null;
 }
+
+/** A system on other code, kept apart: a name, where, a line about it and its own admin's address. */
+export interface OtherSystem { name: string; place: string; about: string; url: string }
+
+/** wrangler.toml [vars] OTHER_SYSTEMS: a JSON list of { name, place, about, url }; anything else is left out. */
+export const otherSystems = (raw: string | undefined): OtherSystem[] => {
+  try {
+    const list = JSON.parse(raw ?? '[]') as unknown;
+    if (!Array.isArray(list)) return [];
+    return list.flatMap((x): OtherSystem[] => {
+      const o = x as Record<string, unknown>;
+      const text = (v: unknown) => (typeof v === 'string' ? v.slice(0, 120) : '');
+      const url = text(o?.url);
+      return text(o?.name) && /^https:\/\//.test(url) ? [{ name: text(o.name), place: text(o.place), about: text(o.about), url }] : [];
+    });
+  } catch {
+    return [];
+  }
+};
+
+const parseFeatures = (raw: string | null): Partial<ShopFeatures> | null => {
+  if (!raw) return null;
+  try { return cleanFeatures(JSON.parse(raw)); } catch { return null; }
+};
 
 /** The two weeks' closes of the day: the business day and counted minus expected cash (float + cash taken). */
 const CLOSES_SQL = `
@@ -92,13 +128,13 @@ export const shopRows = async (db: D1Like, now: number, latest: string | null = 
   for (const r of closes) (closesOf.get(r.tenant_id) ?? closesOf.set(r.tenant_id, []).get(r.tenant_id)!).push({ from: r.day_from, at: r.at, difference: r.diff });
 
   const { results } = await db.prepare(`
-    SELECT s.id, s.name, d.version, d.update_status, d.last_seen_at, d.clock_off_ms,
+    SELECT s.id, s.name, s.features, d.version, d.update_status, d.last_seen_at, d.clock_off_ms, d.features_seen,
       (SELECT MAX(at) FROM events e WHERE e.tenant_id = s.id AND e.type = 'order.paid') AS last_sale,
       (SELECT COUNT(*) FROM events e WHERE e.tenant_id = s.id AND e.at >= ?) AS events_today
     FROM shops s LEFT JOIN devices d ON d.tenant_id = s.id AND d.kind = 'shop_server'
     ORDER BY COALESCE(d.last_seen_at, 0) DESC, s.name`)
     .bind(startOfDayColombo(now))
-    .all<{ id: string; name: string; version: string | null; update_status: string | null; last_seen_at: number | null; clock_off_ms: number | null; last_sale: number | null; events_today: number }>();
+    .all<{ id: string; name: string; features: string | null; version: string | null; update_status: string | null; last_seen_at: number | null; clock_off_ms: number | null; features_seen: string | null; last_sale: number | null; events_today: number }>();
   const rows = results.map((r): ShopRow => {
     const update = r.update_status ? (JSON.parse(r.update_status) as ShopRow['update']) : null;
     return {
@@ -113,6 +149,8 @@ export const shopRows = async (db: D1Like, now: number, latest: string | null = 
         lastSeenAt: r.last_seen_at, version: r.version, update, latest, clockOffMs: r.clock_off_ms,
         sales: salesOf.get(r.id) ?? [], closes: closesOf.get(r.id) ?? [], now,
       }),
+      features: parseFeatures(r.features) ?? {},
+      featuresSeen: parseFeatures(r.features_seen),
     };
   });
   // Shops with something wrong first (the worst at the top); within each, the last heard from first, as the query had it.
@@ -175,7 +213,22 @@ input{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(-
 input:focus{outline:2px solid var(--fg);outline-offset:1px}
 button{font:inherit;font-weight:600;min-height:50px;padding:0 24px;border-radius:12px;border:0;background:var(--fg);color:var(--bg);cursor:pointer}
 .quiet{min-height:48px;padding:0 14px;background:transparent;color:var(--muted);border:1px solid var(--line)}
-.signin{max-width:420px;margin-top:12vh}`;
+.signin{max-width:420px;margin-top:12vh}
+.cardlink{position:relative;z-index:1;color:var(--muted)}
+h2.section{margin:18px 0 0;font-size:20px;letter-spacing:-.3px}
+.other .id{font-size:14px}
+.parts{gap:0;padding:4px 18px}
+.part{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:72px;padding:12px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.part:last-of-type{border-bottom:0}
+.part b{display:block;font-weight:600}
+.part small{display:block;color:var(--muted);font-size:14px}
+.switch{appearance:none;-webkit-appearance:none;flex:none;width:52px;height:30px;min-height:0;padding:0;border:0;border-radius:999px;background:var(--line);position:relative;cursor:pointer;transition:background .2s}
+.switch::before{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+.switch:checked{background:var(--ok)}.switch:checked::before{transform:translateX(22px)}
+.switch:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+.parts button{margin:12px 0}
+.ok{color:var(--ok)}
+@media (prefers-reduced-motion:reduce){.switch,.switch::before{transition:none}}`;
 
 const shell = (title: string, body: string, refresh = false) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -187,16 +240,33 @@ const shell = (title: string, body: string, refresh = false) => `<!doctype html>
 
 /** The sign-in box, and nothing else, for anyone without a session. */
 const TITLE = `${PRODUCT_NAME} admin`;
-export const signInPage = (wrong: boolean): string => shell(TITLE, `<main class="signin">
+export const signInPage = (wrong: boolean, locked = false): string => shell(TITLE, `<main class="signin">
 <h1>${TITLE}</h1>
 <form method="post" action="/admin/login">
   <input name="key" type="password" autocomplete="current-password" aria-label="Admin password" placeholder="Admin password" required autofocus>
-  ${wrong ? '<p class="bad" role="alert">That password is not right.</p>' : ''}
+  ${locked ? '<p class="bad" role="alert">Too many wrong passwords. Try again in 15 minutes.</p>' : wrong ? '<p class="bad" role="alert">That password is not right.</p>' : ''}
   <button type="submit">Sign in</button>
 </form>
 </main>`);
 
-export const adminPage = (rows: ShopRow[], latest: string | null, now: number): string => {
+/** "Parts: 4 of 5 on", and whether the shop has picked up what was set. */
+const partsLine = (r: ShopRow): string => {
+  const set = { ...DEFAULT_FEATURES, ...r.features };
+  const on = PARTS.filter((p) => set[p.key]).length;
+  const waiting = !r.featuresSeen || !sameFeatures(r.features, r.featuresSeen);
+  return `Parts: ${on} of ${PARTS.length} on${waiting ? ' · <span class="warn">waiting for the shop</span>' : ''}`;
+};
+
+const otherSection = (others: OtherSystem[]): string => others.length ? `
+<h2 class="section">Other systems</h2>
+<p class="lead">On their own code and their own cloud, kept apart: none of their data is here. Their parts are switched in their own admin.</p>
+${others.map((o) => `<article class="shop other">
+  <a class="name" href="${esc(o.url)}" rel="noreferrer" target="_blank">${esc(o.name)}</a>
+  <span class="state off">Open its admin ↗</span>
+  <span class="id">${esc([o.place, o.about].filter(Boolean).join(' · '))}</span>
+</article>`).join('\n')}` : '';
+
+export const adminPage = (rows: ShopRow[], latest: string | null, now: number, others: OtherSystem[] = []): string => {
   const online = rows.filter((r) => isOnline(r, now)).length;
   const behind = rows.filter((r) => latest && r.version && isNewer(latest, r.version)).length;
   const attention = rows.filter((r) => r.problems.length).length;
@@ -220,6 +290,7 @@ export const adminPage = (rows: ShopRow[], latest: string | null, now: number): 
     <span class="${old ? 'warn' : ''}">Version ${esc(r.version ?? 'unknown')}${old ? ` · ${esc(latest!)} waiting` : ''}</span>
     <span class="${bad ? 'bad' : ''}">${upd}</span>
     <span>Last sale ${ago(r.lastSaleAt, now)} · ${r.eventsToday} events today</span>
+    <span>${partsLine(r)} · <a class="cardlink" href="/admin/shops/${id}/parts">Parts</a></span>
     <a class="remove" href="/admin/shops/${id}/remove">Remove</a>
   </span>
 </article>`;
@@ -227,27 +298,46 @@ export const adminPage = (rows: ShopRow[], latest: string | null, now: number): 
   return shell(TITLE, `<main>
 <header><h1>Shops</h1>${NAV}</header>
 <p class="lead">${attention ? `${attention} need${attention === 1 ? 's' : ''} attention · ` : rows.length ? 'All fine · ' : ''}${online} of ${rows.length} online · latest release ${esc(latest ?? 'unknown')}${behind ? ` · ${behind} still to update` : ''}</p>
-${rows.length ? rows.map(row).join('\n') : '<p class="empty">No shops yet.</p>'}
+${rows.length ? rows.map(row).join('\n') : '<p class="empty">No shops yet.</p>'}${otherSection(others)}
 </main>`, true);
+};
+
+/** One shop's parts: a switch each, and whether the shop has picked them up. */
+export const partsPage = (shop: { id: string; name: string }, set: Partial<ShopFeatures>, seen: Partial<ShopFeatures> | null, lastSeenAt: number | null, now: number, saved = false): string => {
+  const on = { ...DEFAULT_FEATURES, ...set };
+  const has = seen !== null && sameFeatures(set, seen);
+  const status = has
+    ? `<span class="ok">The shop has these</span> · checked ${ago(lastSeenAt, now)}`
+    : `<span class="warn">Waiting for the shop to pick these up</span>: it checks every 30 seconds while it is online${lastSeenAt ? ` (last ${ago(lastSeenAt, now)})` : ''}.`;
+  return shell(TITLE, `<main>
+<header><h1>${esc(shop.name)} · parts</h1>${NAV}</header>
+<p class="lead"><a href="/admin">← Shops</a> · ${status}</p>
+${saved ? '<p class="ok" role="status">Saved. The shop changes within a minute while it is online.</p>' : ''}
+<form class="box parts" method="post">
+${PARTS.map((p) => `  <label class="part"><span><b>${esc(p.name)}</b><small>${esc(p.what)}</small></span><input class="switch" type="checkbox" name="${p.key}" role="switch"${on[p.key] ? ' checked' : ''}></label>`).join('\n')}
+  <button type="submit">Save</button>
+</form>
+</main>`);
 };
 
 const NAV = '<nav><a href="/admin/log">Activity</a><form method="post" action="/admin/logout"><button class="quiet" type="submit">Sign out</button></form></nav>';
 
 // ----- the audit log -----
 
-export type AdminAction = 'signed-in' | 'wrong-password' | 'signed-out' | 'opened-shop' | 'read-shop' | 'removed-shop';
+export type AdminAction = 'signed-in' | 'wrong-password' | 'signed-out' | 'opened-shop' | 'read-shop' | 'removed-shop' | 'changed-parts';
 type Via = 'browser' | 'key';
 
 const ACTION_WORDS: Record<AdminAction, string> = {
   'signed-in': 'Signed in', 'wrong-password': 'Wrong password', 'signed-out': 'Signed out',
   'opened-shop': 'Opened the shop', 'read-shop': "Read the shop's data", 'removed-shop': 'Removed the shop',
+  'changed-parts': 'Changed the parts',
 };
 
-export interface LogRow { at: number; action: AdminAction; shop_id: string | null; shop_name: string | null; via: Via; ip: string | null }
+export interface LogRow { at: number; action: AdminAction; shop_id: string | null; shop_name: string | null; via: Via; ip: string | null; detail?: string | null }
 
-const logStatement = (db: D1Like, req: Request, now: number, action: AdminAction, via: Via, shop?: { id: string; name: string | null }) =>
-  db.prepare('INSERT INTO admin_log (at, action, shop_id, shop_name, via, ip) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(now, action, shop?.id ?? null, shop?.name ?? null, via, req.headers.get('cf-connecting-ip'));
+const logStatement = (db: D1Like, req: Request, now: number, action: AdminAction, via: Via, shop?: { id: string; name: string | null }, detail?: string) =>
+  db.prepare('INSERT INTO admin_log (at, action, shop_id, shop_name, via, ip, detail) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(now, action, shop?.id ?? null, shop?.name ?? null, via, req.headers.get('cf-connecting-ip'), detail ?? null);
 
 const shopName = async (db: D1Like, id: string): Promise<string | null> =>
   (await db.prepare('SELECT name FROM shops WHERE id = ?').bind(id).first<{ name: string }>())?.name ?? null;
@@ -258,7 +348,7 @@ export const logPage = (rows: LogRow[]): string => shell(TITLE, `<main>
 <header><h1>Activity</h1>${NAV}</header>
 <p class="lead"><a href="/admin">← Shops</a> · the last ${rows.length} things done in admin, Sri Lanka time</p>
 ${rows.length ? `<table><thead><tr><th>When</th><th>What</th><th>Shop</th><th>From</th></tr></thead><tbody>
-${rows.map((r) => `<tr><td>${colombo(r.at)}</td><td class="${r.action === 'wrong-password' || r.action === 'removed-shop' ? 'bad' : ''}">${ACTION_WORDS[r.action] ?? esc(r.action)}</td><td>${r.shop_id ? `${esc(r.shop_name ?? '')} <span class="id">${esc(r.shop_id)}</span>` : ''}</td><td>${r.via === 'key' ? 'Laptop' : 'Browser'}${r.ip ? ` · ${esc(r.ip)}` : ''}</td></tr>`).join('\n')}
+${rows.map((r) => `<tr><td>${colombo(r.at)}</td><td class="${r.action === 'wrong-password' || r.action === 'removed-shop' ? 'bad' : ''}">${ACTION_WORDS[r.action] ?? esc(r.action)}${r.detail ? `: ${esc(r.detail)}` : ''}</td><td>${r.shop_id ? `${esc(r.shop_name ?? '')} <span class="id">${esc(r.shop_id)}</span>` : ''}</td><td>${r.via === 'key' ? 'Laptop' : 'Browser'}${r.ip ? ` · ${esc(r.ip)}` : ''}</td></tr>`).join('\n')}
 </tbody></table>` : '<p class="empty">Nothing yet.</p>'}
 </main>`);
 
@@ -289,6 +379,8 @@ export interface AdminOptions {
   latest: () => Promise<string | null>;
   /** The Owner view (the cloud build's index.html), for one shop. */
   app: (req: Request) => Promise<Response>;
+  /** Systems on other code, listed apart (wrangler.toml OTHER_SYSTEMS). */
+  others?: OtherSystem[];
   now?: () => number;
 }
 
@@ -298,8 +390,21 @@ const html = (body: string, status = 200, extra: Record<string, string> = {}) =>
 });
 const back = (cookieHeader: string) => new Response(null, { status: 303, headers: { location: '/admin', 'set-cookie': cookieHeader, 'cache-control': 'no-store' } });
 
-/** A key too short to be the generated one is refused outright: /admin stays shut. */
-export const MIN_KEY_LENGTH = 32;
+/** A password shorter than this is refused outright: /admin stays shut. The brake below keeps 10 safe. */
+export const MIN_KEY_LENGTH = 10;
+
+/** The brake on guessing: wrong passwords in the last window, from one address and from anywhere. */
+export const BRAKE_WINDOW_MS = 15 * 60_000;
+export const BRAKE_PER_ADDRESS = 5;
+export const BRAKE_ALL = 30;
+
+const braked = async (db: D1Like, req: Request, now: number): Promise<boolean> => {
+  const ip = req.headers.get('cf-connecting-ip');
+  const row = await db.prepare(`SELECT COUNT(*) AS everyone, SUM(CASE WHEN ip IS ? THEN 1 ELSE 0 END) AS here
+    FROM admin_log WHERE action = 'wrong-password' AND at >= ?`).bind(ip, now - BRAKE_WINDOW_MS)
+    .first<{ everyone: number; here: number | null }>();
+  return (row?.here ?? 0) >= BRAKE_PER_ADDRESS || (row?.everyone ?? 0) >= BRAKE_ALL;
+};
 
 /** Everything under /admin, or null for other paths. */
 export const adminRoutes = async (req: Request, url: URL, o: AdminOptions): Promise<Response | null> => {
@@ -308,6 +413,8 @@ export const adminRoutes = async (req: Request, url: URL, o: AdminOptions): Prom
   const now = (o.now ?? Date.now)();
 
   if (url.pathname === '/admin/login' && req.method === 'POST') {
+    // Braked: not even checked, so trying more tells nothing.
+    if (await braked(o.db, req, now)) return html(signInPage(false, true), 429);
     const typed = String((await req.formData().catch(() => null))?.get('key') ?? '');
     if (!(await rightKey(typed, o.key))) {
       await logStatement(o.db, req, now, 'wrong-password', 'browser').run();
@@ -323,7 +430,10 @@ export const adminRoutes = async (req: Request, url: URL, o: AdminOptions): Prom
 
   // The developer's own laptop (its local server, `server/fleet.ts`) asks for data with the password as a key.
   const auth = req.headers.get('authorization');
-  const byKey = url.pathname.startsWith('/admin/api/') && auth?.startsWith('Bearer ') && await rightKey(auth.slice(7), o.key);
+  const triesKey = url.pathname.startsWith('/admin/api/') && auth?.startsWith('Bearer ');
+  if (triesKey && await braked(o.db, req, now)) return new Response('Too many wrong passwords. Try again in 15 minutes.', { status: 429 });
+  const byKey = triesKey && await rightKey(auth!.slice(7), o.key);
+  if (triesKey && !byKey) await logStatement(o.db, req, now, 'wrong-password', 'key').run();
   if (!byKey && !(await signedIn(req, o.key, now))) {
     return url.pathname === '/admin' || url.pathname === '/admin/' ? html(signInPage(false)) : new Response('Sign in at /admin', { status: 403 });
   }
@@ -351,16 +461,40 @@ export const adminRoutes = async (req: Request, url: URL, o: AdminOptions): Prom
     ]);
     return new Response(null, { status: 303, headers: { location: '/admin', 'cache-control': 'no-store' } });
   }
+  // A shop's parts: the signed-in pages only (never the laptop's key). Every change is logged with what it was.
+  const parts = /^\/admin\/shops\/([a-z0-9-]{1,64})\/parts$/.exec(url.pathname);
+  if (parts && !byKey) {
+    const id = parts[1];
+    const row = await o.db.prepare(`SELECT s.name, s.features, d.features_seen, d.last_seen_at FROM shops s
+      LEFT JOIN devices d ON d.tenant_id = s.id AND d.kind = 'shop_server' WHERE s.id = ? ORDER BY d.last_seen_at DESC LIMIT 1`)
+      .bind(id).first<{ name: string; features: string | null; features_seen: string | null; last_seen_at: number | null }>();
+    if (!row) return notFound();
+    const set = parseFeatures(row.features) ?? {};
+    const page = (s: Partial<ShopFeatures>, saved: boolean) => partsPage({ id, name: row.name }, s, parseFeatures(row.features_seen), row.last_seen_at, now, saved);
+    if (req.method === 'GET') return html(page(set, url.searchParams.has('saved')));
+    if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+    const form = await req.formData().catch(() => null);
+    const next = Object.fromEntries(PARTS.map((p) => [p.key, form?.get(p.key) === 'on'])) as unknown as ShopFeatures;
+    const was = { ...DEFAULT_FEATURES, ...set };
+    const changed = PARTS.filter((p) => was[p.key] !== next[p.key]).map((p) => `${p.name} ${next[p.key] ? 'on' : 'off'}`);
+    if (changed.length) {
+      await o.db.batch([
+        o.db.prepare('UPDATE shops SET features = ? WHERE id = ?').bind(JSON.stringify(next), id),
+        logStatement(o.db, req, now, 'changed-parts', via, { id, name: row.name }, changed.join(', ')),
+      ]);
+    }
+    return new Response(null, { status: 303, headers: { location: `/admin/shops/${encodeURIComponent(id)}/parts?saved`, 'cache-control': 'no-store' } });
+  }
   if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 });
 
   if (url.pathname === '/admin/log' && !byKey) {
-    const { results } = await o.db.prepare('SELECT at, action, shop_id, shop_name, via, ip FROM admin_log ORDER BY id DESC LIMIT 200').all<LogRow>();
+    const { results } = await o.db.prepare('SELECT at, action, shop_id, shop_name, via, ip, detail FROM admin_log ORDER BY id DESC LIMIT 200').all<LogRow>();
     return html(logPage(results));
   }
 
   if (url.pathname === '/admin' || url.pathname === '/admin/') {
     const latest = await o.latest();
-    return html(adminPage(await shopRows(o.db, now, latest), latest, now));
+    return html(adminPage(await shopRows(o.db, now, latest), latest, now, o.others ?? []));
   }
   if (url.pathname === '/admin/api/shops') {
     const latest = await o.latest();

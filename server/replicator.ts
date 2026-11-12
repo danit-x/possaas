@@ -1,3 +1,4 @@
+import { cleanFeatures, type ShopFeatures } from '../src/domain/features.ts';
 import { clockOffsetMs, PUSH_BATCH, retryDelayMs } from '../src/domain/sync.ts';
 import type { EventStore } from './store.ts';
 
@@ -24,7 +25,9 @@ export interface ReplicatorOptions {
   every?: number;
   now?: () => number;
   /** What this Station runs and where its last update is, told to the cloud on every pass (the admin view). */
-  about?: () => { version: string; update: unknown };
+  about?: () => { version: string; update: unknown; features?: Partial<ShopFeatures> };
+  /** The parts of the POS the cloud's /admin set for this shop, on every pass (the shop keeps them in its settings). */
+  onFeatures?: (features: Partial<ShopFeatures>) => void;
 }
 
 export interface ReplicaStatus {
@@ -48,6 +51,7 @@ export function startReplicator(o: ReplicatorOptions) {
       'content-type': 'application/json',
       'x-station-clock': String(now()),
       ...(about ? { 'x-station-version': about.version, 'x-station-update': JSON.stringify(about.update ?? null) } : {}),
+      ...(about?.features ? { 'x-station-features': JSON.stringify(about.features) } : {}),
     };
   };
   const status: ReplicaStatus = { upToDateAt: null, lastError: null, clockOffMs: null };
@@ -63,7 +67,9 @@ export function startReplicator(o: ReplicatorOptions) {
       method, headers: headers(), body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20_000),
     });
     if (!r.ok) throw new Error(`cloud answered ${r.status}`);
-    const answer = (await r.json()) as { lastSourceSeq: number; serverTime?: number };
+    const answer = (await r.json()) as { lastSourceSeq: number; serverTime?: number; features?: unknown };
+    // An older cloud says nothing about parts: then the shop keeps what it has.
+    if (method === 'GET' && answer.features !== undefined) o.onFeatures?.(cleanFeatures(answer.features));
     if (typeof answer.serverTime === 'number') status.clockOffMs = -clockOffsetMs(answer.serverTime, sentAt, now());
     return answer;
   };

@@ -32,8 +32,9 @@ test('Alt+1 … Alt+9 pick a section; a digit alone still starts typing an order
 
 test('"More" opens the folded corner keys and closes when one is used', async () => {
   const user = userEvent.setup();
-  render(<App />);
+  render(<App onCashOut={() => {}} />);
   const more = screen.getByRole('button', { name: 'More' });
+  expect(screen.getByRole('button', { name: /^Cash out/ }).closest('.corner__rest')).not.toBeNull();
   expect(more.getAttribute('aria-expanded')).toBe('false');
   await user.click(more);
   expect(more.getAttribute('aria-expanded')).toBe('true');

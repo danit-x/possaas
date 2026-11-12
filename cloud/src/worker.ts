@@ -1,5 +1,5 @@
 import { PRODUCT_NAME } from '../../src/domain/brand.ts';
-import { adminRoutes } from './admin.ts';
+import { adminRoutes, otherSystems } from './admin.ts';
 import { createCloud, type D1Like } from './cloud.ts';
 import { downloadPage, latestRelease } from './download.ts';
 import { answersApi, questionsPage } from './questions.ts';
@@ -19,6 +19,8 @@ interface Env {
   ORDER_ADDRESS?: string;
   /** The developer's /admin password (npm run admin-key in cloud/). */
   ADMIN_KEY?: string;
+  /** Systems on other code listed apart on /admin: JSON [{ name, place, about, url }] (wrangler.toml [vars]). */
+  OTHER_SYSTEMS?: string;
   /** The owner's page: the cloud build of the app (npm run build:cloud), served as static files. */
   ASSETS: { fetch(request: Request): Promise<Response> };
 }
@@ -80,6 +82,7 @@ export default {
         key: env.ADMIN_KEY ?? null,
         latest: () => latestRelease().then((r) => r?.version ?? null),
         app: (req) => env.ASSETS.fetch(req),
+        others: otherSystems(env.OTHER_SYSTEMS),
       }).then((r) => r ?? new Response('Not found', { status: 404 }));
     }
     if (url.pathname === '/api/v1/answers') return answersApi(request, env.DB, env.ANSWER_KEY);

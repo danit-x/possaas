@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { DEFAULT_FOOTER, PRODUCT_NAME } from '../domain/brand.ts';
-import { cleanFeatures, setFeatures, type ShopFeatures } from '../domain/features.ts';
+import { cleanFeatures, features, setFeatures, type ShopFeatures } from '../domain/features.ts';
 import { PAPER_CHARS, type PaperWidth, type ShopHeader } from '../domain/receipt.ts';
 import { FAKE_RICE_SHOP_DETAILS, FAKE_SHOP_DETAILS } from '../fake/data.ts';
 import bataKadeLogo from '../shop/bata-kade-logo.webp';
@@ -88,3 +88,5 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 export const useShopName = (): string => useSyncExternalStore(subscribe, shopName);
 export const useShopLogo = (): string => useSyncExternalStore(subscribe, shopLogo);
 export const usePayFirst = (): boolean => useSyncExternalStore(subscribe, payFirst);
+/** The parts of the POS this shop has switched on (the cloud's /admin, through its server). */
+export const useFeatures = (): ShopFeatures => useSyncExternalStore(subscribe, features);
