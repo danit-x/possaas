@@ -17,7 +17,11 @@ import { json, sha256Hex } from './http.ts';
  * ERP repo, its own cloud) are listed apart under Other systems, a link to their own admin: none of
  * their data is here.
  *
- * Signed in with one long random password (the Worker secret ADMIN_KEY, made by
+ * Wrong passwords are braked: 5 from one address, or 30 from anywhere, within 15 minutes shut the
+ * sign-in (and the laptop's key) for the rest of those 15 minutes, so even a short password cannot
+ * be guessed by trying.
+ *
+ * Signed in with one password (the Worker secret ADMIN_KEY, at least 10 characters; a random one is made by
  * `npm run admin-key` in cloud/). Typed once, it becomes a signed session cookie for
  * 30 days: HttpOnly (no script reads it), Secure, SameSite=Strict, only for /admin,
  * and never in the address. Without ADMIN_KEY, /admin does not exist. The data under
@@ -236,11 +240,11 @@ const shell = (title: string, body: string, refresh = false) => `<!doctype html>
 
 /** The sign-in box, and nothing else, for anyone without a session. */
 const TITLE = `${PRODUCT_NAME} admin`;
-export const signInPage = (wrong: boolean): string => shell(TITLE, `<main class="signin">
+export const signInPage = (wrong: boolean, locked = false): string => shell(TITLE, `<main class="signin">
 <h1>${TITLE}</h1>
 <form method="post" action="/admin/login">
   <input name="key" type="password" autocomplete="current-password" aria-label="Admin password" placeholder="Admin password" required autofocus>
-  ${wrong ? '<p class="bad" role="alert">That password is not right.</p>' : ''}
+  ${locked ? '<p class="bad" role="alert">Too many wrong passwords. Try again in 15 minutes.</p>' : wrong ? '<p class="bad" role="alert">That password is not right.</p>' : ''}
   <button type="submit">Sign in</button>
 </form>
 </main>`);
@@ -386,8 +390,21 @@ const html = (body: string, status = 200, extra: Record<string, string> = {}) =>
 });
 const back = (cookieHeader: string) => new Response(null, { status: 303, headers: { location: '/admin', 'set-cookie': cookieHeader, 'cache-control': 'no-store' } });
 
-/** A key too short to be the generated one is refused outright: /admin stays shut. */
-export const MIN_KEY_LENGTH = 32;
+/** A password shorter than this is refused outright: /admin stays shut. The brake below keeps 10 safe. */
+export const MIN_KEY_LENGTH = 10;
+
+/** The brake on guessing: wrong passwords in the last window, from one address and from anywhere. */
+export const BRAKE_WINDOW_MS = 15 * 60_000;
+export const BRAKE_PER_ADDRESS = 5;
+export const BRAKE_ALL = 30;
+
+const braked = async (db: D1Like, req: Request, now: number): Promise<boolean> => {
+  const ip = req.headers.get('cf-connecting-ip');
+  const row = await db.prepare(`SELECT COUNT(*) AS everyone, SUM(CASE WHEN ip IS ? THEN 1 ELSE 0 END) AS here
+    FROM admin_log WHERE action = 'wrong-password' AND at >= ?`).bind(ip, now - BRAKE_WINDOW_MS)
+    .first<{ everyone: number; here: number | null }>();
+  return (row?.here ?? 0) >= BRAKE_PER_ADDRESS || (row?.everyone ?? 0) >= BRAKE_ALL;
+};
 
 /** Everything under /admin, or null for other paths. */
 export const adminRoutes = async (req: Request, url: URL, o: AdminOptions): Promise<Response | null> => {
@@ -396,6 +413,8 @@ export const adminRoutes = async (req: Request, url: URL, o: AdminOptions): Prom
   const now = (o.now ?? Date.now)();
 
   if (url.pathname === '/admin/login' && req.method === 'POST') {
+    // Braked: not even checked, so trying more tells nothing.
+    if (await braked(o.db, req, now)) return html(signInPage(false, true), 429);
     const typed = String((await req.formData().catch(() => null))?.get('key') ?? '');
     if (!(await rightKey(typed, o.key))) {
       await logStatement(o.db, req, now, 'wrong-password', 'browser').run();
@@ -411,7 +430,10 @@ export const adminRoutes = async (req: Request, url: URL, o: AdminOptions): Prom
 
   // The developer's own laptop (its local server, `server/fleet.ts`) asks for data with the password as a key.
   const auth = req.headers.get('authorization');
-  const byKey = url.pathname.startsWith('/admin/api/') && auth?.startsWith('Bearer ') && await rightKey(auth.slice(7), o.key);
+  const triesKey = url.pathname.startsWith('/admin/api/') && auth?.startsWith('Bearer ');
+  if (triesKey && await braked(o.db, req, now)) return new Response('Too many wrong passwords. Try again in 15 minutes.', { status: 429 });
+  const byKey = triesKey && await rightKey(auth!.slice(7), o.key);
+  if (triesKey && !byKey) await logStatement(o.db, req, now, 'wrong-password', 'key').run();
   if (!byKey && !(await signedIn(req, o.key, now))) {
     return url.pathname === '/admin' || url.pathname === '/admin/' ? html(signInPage(false)) : new Response('Sign in at /admin', { status: 403 });
   }

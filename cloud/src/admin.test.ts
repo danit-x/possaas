@@ -129,12 +129,36 @@ test('the laptop\'s server reads the shop list and events with the password as a
 });
 
 test('without a password, or with a short one, /admin does not exist', async () => {
-  for (const key of [null, 'short-password']) {
+  for (const key of [null, 'abc1235']) { // under 10 characters
     const r = await adminRoutes(req('/admin'), new URL('https://cloud.test/admin'), {
       db: fakeD1().d1, key, latest: async () => null, app: async () => new Response(''),
     });
     assert.equal(r!.status, 404);
   }
+});
+
+test('a 10-character password works; wrong ones are braked: 5 from one place, 30 from anywhere, for 15 minutes', async () => {
+  const { d1, db } = fakeD1();
+  const short = 'Kx7#mPq2Lw'; // 10 characters: allowed, because guessing is braked
+  let t = NOW;
+  const admin = (r: Request) => adminRoutes(r, new URL(r.url), { db: d1, key: short, latest: async () => null, app: async () => new Response(''), now: () => t });
+  const from = (ip: string, key: string) => req('/admin/login', {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': ip }, body: new URLSearchParams({ key }),
+  });
+  for (let i = 0; i < 5; i++) assert.equal((await admin(from('1.1.1.1', `guess${i}`)))!.status, 401);
+  const locked = (await admin(from('1.1.1.1', short)))!;
+  assert.equal(locked.status, 429, 'even the right password: trying more tells nothing');
+  assert.match(await locked.text(), /Too many wrong passwords/);
+  assert.equal((await admin(from('2.2.2.2', short)))!.status, 303, 'another place still signs in');
+  // The laptop's key is braked the same way, and its wrong tries count.
+  const api = (key: string) => req('/admin/api/shops', { headers: { authorization: `Bearer ${key}`, 'cf-connecting-ip': '1.1.1.1' } });
+  assert.equal((await admin(api(short)))!.status, 429);
+  t += 15 * 60_000 + 1;
+  assert.equal((await admin(from('1.1.1.1', short)))!.status, 303, 'after 15 minutes it opens again');
+  // 30 wrong from many places: shut for everyone.
+  for (let i = 0; i < 30; i++) await admin(from(`9.9.${i}.1`, 'nope'));
+  assert.equal((await admin(from('3.3.3.3', short)))!.status, 429);
+  assert.ok((db.prepare("SELECT COUNT(*) AS n FROM admin_log WHERE action = 'wrong-password'").get() as { n: number }).n >= 35);
 });
 
 test('times read the way the shop lives them', () => {
