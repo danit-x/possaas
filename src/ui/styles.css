@@ -82,6 +82,33 @@
   color-scheme: dark;
 }
 
+/*
+ * The Register scales with its window, so nothing overlaps when it is made smaller.
+ * Spacing follows the golden ratio (phi = 1.618): each step is the one before times phi
+ * (5, 8, 13, 21, 34, 55). Text steps up by phi from the body size (16 > 26 > 42), with the
+ * small sizes between. Every size is full at 1280 px wide and shrinks with the window: spacing
+ * by one golden step at most, text by about a sixth, never below what reads at arm's length.
+ */
+:root {
+  --sp-1: clamp(3px, 0.39vw, 5px);
+  --sp-2: clamp(5px, 0.625vw, 8px);
+  --sp-3: clamp(8px, 1.02vw, 13px);
+  --sp-4: clamp(13px, 1.64vw, 21px);
+  --sp-5: clamp(21px, 2.66vw, 34px);
+  --sp-6: clamp(34px, 4.3vw, 55px);
+  --fs-xs: clamp(11px, 1.02vw, 13px);
+  --fs-s: clamp(12px, 1.1vw, 14px);
+  --fs-m: clamp(13px, 1.18vw, 15px);
+  --fs-b: clamp(14px, 1.25vw, 16px);
+  --fs-l: clamp(15px, 1.41vw, 18px);
+  --fs-xl: clamp(21px, 2.03vw, 26px);
+  --fs-2xl: clamp(32px, min(3.3vw, 6.5vh), 42px);
+  /* Touch targets: 48 px, and never under 42 px in a small window. */
+  --tap: clamp(42px, 3.75vw, 48px);
+  --cta-h: clamp(52px, min(5.6vw, 10vh), 72px);
+  --panel-w: clamp(280px, 31.6vw, 404px);
+}
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body {
@@ -102,7 +129,15 @@ button:active:not(:disabled) { transform: scale(0.97); transition: transform 60m
 
 /* ---------- shell ---------- */
 .register { height: 100dvh; display: flex; flex-direction: column; background: var(--ground); overflow: hidden; }
-.register__head { flex: 0 0 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 40px; }
+.register__head { flex: 0 0 auto; min-height: var(--sp-6); display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: 0 var(--sp-5); }
+/* One line, always: the shop's name gives way first (...), then the keys' F-key hints, then the keys scroll. */
+.register__head .brand { flex: 0 1 auto; min-width: 0; font-size: var(--fs-b); }
+.brand__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.register__head .corner { flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; gap: var(--sp-1); }
+.register__head .corner::-webkit-scrollbar { display: none; }
+.register__head .corner__key { min-height: var(--tap); padding: 0 var(--sp-3); font-size: var(--fs-s); white-space: nowrap; flex: none; }
+.register__head .cashier, .register__head .syncsign, .register__head .corner__who { font-size: var(--fs-s); white-space: nowrap; flex: none; }
+@media (max-width: 1180px) { .register__head .corner kbd { display: none; } }
 .brand { font-size: 16px; font-weight: 500; letter-spacing: -0.3px; display: inline-flex; align-items: center; gap: 10px; }
 .brand__logo { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; flex: none; }
 .cashier { font-size: 14px; color: var(--ink-2); letter-spacing: -0.1px; }
@@ -155,7 +190,7 @@ a.corner__key { text-decoration: none; }
 kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .chip kbd { margin-right: 8px; }
 .chip[aria-pressed='true'] kbd { border-color: currentColor; color: inherit; opacity: 0.7; }
-.panel__stamp { padding: 4px 36px 0; font-size: 13px; color: var(--ink-2); animation: fade 200ms var(--ease); }
+.panel__stamp { padding: var(--sp-1) var(--sp-5) 0; font-size: 13px; color: var(--ink-2); animation: fade 200ms var(--ease); }
 .line__adj { font-size: 13px; font-weight: 500; color: var(--ok-ink); }
 /* Manager mode lines: one selected at a time, its actions right under it. */
 .mline { display: flex; flex-direction: column; gap: 10px; margin: -8px -14px; padding: 8px 14px; border-radius: 12px; }
@@ -169,7 +204,7 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .chip--danger { color: var(--bad); }
 .inline { display: flex; flex-direction: column; gap: 8px; animation: rise 160ms var(--ease); }
 .inline__label { font-size: 13px; font-weight: 500; color: var(--ink-2); }
-.discounts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 14px 36px 0; animation: rise 180ms var(--ease); }
+.discounts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: var(--sp-3) var(--sp-5) 0; animation: rise 180ms var(--ease); }
 .discounts .chip { min-width: 0; padding: 0 6px; min-height: 52px; justify-content: center; display: inline-flex; align-items: center; font-size: 15px; white-space: nowrap; }
 .discounts .chip kbd { margin-right: 6px; }
 /* Free is the dangerous one: when it is on, it is red (wins over the generic pressed chip). */
@@ -185,7 +220,13 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .palette__item[aria-selected='true'] { background: var(--chip); }
 .palette__empty { padding: 14px; color: var(--ink-3); }
 .register__body { flex: 1; min-height: 0; display: flex; }
-.menu { flex: 1; min-width: 0; padding: 6px 40px 40px; display: flex; flex-direction: column; gap: 26px; overflow-y: auto; position: relative; }
+.menu { flex: 1; min-width: 0; padding: 0 var(--sp-5) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-4); overflow-y: auto; position: relative; }
+/* Every bar above the cards keeps its height: a sideways-scrolling row would otherwise be squeezed to nothing. */
+.menu > * { flex-shrink: 0; }
+/* The sections stay in view while the menu scrolls under them. */
+.menu .cats { position: sticky; top: 0; z-index: 1; margin: 0 calc(-1 * var(--sp-5)); padding: var(--sp-2) var(--sp-5); background: var(--ground); }
+.menu .pill { font-size: var(--fs-m); padding: 0 var(--sp-4); min-height: var(--tap); display: inline-flex; align-items: center; }
+.menu .hint { font-size: var(--fs-xs); white-space: nowrap; flex: none; padding-left: var(--sp-3); }
 
 /* ---------- category pills + type hint ---------- */
 /* One line of tabs; more sections than fit scroll sideways instead of wrapping. */
@@ -202,7 +243,7 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .typebar__bad { color: var(--bad); }
 
 /* ---------- menu grid ---------- */
-.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-content: start; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(clamp(150px, 17vw, 230px), 1fr)); gap: var(--sp-3); align-content: start; }
 .card--soldout { position: relative; opacity: 0.45; }
 /* Manager mode: the menu edits itself (Menu.tsx `edit`). Sold-out and hidden cards stay tappable to change. */
 .register--managing .card--soldout { opacity: 0.6; }
@@ -212,36 +253,36 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
   color: var(--ink-2); font: inherit; font-size: 16px; font-weight: 500; cursor: pointer; transition: border-color 150ms var(--ease), color 150ms var(--ease); }
 .card--add:hover, .card--add:focus-visible { border-color: var(--ink-3); color: var(--ink); }
 .card__soldout { position: absolute; top: 14px; right: 14px; padding: 3px 10px; border-radius: 980px; background: var(--ink); color: var(--ground); font-size: 12px; font-weight: 600; }
-.card { padding: 20px 20px 18px; border-radius: 16px; background: var(--surface); box-shadow: var(--card-shadow); display: flex; flex-direction: column; gap: 16px; }
+.card { padding: var(--sp-4); border-radius: var(--sp-4); background: var(--surface); box-shadow: var(--card-shadow); display: flex; flex-direction: column; gap: var(--sp-3); }
 .card__soldout { align-self: flex-end; padding: 3px 10px; border-radius: 980px; background: var(--ink); color: var(--ground); font-size: 12px; font-weight: 600; }
-.card__title { text-align: left; display: flex; flex-direction: column; gap: 4px; min-height: 48px; }
-.card__name { font-size: 16px; font-weight: 500; letter-spacing: -0.3px; }
-.card__si { font-size: 15px; color: var(--ink-2); }
+.card__title { text-align: left; display: flex; flex-direction: column; gap: var(--sp-1); min-height: var(--tap); }
+.card__name { font-size: var(--fs-b); font-weight: 500; letter-spacing: -0.3px; }
+.card__si { font-size: var(--fs-m); color: var(--ink-2); }
 .card__no { color: var(--ink-3); margin-right: 8px; }
-.card__desc { font-size: 12px; color: var(--ink-2); line-height: 1.4; letter-spacing: -0.1px; }
-.card__prices { display: flex; gap: 8px; }
-.price { flex: 1; height: 48px; border-radius: 11px; background: var(--chip); font-size: 15px; font-weight: 500; letter-spacing: -0.2px; }
+.card__desc { font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.4; letter-spacing: -0.1px; }
+.card__prices { display: flex; gap: var(--sp-2); }
+.price { flex: 1; min-width: 0; height: var(--tap); padding: 0 var(--sp-1); border-radius: var(--sp-3); background: var(--chip); font-size: var(--fs-m); line-height: 1.15; font-weight: 500; letter-spacing: -0.2px; }
 .price:hover { filter: brightness(0.97); }
 
 /* ---------- order panel ---------- */
-.panel { flex: 0 0 404px; width: 404px; display: flex; flex-direction: column; background: var(--panel); box-shadow: var(--panel-shadow);
+.panel { flex: 0 0 var(--panel-w); width: var(--panel-w); display: flex; flex-direction: column; background: var(--panel); box-shadow: var(--panel-shadow);
   position: relative; z-index: 1; transform-origin: 60% 50%;
   /* Removing .panel--managing plays this same spring in reverse: the card settles back flat. */
   transition: transform 240ms var(--spring), box-shadow 200ms var(--ease), border-radius 200ms var(--ease); }
 /* Manager unlock: the order card lifts off the flat layout, gains depth and a thin gold edge. */
 /* In dark mode shadows barely read on black, so the lifted card also steps up to the lighter surface. */
 .panel--managing { transform: translate(-10px, 0) scale(0.975); border-radius: 18px; box-shadow: var(--lift-shadow); background: var(--lift-bg); }
-.panel__no { padding: 22px 36px 0; min-height: 40px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: var(--ink-3); }
+.panel__no { padding: var(--sp-4) var(--sp-5) 0; min-height: var(--sp-6); display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-xs); color: var(--ink-3); }
 .panel__keys { display: flex; gap: 4px; }
 .panel__no--manager { color: var(--ink); font-weight: 500; background: var(--chip); margin: 12px 24px 0; padding: 6px 12px 6px 14px; border-radius: 12px; }
 .panel__no--manager .panel__back { margin: 0; }
 .panel__back { min-height: 44px; margin: -12px -12px -12px 0; padding: 0 12px; border-radius: 10px; font-size: 14px; font-weight: 500; color: var(--ink-2); }
-.panel__lines { flex: 1; min-height: 0; overflow-y: auto; padding: 22px 36px 0; display: flex; flex-direction: column; gap: 24px; }
-.line { text-align: left; display: flex; gap: 18px; align-items: baseline; min-height: 48px; }
+.panel__lines { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-4) var(--sp-5) 0; display: flex; flex-direction: column; gap: var(--sp-4); }
+.line { text-align: left; display: flex; gap: var(--sp-4); align-items: baseline; min-height: var(--tap); }
 .line__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-.line__name { font-size: 16px; font-weight: 500; letter-spacing: -0.3px; }
-.line__sub { font-size: 14px; color: var(--ink-2); line-height: 1.5; letter-spacing: -0.1px; }
-.line__price { font-size: 16px; letter-spacing: -0.2px; }
+.line__name { font-size: var(--fs-b); font-weight: 500; letter-spacing: -0.3px; }
+.line__sub { font-size: var(--fs-s); color: var(--ink-2); line-height: 1.5; letter-spacing: -0.1px; }
+.line__price { font-size: var(--fs-b); letter-spacing: -0.2px; }
 /* Sent to the kitchen: locked, so it reads quieter than lines still being taken. */
 .line--sent .line__name, .line--sent .line__price { color: var(--ink-2); }
 .line--sent .line__sub { color: var(--ink-3); }
@@ -269,14 +310,15 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .status--cooking::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
 .status--done { border: 1px solid var(--line); color: var(--ok-ink); padding: 3px 9px; }
 .status--done::before { content: '✓ '; }
-.panel__foot { padding: 28px 36px 36px; display: flex; flex-direction: column; gap: 20px; }
-.total { font-size: 46px; font-weight: 500; letter-spacing: -2px; line-height: 1; }
+.panel__foot { padding: var(--sp-4) var(--sp-5) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-4); }
+.total { font-size: var(--fs-2xl); font-weight: 500; letter-spacing: -2px; line-height: 1; }
 .cta { width: 100%; height: 72px; border-radius: 14px; background: var(--primary); color: var(--on-primary); font-size: 18px; font-weight: 500; letter-spacing: -0.3px; }
 .cta:disabled { opacity: 0.28; }
-.empty { margin: auto 0; display: flex; flex-direction: column; gap: 8px; color: var(--ink-3); font-size: 15px; line-height: 1.5; letter-spacing: -0.2px; }
+.panel__foot .cta { height: var(--cta-h); font-size: var(--fs-l); }
+.empty { margin: auto 0; display: flex; flex-direction: column; gap: var(--sp-2); color: var(--ink-3); font-size: var(--fs-m); line-height: 1.5; letter-spacing: -0.2px; }
 .empty b { color: var(--ink-2); font-weight: 500; }
 
-.paid { flex: 1; padding: 22px 36px 0; display: flex; flex-direction: column; justify-content: center; gap: 10px; animation: rise 220ms var(--ease); }
+.paid { flex: 1; padding: var(--sp-4) var(--sp-5) 0; display: flex; flex-direction: column; justify-content: center; gap: 10px; animation: rise 220ms var(--ease); }
 .paid__label { font-size: 15px; color: var(--ink-2); }
 .paid__big { font-size: 64px; font-weight: 500; letter-spacing: -3px; line-height: 1; }
 .paid__sub { font-size: 14px; color: var(--ink-3); }
@@ -294,9 +336,9 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 /* ---------- sheets ---------- */
 .scrim { position: fixed; inset: 0; background: var(--scrim); animation: fade 160ms linear; }
 .sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 86dvh; display: flex; flex-direction: column; background: var(--surface); border-radius: 22px 22px 0 0; box-shadow: var(--sheet-shadow); animation: sheet-in 240ms var(--ease); }
-/* On the Register a sheet takes the menu's side only and stops at the order panel (404px),
+/* On the Register a sheet takes the menu's side only and stops at the order panel (--panel-w),
    so nothing slides under the panel and the order stays in view beside the extras. */
-.register .scrim, .register .sheet { right: 404px; z-index: 2; }
+.register .scrim, .register .sheet { right: var(--panel-w); z-index: 2; }
 .sheet__body { flex: 1; min-height: 0; overflow-y: auto; padding: 44px 80px 0; display: flex; flex-direction: column; gap: 34px; }
 .sheet__title { display: flex; align-items: baseline; gap: 16px; }
 .sheet__title h1 { margin: 0; font-size: 30px; font-weight: 500; letter-spacing: -1px; }
@@ -418,10 +460,6 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 
 /* ---------- smaller tablets / phones in landscape ---------- */
 @media (max-width: 1000px) {
-  .register__head, .menu { padding-left: 24px; padding-right: 24px; }
-  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .panel { flex-basis: 340px; width: 340px; }
-  .panel__no, .panel__lines, .panel__foot, .paid, .panel__stamp, .discounts { padding-left: 24px; padding-right: 24px; }
   .sheet__body, .sheet__foot { padding-left: 28px; padding-right: 28px; }
   .toast { left: 24px; }
 }
@@ -438,12 +476,12 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 }
 
 /* ---------- phones (portrait): order stacks under the menu ---------- */
-@media (max-width: 700px) {
+/* Above this the order stays beside the menu and everything scales down instead. */
+@media (max-width: 560px) {
+  .register { --panel-w: 0px; }
   .register .scrim, .register .sheet { right: 0; } /* the panel is under the menu here: full width, on top */
   .register__body { flex-direction: column; }
-  .register__head, .menu { padding-left: 16px; padding-right: 16px; }
-  .menu { flex: 1 1 50%; padding-bottom: 16px; gap: 16px; }
-  .grid { grid-template-columns: minmax(0, 1fr); }
+  .menu { flex: 1 1 50%; }
   .hint { display: none; }
   .cats { overflow-x: auto; }
   .panel { flex: 0 0 auto; width: 100%; max-height: 46%; box-shadow: 0 -1px 0 rgba(127, 127, 127, 0.2); }
