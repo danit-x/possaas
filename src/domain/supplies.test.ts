@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { owedLong, paidOutBetween, payment, suppliersFrom, waited } from './supplies.ts';
+import { owedLong, paidOutBetween, payment, payOutSummary, suppliersFrom, waited } from './supplies.ts';
 
 const day = (d: number, h = 9) => new Date(2026, 10, d, h).getTime();
 const actor = { id: 'm', name: 'Ravi', role: 'manager' };
@@ -82,4 +82,22 @@ test('how long a debt has waited, and when it is long', () => {
   assert.equal(owedLong(day(1), day(10)), true);
   assert.equal(owedLong(day(8), day(10)), false);
   assert.equal(owedLong(null, day(10)), false);
+});
+
+test("the Owner view's Pay out box: today's pay-outs, still owed, and the debt waiting longest", () => {
+  assert.equal(payOutSummary([], day(12, 5), day(12, 20)), null, 'no suppliers: no box');
+  const events = [
+    add('nimal', 'Nimal'), add('bread', 'Bread'), add('gas', 'Gas'),
+    bill('bread', 800000, day(3)),
+    bill('nimal', 2450000, day(11)), pay('nimal', 2450000, day(12, 10)),
+    pay('gas', 550000, day(12, 11), 'bank', 550000),
+    bill('nimal', 1250000, day(12, 10)),
+  ];
+  const s = payOutSummary(events, day(12, 5), day(12, 20))!;
+  assert.equal(s.today.drawer, 2450000);
+  assert.equal(s.today.bank, 550000);
+  assert.equal(s.owed, 2050000);
+  assert.deepEqual(s.owing.map((o) => o.name), ['Bread', 'Nimal']);
+  assert.equal(s.overdue?.name, 'Bread', 'owed 9 days');
+  assert.equal(payOutSummary(events.slice(0, 4), day(3, 5), day(4))!.overdue, null, 'a day old: no warning');
 });

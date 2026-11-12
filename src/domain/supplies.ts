@@ -149,3 +149,27 @@ export function waited(since: number, now: number): string {
 export const LONG_OWED_DAYS = 7;
 export const owedLong = (since: number | null, now: number): boolean =>
   since !== null && now - since >= LONG_OWED_DAYS * 86_400_000;
+
+/** The Owner view's Pay out box: today's pay-outs, what is still owed, and the debt that has waited longest. */
+export interface PayOutSummary {
+  today: PaidOut;
+  owed: Cents;
+  /** Owed suppliers, the longest waiting first. */
+  owing: Supplier[];
+  /** The longest-waiting debt, when it is old enough to say so. */
+  overdue: Supplier | null;
+}
+
+/** Null when the shop has no suppliers yet: no box at all. `dayStart`: the business day's start (cashUp's businessDayStart). */
+export function payOutSummary(events: readonly { type: string }[], dayStart: number, now: number): PayOutSummary | null {
+  const suppliers = suppliersFrom(events);
+  if (!suppliers.length) return null;
+  const owing = suppliers.filter((s) => s.owed > 0);
+  const oldest = owing[0] ?? null;
+  return {
+    today: paidOutBetween(events, dayStart, now + 1),
+    owed: owing.reduce((sum, s) => sum + s.owed, 0),
+    owing,
+    overdue: oldest && owedLong(oldest.owedSince, now) ? oldest : null,
+  };
+}

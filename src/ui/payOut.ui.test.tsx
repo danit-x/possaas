@@ -56,3 +56,20 @@ test('Close the day: cash paid from the drawer is expected out of it, not "short
   await user.type(screen.getByLabelText('Cash counted now'), '32500');
   expect(screen.getByRole('status').textContent).toBe('Exact');
 });
+
+test("Owner view: the Pay out box says today's pay-outs and what is still owed; one tap opens Pay out", async () => {
+  const long = Date.now() - 9 * 86_400_000;
+  appendEvent({ type: 'supply.supplier_set', at: long - 60_000, orderNumber: 0, actor, supplierId: 'bread', name: 'Bakery' });
+  appendEvent({ type: 'supply.billed', at: long, orderNumber: 0, actor, supplierId: 'bread', amount: 1350000 });
+  appendEvent({ type: 'supply.supplier_set', at: Date.now() - 60_000, orderNumber: 0, actor, supplierId: 'sunil', name: 'Sunil' });
+  appendEvent({ type: 'supply.paid', at: Date.now() - 30_000, orderNumber: 0, actor, supplierId: 'sunil', amount: 2450000, from: 'drawer', spot: 2450000 });
+  history.replaceState(null, '', '/#owner');
+  const user = userEvent.setup();
+  render(<Root />);
+  const box = await screen.findByRole('button', { name: 'Pay out: Rs 24,500 today, Rs 13,500 still owed' });
+  expect(box.textContent).toContain('From the drawer');
+  expect(box.textContent).toContain('Bakery unpaid 9 days');
+  await user.click(box);
+  expect(await screen.findByRole('heading', { name: 'Pay out' })).toBeTruthy();
+  expect(location.hash).toBe('#payout');
+});
