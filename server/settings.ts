@@ -29,8 +29,6 @@ export interface ShopSettings {
   cloudSecret?: string;
   /** The counter is taking online orders. */
   onlineOpen?: boolean;
-  /** The device Pay out from the owner's phone is stored under (made the first time one comes). */
-  phoneDeviceId?: string;
 }
 
 export function settingsFile(file: string) {

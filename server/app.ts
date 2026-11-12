@@ -46,11 +46,6 @@ export interface AppOptions {
   fleet?: Fleet | null;
   /** Before a device's first pull: events to add once (the shop's menu, server/firstMenu.ts). */
   firstMenu?: (device: Device) => Promise<SyncedEvent[]>;
-  /**
-   * Events stored by the server itself (Pay out from the owner's phone, server/inbox.ts): the app
-   * hands back how to stream them to the shop's devices and pass them on, as if a device pushed them.
-   */
-  incoming?: (deliver: (tenantId: string, stored: SyncedEvent[]) => void) => void;
   now?: () => number;
 }
 
@@ -126,7 +121,7 @@ interface Stream {
 
 const send = (ws: WebSocket, m: StreamMessage) => ws.send(JSON.stringify(m));
 
-export function createApp({ store, staticDir, printer, onStored, online, cloudStatus, shop, setup, version, updating, fleet, firstMenu, incoming, now = Date.now }: AppOptions): Server {
+export function createApp({ store, staticDir, printer, onStored, online, cloudStatus, shop, setup, version, updating, fleet, firstMenu, now = Date.now }: AppOptions): Server {
   /** Open streams per shop. A shop's events never go to another shop's devices. */
   const streams = new Map<string, Set<Stream>>();
   /** Wrong PIN guesses per device. 10,000 PINs: without a brake, guessing would take minutes. */
@@ -154,11 +149,6 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
       else for (const data of events) send(st.ws, { type: 'event', data });
     }
   };
-
-  incoming?.((tenantId, stored) => {
-    broadcast(tenantId, stored);
-    if (stored.length) onStored?.(tenantId, stored.map((s) => s.event));
-  });
 
   const authenticate = async (req: IncomingMessage, url: URL): Promise<Device> => {
     const token = bearer(req, url);

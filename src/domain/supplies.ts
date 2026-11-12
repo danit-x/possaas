@@ -167,7 +167,7 @@ export function payOutSummary(events: readonly { type: string }[], dayStart: num
   const owing = suppliers.filter((s) => s.owed > 0);
   const oldest = owing[0] ?? null;
   return {
-    // The whole business day: a payment made on this phone a moment ago counts too.
+    // The whole business day: a payment made after the Owner view loaded counts too.
     today: paidOutBetween(events, dayStart, dayStart + 24 * 60 * 60_000),
     owed: owing.reduce((sum, s) => sum + s.owed, 0),
     owing,

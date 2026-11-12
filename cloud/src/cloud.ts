@@ -1,7 +1,6 @@
 import { PULL_LIMIT, PUSH_BATCH, type ApiError, type PullResponse, type SyncedEvent } from '../../src/domain/sync.ts';
 import { validatePush } from '../../server/validate.ts';
 import { HttpError, json, sha256Hex } from './http.ts';
-import { inboxRoutes } from './inbox.ts';
 import { onlineRoutes } from './online.ts';
 import { projectSales } from './sales.ts';
 
@@ -124,8 +123,6 @@ export function createCloud(db: D1Like, options: CloudOptions | (() => number) =
     if (url.pathname === '/api/v1/health' && req.method === 'GET') return json(200, { ok: true, serverTime: now() });
     const online = await onlineRoutes(req, url, { db, now, ...order, authenticate });
     if (online) return online;
-    const inbox = await inboxRoutes(req, url, { db, now, authenticate });
-    if (inbox) return inbox;
 
     if (url.pathname === '/api/v1/replica') {
       const device = await authenticate(req, ['shop_server']);
