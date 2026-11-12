@@ -76,8 +76,9 @@ export function Menu({ category, onCategory, onQuickAdd, onCustomise, hint, edit
   return (
     <>
       <nav className="cats" aria-label="Menu">
-        {tabs.map((c) => (
-          <button key={c.id} type="button" className="pill" aria-pressed={shown === c.id} onClick={() => onCategory(c.id)}>
+        {tabs.map((c, i) => (
+          <button key={c.id} type="button" className="pill" aria-pressed={shown === c.id} onClick={() => onCategory(c.id)}
+            title={i < 9 ? `Alt+${i + 1}` : undefined}>
             {shortName(c.name)}
           </button>
         ))}
