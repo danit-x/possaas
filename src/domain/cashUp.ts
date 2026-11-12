@@ -2,6 +2,7 @@ import type { Actor } from './auth.ts';
 import type { OrderEvent } from './events.ts';
 import { fmt } from './money.ts';
 import { twoCols, type ReceiptLine, type ShopHeader } from './receipt.ts';
+import { paidOutBetween, type PaidOut } from './supplies.ts';
 import type { Cents, Tender } from './types.ts';
 
 /**
@@ -29,6 +30,8 @@ export interface DayCount {
   /** Sent items a manager cancelled, and discounts or free orders given (each still standing). */
   voids: number;
   discounts: number;
+  /** Paid to suppliers (Pay out). Closes kept before Pay out have none. */
+  paidOut?: PaidOut;
 }
 
 const TENDERS: Tender[] = ['cash', 'transfer', 'card', 'qr', 'comp'];
@@ -66,11 +69,11 @@ export function dayCount(events: readonly { type: string }[], from: number, to: 
     byTender[p.tender].orders += 1;
     total += p.total;
   }
-  return { from, to, orders: paid.filter(Boolean).length, byTender, total, voids, discounts };
+  return { from, to, orders: paid.filter(Boolean).length, byTender, total, voids, discounts, paidOut: paidOutBetween(events, from, to) };
 }
 
-/** What the drawer should hold: the cash it started with, plus the cash taken. */
-export const expectedCash = (d: DayCount, float: Cents): Cents => float + d.byTender.cash.cents;
+/** What the drawer should hold: the cash it started with, plus the cash taken, less what was paid out of it. */
+export const expectedCash = (d: DayCount, float: Cents): Cents => float + d.byTender.cash.cents - (d.paidOut?.drawer ?? 0);
 
 /** "Rs 200 short", "Rs 50 over", "Exact". */
 export const difference = (counted: Cents, expected: Cents): string =>
@@ -129,14 +132,22 @@ export function dayReport(d: DayCount, o: { float: Cents | null; counted: Cents 
   const sales: ReportRow[] = TENDERS.filter((t) => d.byTender[t].orders)
     .map((t) => ({ label: `${TENDER_NAMES[t]} (${d.byTender[t].orders})`, value: fmt(d.byTender[t].cents) }));
   sales.push({ label: `Total (${d.orders} ${d.orders === 1 ? 'order' : 'orders'})`, value: fmt(d.total), strong: true });
+  const out = d.paidOut;
+  const paidOut: ReportRow[] = !out?.to.length ? [] : [
+    ...out.to.map((p) => ({ label: p.from === 'bank' ? `${p.name} (bank)` : p.name, value: fmt(p.amount) })),
+    { label: 'Total paid out', value: fmt(out.drawer + out.bank), strong: true },
+  ];
   const changes: ReportRow[] = [
     { label: 'Items cancelled', value: String(d.voids) },
     { label: 'Discounts / free', value: String(d.discounts) },
   ];
+  const fromDrawer = d.paidOut?.drawer ?? 0;
+  const drawerRow: ReportRow[] = fromDrawer ? [{ label: 'Paid from the drawer', value: `- ${fmt(fromDrawer)}` }] : [];
   const cash: ReportRow[] = o.float === null
-    ? [{ label: 'Cash taken', value: fmt(d.byTender.cash.cents) }, { label: 'Cash counted', value: 'Not counted' }]
+    ? [{ label: 'Cash taken', value: fmt(d.byTender.cash.cents) }, ...drawerRow, { label: 'Cash counted', value: 'Not counted' }]
     : [
       { label: 'Cash at opening', value: fmt(o.float) },
+      ...drawerRow,
       { label: 'Cash expected', value: fmt(expectedCash(d, o.float)) },
       ...(o.counted === null ? [] : [
         { label: 'Cash counted', value: fmt(o.counted) },
@@ -146,7 +157,12 @@ export function dayReport(d: DayCount, o: { float: Cents | null; counted: Cents 
   return {
     day: `${new Date(d.from).toLocaleDateString('en-GB', { weekday: 'long' })} ${new Date(d.from).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
     period: `${when(d.from)} - ${when(d.to)}`,
-    sections: [{ title: 'Sales', rows: sales }, { title: 'Changes', rows: changes }, { title: 'Cash', rows: cash }],
+    sections: [
+      { title: 'Sales', rows: sales },
+      ...(paidOut.length ? [{ title: 'Paid out', rows: paidOut }] : []),
+      { title: 'Changes', rows: changes },
+      { title: 'Cash', rows: cash },
+    ],
     closed: o.by && o.closedAt !== null ? `Closed by ${o.by} at ${clock(o.closedAt)}` : 'Nobody closed the day',
   };
 }
@@ -186,6 +202,8 @@ export function pastDays(events: readonly { type: string; at?: number }[], now: 
   const closes = new Map(closesFrom(events).map((c) => [c.from, c]));
   const today = businessDayStart(now);
   const byDay = new Map<number, { type: string }[]>();
+  // Pay-outs are counted by their own time (and an Undo may come on another day): every day sees them all.
+  const supply = events.filter((e) => e.type.startsWith('supply.'));
   for (const e of events) {
     if (!e.type.startsWith('order.') || e.at === undefined) continue;
     const day = businessDayStart(e.at);
@@ -198,7 +216,7 @@ export function pastDays(events: readonly { type: string; at?: number }[], now: 
       return [{ from, close, count: close.count, difference: difference(close.counted, expectedCash(close.count, close.float)),
         report: dayReport(close.count, { float: close.float, counted: close.counted, by: close.actor.name, closedAt: close.at }) }];
     }
-    const count = dayCount(byDay.get(from) ?? [], from, nextDay(from));
+    const count = dayCount([...(byDay.get(from) ?? []), ...supply], from, nextDay(from));
     return count.orders ? [{ from, close, count, difference: null, report: dayReport(count, { float: null, counted: null, by: null, closedAt: null }) }] : [];
   });
 }

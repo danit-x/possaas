@@ -18,6 +18,7 @@
   --ok: #30A46C;
   /* Green for small text: #30A46C is only 3.2:1 on white, this is 5.3:1. */
   --ok-ink: #1E7A4F;
+  --warn-ink: #9A5B00;
   --warn: #E8A94B;
   --bad: #E5484D;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -48,6 +49,7 @@
     --sheet-shadow: 0 -1px 0 rgba(255, 255, 255, 0.06);
     --scrim: rgba(0, 0, 0, 0.55);
     --ok-ink: #30A46C;
+    --warn-ink: #E8A94B;
     --gold: #D4B26A;
     --lift-shadow: 0 0 0 1px var(--gold), 0 24px 56px rgba(0, 0, 0, 0.7);
     --lift-bg: #1C1C1E;
@@ -72,6 +74,7 @@
   --sheet-shadow: 0 -1px 0 rgba(255, 255, 255, 0.06);
   --scrim: rgba(0, 0, 0, 0.55);
   --ok-ink: #30A46C;
+  --warn-ink: #E8A94B;
   --gold: #D4B26A;
   --lift-shadow: 0 0 0 1px var(--gold), 0 24px 56px rgba(0, 0, 0, 0.7);
   --lift-bg: #1C1C1E;
@@ -757,6 +760,33 @@ form.setup__row { align-items: flex-end; flex-wrap: wrap; }
 .closeday__diff--off { color: var(--bad); }
 .closeday__print { flex: none; width: auto; min-width: 200px; padding: 0 32px; }
 .closeday__done { margin: 0; font-size: 15px; color: var(--ink-2); }
+.closeday__after { display: block; margin-top: 2px; font-size: 14px; color: var(--ink-3); }
+/* #payout: suppliers left (the longest owed on top), the chosen one right. */
+.payout { max-width: 960px; }
+.payout__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 24px; align-items: start; }
+.payout__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.payout__row { width: 100%; min-height: 64px; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 14px; text-align: left; color: var(--ink); transition: background 150ms var(--ease); }
+.payout__row:hover { background: var(--chip); }
+.payout__row[aria-pressed='true'] { background: var(--surface); box-shadow: var(--card-shadow); }
+.payout__name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.payout__name b { font-size: 17px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.payout__name span { font-size: 14px; color: var(--ink-2); }
+.payout__name .payout__long, .payout__long { color: var(--warn-ink); font-weight: 500; }
+.payout__owed { font-size: 18px; font-weight: 600; }
+.payout__owed--none { font-size: 15px; font-weight: 400; color: var(--ink-3); }
+.payout__add { color: var(--ink-2); font-size: 15px; font-weight: 500; min-height: 56px; }
+.payout__panel { display: flex; flex-direction: column; gap: 16px; padding: 24px; border-radius: 18px; background: var(--surface); box-shadow: var(--card-shadow); animation: rise 180ms var(--ease); }
+.payout__title { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.4px; }
+.payout__due { margin: -10px 0 0; font-size: 16px; color: var(--ink-2); }
+.payout__due b { font-size: 28px; font-weight: 600; letter-spacing: -0.6px; color: var(--ink); }
+.payout__keys { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.payout__key { width: 100%; height: 60px; min-height: 60px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; font-size: 16px; }
+.payout__key kbd { border-color: currentColor; color: inherit; opacity: 0.6; }
+.payout__from { display: flex; gap: 8px; }
+.payout__from .pill { min-height: 48px; background: var(--chip); }
+.payout__from .pill[aria-pressed='true'] { background: var(--primary); color: var(--on-primary); }
+.payout__history { margin-top: 4px; }
+@media (max-width: 720px) { .payout__grid { grid-template-columns: 1fr; } }
 
 /* Serving list (pay-first counter): the count leads, it is what the server reads first. */
 .serve .ticket__no { font-size: 40px; }
