@@ -35,8 +35,8 @@ export function CloseDay({ onBack }: { onBack: () => void }) {
   const expected = expectedCash(day, floatCents ?? 0);
   const paidWays = (['cash', 'transfer', 'card', 'qr', 'comp'] as const).filter((t) => day.byTender[t].orders);
   /** Pay out today: all of it, and the part that left the drawer (it is not "short"). */
-  const fromDrawer = day.paidOut?.drawer ?? 0;
-  const paidOut = fromDrawer + (day.paidOut?.bank ?? 0);
+  /** Cash out today: it left the drawer, so it is not "short". */
+  const cashOut = day.cashOut?.total ?? 0;
 
   const canClose = floatCents !== null && countedCents !== null;
   /** A manager or the owner signs the close; anyone else at the screen is asked for one's PIN. */
@@ -69,8 +69,8 @@ export function CloseDay({ onBack }: { onBack: () => void }) {
           <div className="closeday__total"><dt>Total <span>{day.orders} {day.orders === 1 ? 'order' : 'orders'}</span></dt><dd className="num">{fmt(day.total)}</dd></div>
           <div><dt>Items cancelled</dt><dd className="num">{day.voids}</dd></div>
           <div><dt>Discounts and free orders</dt><dd className="num">{day.discounts}</dd></div>
-          {paidOut > 0 && (
-            <div><dt>Paid out <span>{day.paidOut!.to.length} {day.paidOut!.to.length === 1 ? 'payment' : 'payments'}</span></dt><dd className="num">{fmt(paidOut)}</dd></div>
+          {cashOut > 0 && (
+            <div><dt>Cash out <span>{day.cashOut!.lines.length} {day.cashOut!.lines.length === 1 ? 'item' : 'items'}</span></dt><dd className="num">{fmt(cashOut)}</dd></div>
           )}
         </dl>
 
@@ -79,7 +79,7 @@ export function CloseDay({ onBack }: { onBack: () => void }) {
             <input className="num" inputMode="numeric" value={float} onChange={(e) => setFloat(e.target.value)} placeholder="0" /></label>
           <p className="closeday__expected">
             Cash expected now <b className="num">Rs {fmt(expected)}</b>
-            {fromDrawer > 0 && <span className="closeday__after">after Rs {fmt(fromDrawer)} paid out of the drawer</span>}
+            {cashOut > 0 && <span className="closeday__after">after Rs {fmt(cashOut)} cash out</span>}
           </p>
           <label className="setup__field"><span>Cash counted now</span>
             <input className="num" inputMode="numeric" value={counted} onChange={(e) => setCounted(e.target.value)} placeholder="Count it, then type it" autoFocus /></label>

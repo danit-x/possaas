@@ -88,22 +88,23 @@ test('past days: closed days with their difference, unclosed days from their sal
   assert.equal(days[1].report.closed, 'Closed by Ravi at 22:00');
 });
 
-test('Pay out: cash paid from the drawer is not "short"; the report names each payment', () => {
-  const supplier = { id: 'p0', shopId: 's', type: 'supply.supplier_set', at: at(6), actor, orderNumber: 0, supplierId: 'nimal', name: 'Nimal · chicken' };
+test('Cash out: what left the drawer is not "short"; the report lists each line as written', () => {
+  const taken = { ...ev('cash.out', at(11), { name: 'Gas', amount: 550000 }), orderNumber: 0 };
   const events = [
-    supplier,
     ev('order.paid', at(12), { total: 5200000, tender: 'cash' }),
-    { ...ev('supply.paid', at(10), { supplierId: 'nimal', amount: 2450000, from: 'drawer', spot: 0 }), orderNumber: 0 },
-    { ...ev('supply.paid', at(11), { supplierId: 'nimal', amount: 550000, from: 'bank', spot: 0 }), orderNumber: 0 },
+    { ...ev('cash.out', at(7, 40), { name: 'Fish', amount: 450000 }), orderNumber: 0 },
+    { ...ev('cash.out', at(14, 30), { name: 'Bank', amount: 2000000 }), orderNumber: 0 },
+    taken,
+    { ...ev('cash.out_undone', at(11, 5), { undoneEventId: taken.id }), orderNumber: 0 }, // taken off: not counted
   ];
   const d = dayCount(events, at(5), at(5, 0, 22));
-  assert.equal(expectedCash(d, 500000), 3250000, 'opening 5,000 + cash sales 52,000 - paid from the drawer 24,500');
+  assert.equal(expectedCash(d, 500000), 3250000, 'opening 5,000 + cash sales 52,000 - cash out 24,500');
   const report = dayReport(d, { float: 500000, counted: 3250000, by: 'Ravi', closedAt: at(23) });
-  assert.deepEqual(report.sections.find((s) => s.title === 'Paid out')?.rows.map((r) => [r.label, r.value]), [
-    ['Nimal · chicken', '24,500'], ['Nimal · chicken (bank)', '5,500'], ['Total paid out', '30,000'],
+  assert.deepEqual(report.sections.find((s) => s.title === 'Cash out')?.rows.map((r) => [r.label, r.value]), [
+    ['Fish', '4,500'], ['Bank', '20,000'], ['Total cash out', '24,500'],
   ]);
   assert.deepEqual(report.sections.find((s) => s.title === 'Cash')?.rows.map((r) => r.value), ['5,000', '- 24,500', '32,500', '32,500', 'Exact']);
-  // A close kept before Pay out (no paidOut) still reads as before.
-  const { paidOut: _none, ...old } = d;
+  // A close kept before Cash out (no cashOut) still reads as before.
+  const { cashOut: _none, ...old } = d;
   assert.equal(expectedCash(old, 500000), 5700000);
 });

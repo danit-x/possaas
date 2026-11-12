@@ -46,8 +46,8 @@ export const mayRecord = (role: Role, type: string): boolean => {
   if (type.startsWith('menu.')) return managesRole(role);
   // Closing the day counts the cash: the cashier who took it does not sign it off.
   if (type === 'day.closed') return managesRole(role);
-  // Paying suppliers takes money out of the drawer or the bank: a manager or the owner.
-  if (type.startsWith('supply.')) return managesRole(role);
+  // Cash out takes money out of the drawer: a manager or the owner writes it down.
+  if (type.startsWith('cash.')) return managesRole(role);
   return false;
 };
 

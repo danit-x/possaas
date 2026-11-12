@@ -2,7 +2,7 @@ import type { Actor } from './auth.ts';
 import type { DayClosedEvent } from './cashUp.ts';
 import type { OrderEvent } from './events.ts';
 import type { MenuEvent } from './menuEdits.ts';
-import type { SupplyEvent } from './supplies.ts';
+import type { CashOutEvent } from './cashOut.ts';
 
 /**
  * The sync contract between devices and the server (SCRUM-59, 60, 29, 30).
@@ -28,8 +28,8 @@ export type KitchenEvent =
   /** A pay-first counter handed over (or took back) one portion of a line. */
   | (KitchenBase & { type: 'kitchen.served' | 'kitchen.unserved'; lineId: string });
 
-/** Everything that syncs. Menu changes: src/domain/menuEdits.ts; the day's close: src/domain/cashUp.ts; pay out: src/domain/supplies.ts. */
-export type SyncEvent = OrderEvent | KitchenEvent | MenuEvent | DayClosedEvent | SupplyEvent;
+/** Everything that syncs. Menu changes: src/domain/menuEdits.ts; the day's close: src/domain/cashUp.ts; cash out: src/domain/cashOut.ts. */
+export type SyncEvent = OrderEvent | KitchenEvent | MenuEvent | DayClosedEvent | CashOutEvent;
 
 /** An event before the log gives it an id and stamps the shop. */
 export type NewSyncEvent = SyncEvent extends infer E ? (E extends SyncEvent ? Omit<E, 'id' | 'shopId'> : never) : never;

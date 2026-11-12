@@ -799,42 +799,38 @@ form.setup__row { align-items: flex-end; flex-wrap: wrap; }
 .closeday__print { flex: none; width: auto; min-width: 200px; padding: 0 32px; }
 .closeday__done { margin: 0; font-size: 15px; color: var(--ink-2); }
 .closeday__after { display: block; margin-top: 2px; font-size: 14px; color: var(--ink-3); }
-/* Owner view: the Pay out box, first under Today. One tap opens Pay out. */
-.payoutbox { display: flex; flex-direction: column; gap: 6px; width: 100%; padding: 18px 22px; border-radius: 16px; background: var(--surface); box-shadow: var(--card-shadow); text-align: left; color: var(--ink); animation: rise 220ms var(--ease) both; transition: transform 120ms var(--ease); }
-.payoutbox:active { transform: scale(0.99); }
-.payoutbox__head { display: flex; justify-content: space-between; align-items: center; }
-.payoutbox__go { font-size: 24px; line-height: 1; color: var(--ink-3); }
-.payoutbox__big { font-size: 30px; font-weight: 500; letter-spacing: -0.8px; margin-bottom: 4px; }
-.payoutbox__row { display: flex; justify-content: space-between; font-size: 15px; color: var(--ink-2); }
-.payoutbox__row .num { color: var(--ink); }
-.payoutbox__owed { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 16px; color: var(--ink); font-weight: 500; }
-.payoutbox__warn { font-size: 14px; font-weight: 500; color: var(--warn-ink); }
-/* #payout: suppliers left (the longest owed on top), the chosen one right. */
-.payout { max-width: 960px; }
-.payout__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 24px; align-items: start; }
-.payout__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.payout__row { width: 100%; min-height: 64px; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 14px; text-align: left; color: var(--ink); transition: background 150ms var(--ease); }
-.payout__row:hover { background: var(--chip); }
-.payout__row[aria-pressed='true'] { background: var(--surface); box-shadow: var(--card-shadow); }
-.payout__name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.payout__name b { font-size: 17px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.payout__name span { font-size: 14px; color: var(--ink-2); }
-.payout__name .payout__long, .payout__long { color: var(--warn-ink); font-weight: 500; }
-.payout__owed { font-size: 18px; font-weight: 600; }
-.payout__owed--none { font-size: 15px; font-weight: 400; color: var(--ink-3); }
-.payout__add { color: var(--ink-2); font-size: 15px; font-weight: 500; min-height: 56px; }
-.payout__panel { display: flex; flex-direction: column; gap: 16px; padding: 24px; border-radius: 18px; background: var(--surface); box-shadow: var(--card-shadow); animation: rise 180ms var(--ease); }
-.payout__title { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.4px; }
-.payout__due { margin: -10px 0 0; font-size: 16px; color: var(--ink-2); }
-.payout__due b { font-size: 28px; font-weight: 600; letter-spacing: -0.6px; color: var(--ink); }
-.payout__keys { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.payout__key { width: 100%; height: 60px; min-height: 60px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; font-size: 16px; }
-.payout__key kbd { border-color: currentColor; color: inherit; opacity: 0.6; }
-.payout__from { display: flex; gap: 8px; }
-.payout__from .pill { min-height: 48px; background: var(--chip); }
-.payout__from .pill[aria-pressed='true'] { background: var(--primary); color: var(--on-primary); }
-.payout__history { margin-top: 4px; }
-@media (max-width: 720px) { .payout__grid { grid-template-columns: 1fr; } }
+/* Owner view: the Cash out box, first under Today. One tap opens Cash out. */
+.cashbox { display: flex; flex-direction: column; gap: 5px; width: 100%; padding: 21px; border-radius: 16px; background: var(--surface); box-shadow: var(--card-shadow); text-align: left; color: var(--ink); animation: rise 220ms var(--ease) both; }
+.cashbox__head { display: flex; justify-content: space-between; align-items: center; }
+.cashbox__go { font-size: 26px; line-height: 1; color: var(--ink-3); }
+.cashbox__big { font-size: 34px; font-weight: 500; letter-spacing: -1px; }
+.cashbox__sub { font-size: 15px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* #cashout: the paper list. One line to write, the names used before, today's lines and their total.
+   Spacing in golden steps (8, 13, 21, 34). */
+.cashout { gap: var(--sp-4); }
+.cashout__head { display: flex; align-items: baseline; justify-content: space-between; gap: 13px; flex-wrap: wrap; }
+.cashout__day { color: var(--ink-2); font-size: 15px; }
+.cashout__entry { display: flex; gap: 8px; }
+.cashout__entry input { flex: 1; min-width: 0; height: 56px; padding: 0 21px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-size: 19px; letter-spacing: -0.2px; }
+.cashout__entry input:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+.cashout__add { flex: none; width: auto; height: 56px; padding: 0 21px; display: inline-flex; align-items: center; gap: 8px; font-size: 16px; }
+.cashout__add kbd { border-color: currentColor; color: inherit; opacity: 0.6; }
+.cashout__error { margin: -8px 0 0; }
+.cashout__names { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -5px; }
+.cashout__name { background: var(--chip); color: var(--ink); min-height: 44px; }
+.cashout__list { list-style: none; margin: 0; padding: 0; border-radius: 16px; background: var(--surface); box-shadow: var(--card-shadow); overflow: hidden; }
+.cashout__row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 13px; min-height: 55px; padding: 0 8px 0 21px; border-bottom: 1px solid var(--line); animation: rise 180ms var(--ease) both; }
+.cashout__row:last-child { border-bottom: 0; }
+.cashout__what { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.cashout__what b { font-size: 17px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cashout__what span { flex: none; font-size: 13px; color: var(--ink-3); }
+.cashout__amount { font-size: 17px; }
+.cashout__off { width: 44px; height: 44px; border-radius: 10px; font-size: 21px; color: var(--ink-3); }
+.cashout__off:hover { background: var(--chip); color: var(--bad); }
+.cashout__empty { padding: 21px; color: var(--ink-3); font-size: 15px; }
+.cashout__total { margin: 0; padding: 13px 21px 0; display: flex; justify-content: space-between; align-items: baseline; }
+.cashout__total span { color: var(--ink-2); font-size: 15px; }
+.cashout__total b { font-size: 34px; font-weight: 500; letter-spacing: -1px; }
 
 /* Serving list (pay-first counter): the count leads, it is what the server reads first. */
 .serve .ticket__no { font-size: 40px; }

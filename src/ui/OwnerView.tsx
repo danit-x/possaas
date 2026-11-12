@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { PRODUCT_NAME } from '../domain/brand.ts';
 import { businessDayStart } from '../domain/cashUp.ts';
 import { rulesSuggestions, type Insight } from '../domain/insights.ts';
-import { payOutSummary, waited, type PayOutSummary } from '../domain/supplies.ts';
+import { cashOutsBetween, type CashOutDay } from '../domain/cashOut.ts';
 import { fmt } from '../domain/money.ts';
 import { useInstall } from '../services/ownerApp.ts';
 import { adminShop } from '../services/pairing.ts';
@@ -57,39 +57,28 @@ function Detail({ insight, onClose }: { insight: Insight; onClose: () => void })
   );
 }
 
+const clockOf = (t: number) => new Date(t).toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit' });
+
 /**
- * Pay out at a glance, first under Today: paid out today (drawer, bank), what is still owed,
- * and the debt that has waited longest. One tap: on the counter, the Pay out screen; elsewhere
- * (the phone), the list of who is owed and what was paid today.
+ * Cash out at a glance, first under Today: what left the drawer today and in how many lines.
+ * One tap: on the counter, the Cash out screen; elsewhere (the phone, the demo), the list itself.
  */
-function PayOutBox({ s, now, onOpen }: { s: PayOutSummary; now: number; onOpen: () => void }) {
-  const paid = s.today.drawer + s.today.bank;
-  const ways = ([['From the drawer', s.today.drawer], ['From the bank', s.today.bank]] as const).filter(([, c]) => c > 0);
+function CashOutBox({ day, onOpen }: { day: CashOutDay; onOpen: () => void }) {
+  const n = day.lines.length;
+  const items = n === 0 ? 'nothing yet today' : `${n} ${n === 1 ? 'item' : 'items'}`;
   return (
-    <button type="button" className="payoutbox" onClick={onOpen} aria-label={`Pay out: Rs ${fmt(paid)} today, Rs ${fmt(s.owed)} still owed`}>
-      <span className="payoutbox__head"><span className="owner__label">Pay out today</span><span aria-hidden className="payoutbox__go">›</span></span>
-      <span className="payoutbox__big num">Rs {fmt(paid)}</span>
-      {ways.map(([label, cents]) => (
-        <span key={label} className="payoutbox__row"><span>{label}</span><span className="num">{fmt(cents)}</span></span>
-      ))}
-      <span className="payoutbox__row payoutbox__owed"><span>Still owe</span><span className="num">{s.owed ? fmt(s.owed) : 'nothing'}</span></span>
-      {s.overdue && s.overdue.owedSince !== null && (
-        <span className="payoutbox__warn">{s.overdue.name} unpaid {waited(s.overdue.owedSince, now)}</span>
-      )}
+    <button type="button" className="cashbox" onClick={onOpen} aria-label={`Cash out today: Rs ${fmt(day.total)}, ${items}`}>
+      <span className="cashbox__head"><span className="owner__label">Cash out today</span><span aria-hidden className="cashbox__go">›</span></span>
+      <span className="cashbox__big num">Rs {fmt(day.total)}</span>
+      <span className="cashbox__sub">{day.lines.slice(-3).map((l) => l.name).join(', ') || items}{n > 3 ? ` and ${n - 3} more` : ''}</span>
     </button>
   );
 }
 
-/** The phone's list behind the box: who is owed (longest first), then today's payments. */
-const payOutList = (s: PayOutSummary, now: number): Insight => ({
-  id: 'payout', tone: 'info', title: 'Pay out', detail: '',
-  action: {
-    label: 'Open',
-    items: [
-      ...s.owing.map((o) => ({ primary: o.name, secondary: `Owed · ${o.owedSince === null ? '' : waited(o.owedSince, now)}`, amount: o.owed })),
-      ...s.today.to.map((p) => ({ primary: p.name, secondary: `Paid today · ${p.from === 'bank' ? 'bank' : 'drawer'}`, amount: p.amount })),
-    ],
-  },
+/** The list behind the box where there is no Cash out screen (the phone, the demo): today's lines, oldest first. */
+const cashOutList = (day: CashOutDay): Insight => ({
+  id: 'cashout', tone: 'info', title: `Cash out today · Rs ${fmt(day.total)}`, detail: '',
+  action: { label: 'Open', items: day.lines.map((l) => ({ primary: l.name, secondary: `${clockOf(l.at)} · ${l.by}`, amount: l.amount })) },
 });
 
 /**
@@ -117,13 +106,18 @@ export function OwnerView({ phone = false, onBack, shop }: {
     const shop = { events, now: at, clockOffMs };
     return { summary: rulesSuggestions.summary(shop), insights: rulesSuggestions.insights(shop) };
   }, [events, at, clockOffMs]);
-  const payOut = useMemo(() => (events ? payOutSummary(events, businessDayStart(at), at) : null), [events, at]);
-  const opened = open === 'payout' && payOut ? payOutList(payOut, at) : insights.find((i) => i.id === open) ?? null;
+  /** Today's cash out; no box at all for a shop that has never written one. */
+  const cashOut = useMemo(() => {
+    if (!events?.some((e) => e.type === 'cash.out')) return null;
+    const from = businessDayStart(at);
+    return cashOutsBetween(events, from, from + 24 * 60 * 60_000);
+  }, [events, at]);
+  const opened = open === 'cashout' && cashOut ? cashOutList(cashOut) : insights.find((i) => i.id === open) ?? null;
   /**
-   * The counter goes to the Pay out screen; the phone, the developer's views and the demo (made-up
-   * history the Pay out screen does not have) list it instead.
+   * The counter goes to the Cash out screen; the phone, the developer's views and the demo (made-up
+   * history the Cash out screen does not have) list it instead.
    */
-  const openPayOut = () => { if (!phone && !shop && !isDemo()) location.hash = '#payout'; else setOpen('payout'); };
+  const openCashOut = () => { if (!phone && !shop && !isDemo()) location.hash = '#cashout'; else setOpen('cashout'); };
 
   return (
     <div className="owner">
@@ -158,7 +152,7 @@ export function OwnerView({ phone = false, onBack, shop }: {
           )}
         </section>
 
-        {payOut && <PayOutBox s={payOut} now={at} onOpen={openPayOut} />}
+        {cashOut && <CashOutBox day={cashOut} onOpen={openCashOut} />}
 
         {offerInstall && install.kind === 'button' && (
           <p className="owner__install">

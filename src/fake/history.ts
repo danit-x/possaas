@@ -14,9 +14,8 @@ import { FAKE_SHOP_ID, FAKE_STAFF } from './data.ts';
  * insight has something to show: fewer sales than a usual same weekday, a
  * burst of voids by one manager, a slow kitchen in the last two hours, two
  * items running low, and one pizza nobody has ordered for three weeks.
- * Suppliers (Pay out): chicken every third morning, paid from the drawer at the next delivery;
- * bread every morning, paid by bank once a week but not for the last nine days (the Owner view's
- * warning); gas now and then, paid on the spot.
+ * Cash out, like the owner's paper list: fish and vegetables every morning, chicken every third
+ * day, gas now and then, and the day's cash to the bank in the afternoon.
  * Ravi closes most past days at 10:45 pm (Owner view → Past days): usually exact, now and then
  * a little short or over, and one day in seven nobody closes.
  * Nothing here is real, and none of it is ever synced.
@@ -50,14 +49,8 @@ export function demoHistory(now: number, shopId = FAKE_SHOP_ID): SyncEvent[] {
   let orderNumber = 1001;
   let n = 0;
   const id = (p: string) => `demo-${p}-${++n}`;
-  const supply = (supplierId: string, name: string, at: number) =>
-    events.push({ type: 'supply.supplier_set', id: id('supplier'), shopId, at, actor: ravi, orderNumber: 0, supplierId, name });
-  const start = new Date(today); start.setDate(start.getDate() - 36); start.setHours(8, 0, 0, 0);
-  supply('chicken', 'Sunil · chicken', start.getTime());
-  supply('bread', 'Bakery', start.getTime());
-  supply('gas', 'Gas', start.getTime());
-  let chickenOwed = 0;
-  let breadOwed = 0;
+  const cashOut = (name: string, amount: number, at: number) =>
+    events.push({ type: 'cash.out', id: id('cash'), shopId, at, actor: ravi, orderNumber: 0, name, amount });
 
   for (let back = 35; back >= 0; back--) {
     const day = new Date(today); day.setDate(day.getDate() - back);
@@ -69,24 +62,13 @@ export function demoHistory(now: number, shopId = FAKE_SHOP_ID): SyncEvent[] {
     let orders = Math.round((weekend ? 44 : 30) * (0.9 + rand() * 0.2));
     if (isToday) orders = Math.round(orders * 0.7); // a slow day
 
-    // Suppliers, before the day's sales (no random numbers: the sales stay as they were).
+    // Cash out, before the day's sales (no random numbers: the sales stay as they were).
     const at = (h: number, m = 0) => dayStart + (h * 60 + m) * MIN;
-    events.push({ type: 'supply.billed', id: id('bill'), shopId, at: at(7, 30), actor: ravi, orderNumber: 0, supplierId: 'bread', amount: 150000 });
-    breadOwed += 150000;
-    if (back % 7 === 3 && back >= 10) {
-      events.push({ type: 'supply.paid', id: id('pay'), shopId, at: at(9, 30), actor: ravi, orderNumber: 0, supplierId: 'bread', amount: breadOwed, from: 'bank', spot: 0 });
-      breadOwed = 0;
-    }
-    if (back % 3 === 0) {
-      if (chickenOwed) {
-        events.push({ type: 'supply.paid', id: id('pay'), shopId, at: at(9, 5), actor: ravi, orderNumber: 0, supplierId: 'chicken', amount: chickenOwed, from: 'drawer', spot: 0 });
-      }
-      chickenOwed = 1200000 + (back % 2) * 50000;
-      events.push({ type: 'supply.billed', id: id('bill'), shopId, at: at(9), actor: ravi, orderNumber: 0, supplierId: 'chicken', amount: chickenOwed });
-    }
-    if (back % 6 === 2) {
-      events.push({ type: 'supply.paid', id: id('pay'), shopId, at: at(10), actor: ravi, orderNumber: 0, supplierId: 'gas', amount: 550000, from: 'drawer', spot: 550000 });
-    }
+    cashOut('Fish', 400000 + (back % 4) * 50000, at(7, 40));
+    cashOut('Vegetables', 230000 + (back % 3) * 20000, at(8, 15));
+    if (back % 3 === 0) cashOut('Chicken', 1200000 + (back % 2) * 50000, at(9, 5));
+    if (back % 6 === 2) cashOut('Gas', 550000, at(11));
+    if (back % 2 === 1) cashOut('Bank', 2000000, at(16, 30));
 
     const menu = MENU.filter((m) => !(m.id === FORGOTTEN && back <= 21));
     const weights = menu.map((m) => POPULAR[m.id] ?? 1);

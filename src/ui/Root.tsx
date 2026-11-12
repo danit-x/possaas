@@ -11,7 +11,7 @@ import { Kitchen } from './Kitchen.tsx';
 import { LockScreen } from './LockScreen.tsx';
 import { MenuView } from './MenuView.tsx';
 import { CloseDay } from './CloseDay.tsx';
-import { PayOut } from './PayOut.tsx';
+import { CashOut } from './CashOut.tsx';
 import { useMenu } from './menuStore.ts';
 import { menuIsEmpty } from '../domain/menu.ts';
 import { OwnerView } from './OwnerView.tsx';
@@ -23,7 +23,7 @@ import { ProductBrand } from './Brand.tsx';
 
 const KITCHEN = '#kitchen';
 const OWNER = '#owner';
-const PAY_OUT = '#payout';
+const CASH_OUT = '#cashout';
 
 /** Changing screens cross-fades (view transitions, 200 ms in styles.css) where the browser can; instant elsewhere. */
 const withTransition = (change: () => void) => {
@@ -95,8 +95,8 @@ function NotConnected() {
  *   and the screen locks itself when quiet. A kitchen login sees the Kitchen only.
  * - Until the kitchen has its own screen, the Kitchen key (one per kitchen in a shop
  *   with two) shows that kitchen on the counter; Esc or the Register key comes back.
- *   F3 flips to the Owner view and back; F7 to Pay out and back (anyone opens it, paying
- *   takes a manager's PIN)
+ *   F3 flips to the Owner view and back; F7 to Cash out and back (anyone opens it, writing
+ *   takes a manager's or the owner's PIN)
  *   (owners and managers). The Kitchen stays visible while the
  *   screen is locked; only going back to the Register needs a PIN.
  * Development and the demo have no login (fake staff), as before.
@@ -135,7 +135,7 @@ export function Root() {
   const kitchenView = (kitchenHash?.[1] as Station | undefined) ?? null;
   /** The Owner view shows the takings: owners and managers only (SCRUM-41). */
   const seesOwner = !kitchenOnly && (!needsLogin || (staff !== null && seesTakings(staff.role)));
-  const go = useCallback((to: '' | `${typeof KITCHEN}${'' | '/left' | '/right'}` | typeof OWNER | typeof PAY_OUT | '#shops') => withTransition(() => {
+  const go = useCallback((to: '' | `${typeof KITCHEN}${'' | '/left' | '/right'}` | typeof OWNER | typeof CASH_OUT | '#shops') => withTransition(() => {
     // replaceState: flipping all day must not fill the browser history.
     history.replaceState(null, '', to || location.pathname + location.search);
     setHash(to);
@@ -148,7 +148,7 @@ export function Root() {
       if (e.target instanceof HTMLElement && e.target.closest('[role="dialog"]')) return;
       if (e.key === 'F3' && seesOwner) { e.preventDefault(); go(hash === OWNER ? '' : OWNER); }
       if (e.key === 'F4' && needsLogin && staff) { e.preventDefault(); lock(); }
-      if (e.key === 'F7' && !kitchenOnly && (!needsLogin || staff)) { e.preventDefault(); go(hash === PAY_OUT ? '' : PAY_OUT); }
+      if (e.key === 'F7' && !kitchenOnly && (!needsLogin || staff)) { e.preventDefault(); go(hash === CASH_OUT ? '' : CASH_OUT); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -177,14 +177,14 @@ export function Root() {
   }
   // Closing the day: the owner or a manager counts the drawer.
   if (hash === '#close' && seesOwner) return <CloseDay onBack={() => go('')} />;
-  // Paying suppliers: anyone opens it when one is at the door; a bill or a payment takes a manager's PIN.
-  if (hash === PAY_OUT) return <PayOut nav={seesOwner} onBack={() => go('')} />;
+  // Cash out: anyone opens it when someone is paid from the drawer; writing takes a manager's or the owner's PIN.
+  if (hash === CASH_OUT) return <CashOut nav={seesOwner} onBack={() => go('')} />;
   // The owner and managers change the menu (also on the Register, in manager mode).
   if (hash === '#menu' && (!needsLogin || (staff !== null && seesTakings(staff.role)))) {
     return <MenuView onBack={() => go('')} />;
   }
   return (
-    <App onKitchen={(station) => show(true, station)} onOwner={needsLogin && seesOwner ? () => go(OWNER) : undefined} onPayOut={() => go(PAY_OUT)}
+    <App onKitchen={(station) => show(true, station)} onOwner={needsLogin && seesOwner ? () => go(OWNER) : undefined} onCashOut={() => go(CASH_OUT)}
       onSwitch={needsLogin ? lock : undefined} />
   );
 }
