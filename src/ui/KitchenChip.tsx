@@ -1,6 +1,6 @@
 import { cookTimeMs, elapsedLabel, forStation, nothingToServe, queue, servingRows, urgency, type KitchenTicket } from '../domain/kitchen.ts';
 import type { Station } from '../domain/types.ts';
-import { usePayFirst } from '../services/shop.ts';
+import { useServingList } from '../services/shop.ts';
 import { useNow } from './Kitchen.tsx';
 
 /**
@@ -12,7 +12,7 @@ import { useNow } from './Kitchen.tsx';
  */
 export function KitchenChip({ tickets: all, station, onOpen }: { tickets: KitchenTicket[]; station?: Station; onOpen: () => void }) {
   const now = useNow(1000);
-  const serving = usePayFirst();
+  const serving = useServingList();
   const tickets = forStation(all, station ?? null);
   // A paid order whose items were all cancelled has nothing left to hand over.
   const open = queue(tickets).filter((t) => !serving || !nothingToServe(t));

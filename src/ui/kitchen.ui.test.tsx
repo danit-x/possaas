@@ -113,8 +113,8 @@ test('the register shows Cooking until the kitchen taps Done, next to Paid / Unp
   expect(paid.getByText('Paid · Cash')).toBeTruthy();
 });
 
-test('a pay-first counter: paid meals wait on the serving list, grouped; one tap hands one over', async () => {
-  setShopDetails({ name: 'Rice Bowl', place: '', footer: '', payFirst: true });
+test('a pay-first counter with the Serving list part: paid meals wait on the serving list, grouped; one tap hands one over', async () => {
+  setShopDetails({ name: 'Rice Bowl', place: '', footer: '', payFirst: true, features: { serving: true } });
   const user = userEvent.setup();
   render(<><App /><Kitchen /></>);
   const serving = () => within(screen.getByRole('main', { name: 'Paid, to hand over' }));
@@ -149,11 +149,28 @@ test('a pay-first counter: paid meals wait on the serving list, grouped; one tap
   expect(serving().getByText('Nothing paid and waiting')).toBeTruthy();
   expect(paid.getAllByText('Served')).toHaveLength(2);
   expect(paid.queryByText('Cooking')).toBeNull();
+  setShopDetails({ name: 'Rice Bowl', place: '', footer: '', payFirst: true, features: {} });
+});
+
+test('a pay-first counter without the Serving list (the default): paying sends a cooking ticket that flies off with a whap', async () => {
+  setShopDetails({ name: 'Rice Bowl', place: '', footer: '', payFirst: true, features: {} });
+  const user = userEvent.setup();
+  render(<><App /><Kitchen /></>);
+  await user.click(screen.getAllByRole('button', { name: 'L 2500' })[0]); // Devilled Chicken L
+  await user.click(panel().getByRole('button', { name: 'Charge' }));
+  await user.click(screen.getByRole('button', { name: /Exact/ }));
+  expect(document.querySelector('.flight--left')?.textContent).toContain('Devilled Chicken');
+  expect(screen.queryByRole('main', { name: 'Paid, to hand over' })).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Kitchen' })).toBeTruthy();
+  await user.click(panel().getByRole('button', { name: 'Next order' }));
+  const paid = within(panel().getByRole('region', { name: 'Paid today' }));
+  expect(paid.getByText('Cooking')).toBeTruthy();
+  expect(paid.queryByText('Serving')).toBeNull();
 });
 
 test('two kitchens: biriyani goes left, kottu goes right; each flies its way and shows on its own screen', async () => {
   setStartingMenu(FAKE_RICE_START);
-  setShopDetails({ name: 'Bata Kade', place: '', footer: '', payFirst: true, features: { twoKitchens: true } });
+  setShopDetails({ name: 'Bata Kade', place: '', footer: '', payFirst: true, features: { twoKitchens: true, serving: true } });
   try {
     const user = userEvent.setup();
     render(<Root />);
@@ -191,7 +208,7 @@ test('two kitchens: biriyani goes left, kottu goes right; each flies its way and
   } finally { setStartingMenu(SAMPLE_START); setShopDetails({ name: 'Bata Kade', place: '', footer: '', features: {} }); }
 });
 
-test('Two kitchens switched off (Bata Kade for now): one Kitchen key, one ticket, nothing flies', async () => {
+test('Two kitchens switched off (Bata Kade for now): one Kitchen key, one ticket, it flies to the one kitchen', async () => {
   setStartingMenu(FAKE_RICE_START);
   setShopDetails({ name: 'Bata Kade', place: '', footer: '', payFirst: true, features: {} });
   try {
@@ -206,8 +223,9 @@ test('Two kitchens switched off (Bata Kade for now): one Kitchen key, one ticket
     const sent = readAll().filter((e) => e.type === 'order.sent');
     expect(sent).toHaveLength(1);
     expect(sent[0]).not.toHaveProperty('station');
-    expect(document.querySelector('.flight')).toBeNull();
+    expect(document.querySelectorAll('.flight')).toHaveLength(1);
+    expect(document.querySelector('.flight--left')?.textContent).toContain('1 × Biriyani');
     expect(screen.queryByRole('button', { name: /^Right kitchen/ })).toBeNull();
-    expect(screen.getByRole('button', { name: /^Serving: 2 to hand over/ })).toBeTruthy(); // one key (a pay-first counter calls it Serving)
+    expect(screen.getByRole('button', { name: /^Kitchen: 1 cooking/ })).toBeTruthy(); // one key; no Serving list until that part is on
   } finally { setStartingMenu(SAMPLE_START); }
 });

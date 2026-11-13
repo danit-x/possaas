@@ -4,8 +4,9 @@ import type { Station } from '../domain/types.ts';
 import { whap } from './sound.ts';
 
 /**
- * In a shop with two kitchens, a sent order visibly flies off the Register towards the kitchen
+ * A sent order (in a pay-first shop: a paid one) visibly flies off the Register towards the kitchen
  * that makes it (with a whap), so the cashier sees and hears where it went without reading.
+ * One kitchen = the left one, like a ticket with no kitchen named.
  * The Register does not wait for it: the bill is already free for the next customer.
  */
 export interface Flight {
@@ -25,10 +26,9 @@ const MAX_ITEMS = 4;
 
 export const flyToKitchens = (tickets: readonly NewTicket[]): void => {
   const flights = tickets.flatMap((t): Flight[] => {
-    if (!t.station) return [];
     const items = t.lines.map((l) => `${l.qty} × ${lineItemName(l)}`);
     return [{
-      id: t.id, station: t.station, number: t.number,
+      id: t.id, station: t.station ?? 'left', number: t.number,
       items: items.length > MAX_ITEMS ? [...items.slice(0, MAX_ITEMS - 1), `+ ${items.length - MAX_ITEMS + 1} more`] : items,
     }];
   });

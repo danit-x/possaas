@@ -88,5 +88,8 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 export const useShopName = (): string => useSyncExternalStore(subscribe, shopName);
 export const useShopLogo = (): string => useSyncExternalStore(subscribe, shopLogo);
 export const usePayFirst = (): boolean => useSyncExternalStore(subscribe, payFirst);
+/** The kitchen is a Serving list: a pay-first shop with that part switched on. Otherwise tickets (Cooking / Done). */
+const servingList = (): boolean => payFirst() && features().serving;
+export const useServingList = (): boolean => useSyncExternalStore(subscribe, servingList);
 /** The parts of the POS this shop has switched on (the cloud's /admin, through its server). */
 export const useFeatures = (): ShopFeatures => useSyncExternalStore(subscribe, features);

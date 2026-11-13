@@ -3,7 +3,7 @@ import {
   cancelledToServe, cookTimeMs, elapsedLabel, forStation, needsAttention, queue, servingRows, ticketLines, toServe, urgency, type KitchenTicket, type LineView,
 } from '../domain/kitchen.ts';
 import { kitchenStation } from '../services/pairing.ts';
-import { usePayFirst } from '../services/shop.ts';
+import { useServingList } from '../services/shop.ts';
 import type { Station } from '../domain/types.ts';
 import { chime, useSoundBlocked } from './chime.ts';
 import { recordKitchen, recordServed, useKitchenTickets } from './kitchenStore.ts';
@@ -172,9 +172,9 @@ function StationTag({ t, station }: { t: { station?: Station }; station: Station
   return <span className="ticket__tag ticket__tag--station">{t.station === 'left' ? '← Left' : 'Right →'}</span>;
 }
 
-/** A restaurant cooks to tickets; a pay-first counter hands paid portions over from a serving list. */
+/** A restaurant cooks to tickets; a pay-first counter with the Serving list part hands paid portions over. */
 export function Kitchen(props: ScreenProps = {}) {
-  return usePayFirst() ? <Serving {...props} /> : <Tickets {...props} />;
+  return useServingList() ? <Serving {...props} /> : <Tickets {...props} />;
 }
 
 function Tickets({ onBack, onSwitch, station: shown }: ScreenProps) {

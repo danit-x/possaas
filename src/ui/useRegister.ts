@@ -127,7 +127,7 @@ const kitchenTickets = (number: number, lines: OrderLine[], at: number, extra: P
     id: newLineId(), shopId: shopId(), number, lines: g.lines, firedAt: at, ...extra, ...(g.station ? { station: g.station } : {}),
   }));
 
-/** Each ticket becomes an event; in a shop with two kitchens each one also flies off to its side. */
+/** Each ticket becomes an event and flies off to its kitchen's side (one kitchen: the left) with a whap. */
 const fireTickets = (tickets: NewTicket[]) => {
   for (const ticket of tickets) {
     appendEvent({
