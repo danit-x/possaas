@@ -168,32 +168,32 @@ test('a pay-first counter without the Serving list (the default): paying sends a
   expect(paid.queryByText('Serving')).toBeNull();
 });
 
-test('two kitchens: biriyani goes left, kottu goes right; each flies its way and shows on its own screen', async () => {
+test('two kitchens: wade goes left, kottu goes right; each flies its way and shows on its own screen', async () => {
   setStartingMenu(FAKE_RICE_START);
   setShopDetails({ name: 'Bata Kade', place: '', footer: '', payFirst: true, features: { twoKitchens: true, serving: true } });
   try {
     const user = userEvent.setup();
     render(<Root />);
-    // Sections sold all day, so the test passes at any hour (rice & curry and fried rice have hours).
+    // Sections sold all day, so the test passes at any hour (rice & curry has hours).
     await user.click(screen.getByRole('button', { name: 'String Hoppers, Roti & Rolls' }));
-    await user.click(screen.getByRole('button', { name: '500' })); // Biriyani
+    await user.click(screen.getByRole('button', { name: '30' })); // Parippu Wade
     await user.click(screen.getByRole('button', { name: 'Kottu' }));
     await user.click(screen.getAllByRole('button', { name: 'Full 800' })[0]); // Chicken Kottu, Full
     await user.click(panel().getByRole('button', { name: 'Charge' }));
     await user.click(screen.getByRole('button', { name: /Exact/ }));
 
     const sent = readAll().flatMap((e) => (e.type === 'order.sent' ? [[e.station, e.lines.map((l) => l.itemId)]] : []));
-    expect(sent).toEqual([['left', ['rt-biriyani']], ['right', ['kt-chicken']]]);
-    expect(document.querySelector('.flight--left')?.textContent).toContain('1 × Biriyani');
+    expect(sent).toEqual([['left', ['rt-wade']], ['right', ['kt-chicken']]]);
+    expect(document.querySelector('.flight--left')?.textContent).toContain('1 × Parippu Wade');
     expect(document.querySelector('.flight--right')?.textContent).toContain('1 × Chicken Kottu');
     // The Register has a key per kitchen, each counting its own.
     expect(screen.getByRole('button', { name: /^Left kitchen: 1 to hand over/ })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: /^Right kitchen: 1 to hand over/ }));
     expect(screen.getByRole('heading', { name: 'Serving · Right kitchen' })).toBeTruthy();
-    expect(screen.queryByRole('article', { name: /Biriyani/ })).toBeNull();
+    expect(screen.queryByRole('article', { name: /Parippu Wade/ })).toBeNull();
     await user.keyboard('{Escape}');
     await user.click(screen.getByRole('button', { name: /^Left kitchen/ }));
-    expect(screen.getByRole('article', { name: 'Biriyani: 1 paid' })).toBeTruthy();
+    expect(screen.getByRole('article', { name: 'Parippu Wade: 1 paid' })).toBeTruthy();
     await user.keyboard('{Escape}');
     cleanup();
 
@@ -204,7 +204,7 @@ test('two kitchens: biriyani goes left, kottu goes right; each flies its way and
     expect(screen.getByRole('heading', { name: 'Serving · Right kitchen' })).toBeTruthy();
     const serving = within(screen.getByRole('main', { name: 'Paid, to hand over' }));
     expect(serving.getByRole('article', { name: 'Chicken Kottu, Full: 1 paid' })).toBeTruthy();
-    expect(serving.queryByRole('article', { name: /Biriyani/ })).toBeNull();
+    expect(serving.queryByRole('article', { name: /Parippu Wade/ })).toBeNull();
   } finally { setStartingMenu(SAMPLE_START); setShopDetails({ name: 'Bata Kade', place: '', footer: '', features: {} }); }
 });
 
@@ -215,7 +215,7 @@ test('Two kitchens switched off (Bata Kade for now): one Kitchen key, one ticket
     const user = userEvent.setup();
     render(<Root />);
     await user.click(screen.getByRole('button', { name: 'String Hoppers, Roti & Rolls' }));
-    await user.click(screen.getByRole('button', { name: '500' })); // Biriyani (left)
+    await user.click(screen.getByRole('button', { name: '30' })); // Parippu Wade (left)
     await user.click(screen.getByRole('button', { name: 'Kottu' }));
     await user.click(screen.getAllByRole('button', { name: 'Full 800' })[0]); // Chicken Kottu (right, when switched on)
     await user.click(panel().getByRole('button', { name: 'Charge' }));
@@ -224,7 +224,7 @@ test('Two kitchens switched off (Bata Kade for now): one Kitchen key, one ticket
     expect(sent).toHaveLength(1);
     expect(sent[0]).not.toHaveProperty('station');
     expect(document.querySelectorAll('.flight')).toHaveLength(1);
-    expect(document.querySelector('.flight--left')?.textContent).toContain('1 × Biriyani');
+    expect(document.querySelector('.flight--left')?.textContent).toContain('1 × Parippu Wade');
     expect(screen.queryByRole('button', { name: /^Right kitchen/ })).toBeNull();
     expect(screen.getByRole('button', { name: /^Kitchen: 1 cooking/ })).toBeTruthy(); // one key; no Serving list until that part is on
   } finally { setStartingMenu(SAMPLE_START); }
