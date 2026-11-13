@@ -97,7 +97,7 @@ test('a new item gets its photo with it; Bata Kade starts with its own photos, a
   setStartingMenu(FAKE_RICE_START);
   history.replaceState(null, '', '/');
   render(<Root />);
-  await user.click(screen.getByRole('button', { name: 'String Hoppers, Roti & Rolls' }));
+  await user.click(screen.getByRole('button', { name: 'Roti & Rolls' }));
   const wade = screen.getByText('Parippu Wade').closest('.card') as HTMLElement;
   expect(wade.querySelector('.card__photo img')).toBeTruthy();
   const vegRoti = screen.getByText('Vegetable Roti').closest('.card') as HTMLElement;

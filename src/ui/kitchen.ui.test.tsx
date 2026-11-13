@@ -175,10 +175,10 @@ test('two kitchens: wade goes left, kottu goes right; each flies its way and sho
     const user = userEvent.setup();
     render(<Root />);
     // Sections sold all day, so the test passes at any hour (rice & curry has hours).
-    await user.click(screen.getByRole('button', { name: 'String Hoppers, Roti & Rolls' }));
+    await user.click(screen.getByRole('button', { name: 'Roti & Rolls' }));
     await user.click(screen.getByRole('button', { name: '30' })); // Parippu Wade
     await user.click(screen.getByRole('button', { name: 'Kottu' }));
-    await user.click(screen.getAllByRole('button', { name: 'Full 800' })[0]); // Chicken Kottu, Full
+    await user.click(screen.getAllByRole('button', { name: 'Full 750' })[0]); // Chicken Kottu, Full
     await user.click(panel().getByRole('button', { name: 'Charge' }));
     await user.click(screen.getByRole('button', { name: /Exact/ }));
 
@@ -214,10 +214,10 @@ test('Two kitchens switched off (Bata Kade for now): one Kitchen key, one ticket
   try {
     const user = userEvent.setup();
     render(<Root />);
-    await user.click(screen.getByRole('button', { name: 'String Hoppers, Roti & Rolls' }));
+    await user.click(screen.getByRole('button', { name: 'Roti & Rolls' }));
     await user.click(screen.getByRole('button', { name: '30' })); // Parippu Wade (left)
     await user.click(screen.getByRole('button', { name: 'Kottu' }));
-    await user.click(screen.getAllByRole('button', { name: 'Full 800' })[0]); // Chicken Kottu (right, when switched on)
+    await user.click(screen.getAllByRole('button', { name: 'Full 750' })[0]); // Chicken Kottu (right, when switched on)
     await user.click(panel().getByRole('button', { name: 'Charge' }));
     await user.click(screen.getByRole('button', { name: /Exact/ }));
     const sent = readAll().filter((e) => e.type === 'order.sent');

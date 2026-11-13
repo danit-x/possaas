@@ -31,13 +31,15 @@ test('the rice demo copied and loaded on an empty shop sells the same items at t
     const got = menu.find((m) => m.name.en === want.name.en && m.name.si === want.name.si && price(m) === price(want));
     assert.ok(got, `${want.name.en} is on the loaded menu at its price`);
   }
-  // Kitchens and hours stay with their sections; a long Sinhala name keeps its English part.
+  // Kitchens and hours stay with their sections.
   const kottu = load.sections.find(([, s]) => s.name.startsWith('Kottu'))!;
   assert.equal(kottu[1].station, 'right');
   const breakfast = load.sections.find(([, s]) => s.name.startsWith('Rice & Curry') && s.hours?.from === 5 * 60)!;
   assert.deepEqual(breakfast[1].hours, { from: 5 * 60, to: 11 * 60 });
   assert.equal(load.sections.find(([, s]) => s.name.startsWith('Fried Rice'))![1].hours, undefined);
-  assert.ok(load.sections.some(([, s]) => s.name === 'String Hoppers, Roti & Rolls'));
+  assert.ok(load.sections.some(([, s]) => s.name === 'Roti & Rolls · රොටි / රෝල්ස්'));
+  // A section's extras go with it: bread's egg, fish and chicken.
+  assert.equal(load.sections.find(([, s]) => s.name.startsWith('Bread'))![1].adds.map((a) => `${a.label} ${a.price}`).join(), 'Egg 5000,Fish 10000,Chicken 12000');
   assert.ok(load.sections.every(([id, s]) => id.startsWith('sec-') && checkSection(s) === null));
   assert.ok(load.items.every(([id]) => id.startsWith('new-')));
 });
