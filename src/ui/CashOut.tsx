@@ -10,7 +10,7 @@ import { OwnerNav } from './OwnerNav.tsx';
 import { PinSheet } from './PinSheet.tsx';
 
 /**
- * Cash out (#cashout, F7 on the Register): the owner's paper list on the shop PC. Serves the
+ * Cash out (#cashout, F3 on the Register): the owner's paper list on the shop PC. Serves the
  * owner or a manager who has just paid someone from the drawer (the fish man, the bank, gas):
  * they know who and how much; the single next thing is to write it down. One line, "fish 4500",
  * Enter. Names used before are buttons. × takes a line off, Undo puts it back. Today's list

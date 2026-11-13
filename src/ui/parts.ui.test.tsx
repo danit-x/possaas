@@ -10,7 +10,7 @@ afterEach(() => {
   setShopDetails({ name: 'Test shop', place: '', footer: '', features: {} });
 });
 
-test('parts switched off on /admin leave the screens: no keys, no tab, F7 and F6 do nothing', async () => {
+test('parts switched off on /admin leave the screens: no keys, no tab, F3 and F6 do nothing', async () => {
   setShopDetails({ name: 'Bata Kade', place: '', footer: '', features: { cashOut: false, busyMode: false, onlineOrders: false } });
   const user = userEvent.setup();
   render(<Root />);
@@ -18,7 +18,7 @@ test('parts switched off on /admin leave the screens: no keys, no tab, F7 and F6
   expect(screen.queryByRole('button', { name: /Cash out/ })).toBeNull();
   expect(screen.queryByRole('button', { name: /^Busy/ })).toBeNull();
   expect(screen.queryByRole('button', { name: /Online/ })).toBeNull();
-  await user.keyboard('{F7}');
+  await user.keyboard('{F3}');
   expect(screen.queryByRole('heading', { name: 'Cash out' })).toBeNull();
   cleanup();
 

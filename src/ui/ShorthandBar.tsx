@@ -42,7 +42,7 @@ export function ShorthandBar({ initial, onSubmit, onClose }: Props) {
 
   useEffect(() => {
     const id = ++latest.current;
-    const interpreter: OrderInterpreter = new ShorthandInterpreter(menuItems().filter((m) => !m.offHours));
+    const interpreter: OrderInterpreter = new ShorthandInterpreter(menuItems().filter((m) => !m.offHours && !m.hidden));
     Promise.resolve(interpreter.interpret(text)).then((d) => { if (id === latest.current) setDraft(d); });
   }, [text, menuVersion]);
 

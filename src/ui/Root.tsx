@@ -96,9 +96,9 @@ function NotConnected() {
  *   and the screen locks itself when quiet. A kitchen login sees the Kitchen only.
  * - Until the kitchen has its own screen, the Kitchen key (one per kitchen in a shop
  *   with two) shows that kitchen on the counter; Esc or the Register key comes back.
- *   F3 flips to the Owner view and back; F7 to Cash out and back (anyone opens it, writing
+ *   F3 flips to Cash out and back (anyone opens it, writing
  *   takes a manager's or the owner's PIN)
- *   (owners and managers). The Kitchen stays visible while the
+ *   F7 to the Owner view and back (owners and managers). The Kitchen stays visible while the
  *   screen is locked; only going back to the Register needs a PIN.
  * Development and the demo have no login (fake staff), as before.
  */
@@ -148,9 +148,9 @@ export function Root() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLElement && e.target.closest('[role="dialog"]')) return;
-      if (e.key === 'F3' && seesOwner) { e.preventDefault(); go(hash === OWNER ? '' : OWNER); }
+      if (e.key === 'F7' && seesOwner) { e.preventDefault(); go(hash === OWNER ? '' : OWNER); }
       if (e.key === 'F4' && needsLogin && staff) { e.preventDefault(); lock(); }
-      if (e.key === 'F7' && parts.cashOut && !kitchenOnly && (!needsLogin || staff)) { e.preventDefault(); go(hash === CASH_OUT ? '' : CASH_OUT); }
+      if (e.key === 'F3' && parts.cashOut && !kitchenOnly && (!needsLogin || staff)) { e.preventDefault(); go(hash === CASH_OUT ? '' : CASH_OUT); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

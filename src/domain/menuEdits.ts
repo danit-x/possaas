@@ -17,6 +17,11 @@ export interface ItemOverride {
   /** Extras' prices, by option id. */
   adds?: Record<string, Cents>;
   hidden?: boolean;
+  /**
+   * Taken off the menu for good (a starting item; an owner's own item is taken back with
+   * `menu.item_added` null). Kept for old orders, gone from every list.
+   */
+  removed?: boolean;
 }
 
 /**
@@ -164,6 +169,7 @@ export const applyOverride = (item: MenuItem, o: ItemOverride | undefined, soldO
     ...(item.price !== undefined ? { price: price('one', item.price) } : {}),
     adds: item.adds.map((a) => ({ ...a, price: o?.adds?.[a.id] ?? a.price })),
     ...(o?.hidden ? { hidden: true } : {}),
+    ...(o?.removed ? { hidden: true, removed: true } : {}),
     ...(soldOut ? { soldOut: true } : {}),
     ...(o ? { edited: true } : {}),
   };

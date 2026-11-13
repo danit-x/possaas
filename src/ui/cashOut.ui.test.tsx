@@ -12,11 +12,11 @@ const owner = { id: 'o', name: 'Owner', role: 'owner' as const };
 const managerPin = FAKE_STAFF.find((s) => s.actor.role === 'manager')!.pin;
 const list = () => screen.getByRole('region', { name: 'Cash out today' });
 
-test('Cash out: F7 from the Register, "fish 4500" and Enter, one PIN for the visit, × and Undo', async () => {
+test('Cash out: F3 from the Register, "fish 4500" and Enter, one PIN for the visit, × and Undo', async () => {
   appendEvent({ type: 'cash.out', at: Date.now() - 2 * 86_400_000, orderNumber: 0, actor: owner, name: 'Bank', amount: 2000000 });
   const user = userEvent.setup();
   render(<Root />);
-  await user.keyboard('{F7}');
+  await user.keyboard('{F3}');
   expect(await screen.findByRole('heading', { name: 'Cash out' })).toBeTruthy();
 
   // Written like the paper. The cashier at the screen does not write it: a manager's PIN, once.
