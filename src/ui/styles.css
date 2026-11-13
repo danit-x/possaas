@@ -280,6 +280,8 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .card__prices { display: flex; gap: var(--sp-2); }
 .price { flex: 1; min-width: 0; height: var(--tap); padding: 0 var(--sp-1); border-radius: var(--sp-3); background: var(--chip); font-size: var(--fs-m); line-height: 1.15; font-weight: 500; letter-spacing: -0.2px; }
 .price:hover { filter: brightness(0.97); }
+.price--stack { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 0 2px; }
+.price--stack span { font-size: var(--fs-xs); font-weight: 400; color: var(--ink-2); white-space: nowrap; }
 
 /* ---------- order panel ---------- */
 .panel { flex: 0 0 var(--panel-w); width: var(--panel-w); display: flex; flex-direction: column; background: var(--panel); box-shadow: var(--panel-shadow);
@@ -378,7 +380,9 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 /* The menu stays live behind it, only quieter: a tap adds the item and brings the order back. */
 .register--paying .menu { opacity: 0.5; transition: opacity 200ms var(--ease); }
 .pay { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: fade 180ms var(--ease); }
-.pay__body { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3) var(--sp-5) 0; }
+.pay__body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3) var(--sp-5) 0; }
+/* The order on top, the free room in the middle, the controls down by the total: Other amount, cash, then Bank/Card/QR. */
+.pay__controls { margin-top: auto; display: flex; flex-direction: column; gap: var(--sp-3); }
 .status--paying { background: var(--chip); color: var(--ink-2); }
 .paylines { flex: 0 1 auto; min-height: 48px; overflow-y: auto; list-style: none; margin: 0; padding: 0 0 var(--sp-3); border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: var(--sp-2); }
 .paylines li { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-3); font-size: var(--fs-m); }

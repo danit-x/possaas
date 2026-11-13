@@ -328,7 +328,7 @@ export function App({
         ) : (
           <span className="corner">
             {parts.onlineOrders && <OnlineChip state={online} looking={sheet?.kind === 'online'} onOpen={() => setSheet({ kind: 'online' })} />}
-            {onKitchen && (twoKitchens()
+            {onKitchen && parts.kitchen && (twoKitchens()
               ? (['left', 'right'] as const).map((k) => <KitchenChip key={k} tickets={tickets} station={k} onOpen={() => onKitchen(k)} />)
               : <KitchenChip tickets={tickets} onOpen={() => onKitchen()} />)}
             <SyncSign />

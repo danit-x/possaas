@@ -8,7 +8,7 @@ import { orderTotal, unsentLines } from '../domain/order.ts';
 import { discountLabel, lineAdjustment, lineNet, totals } from '../domain/totals.ts';
 import type { Cents, Discount, Order, OrderLine, PaidOrder, Tender } from '../domain/types.ts';
 import { leaveOutsOf, lineItemName, secondHalf } from '../domain/halves.ts';
-import { usePayFirst, useServingList } from '../services/shop.ts';
+import { useFeatures, usePayFirst, useServingList } from '../services/shop.ts';
 import { PayPanel } from './PayPanel.tsx';
 
 const sub = (l: OrderLine): string => {
@@ -43,9 +43,14 @@ function OnlineTag({ order, time = true }: { order: Order; time?: boolean }) {
     : null;
 }
 
-/** A shop whose kitchen is the Serving list hands meals over: Serving / Served; otherwise Cooking / Done. */
+/**
+ * A shop whose kitchen is the Serving list hands meals over: Serving / Served; otherwise Cooking / Done.
+ * Nothing without a kitchen screen: nobody would ever tap Done.
+ */
 function Cook({ tickets, number }: { tickets: KitchenTicket[]; number: number }) {
   const serving = useServingList();
+  const { kitchen } = useFeatures();
+  if (!kitchen) return null;
   return cookState(tickets, number) === 'cooking'
     ? <span className="status status--cooking">{serving ? 'Serving' : 'Cooking'}</span>
     : <span className="status status--done">{serving ? 'Served' : 'Done'}</span>;

@@ -36,11 +36,10 @@ const RICE_DAY_SECTION: Section = { id: 'rice-day', name: 'Rice & Curry · බ�
 const FRIED_RICE_SECTION: Section = { id: 'fried-rice', name: 'Fried Rice · ෆ්‍රයිඩ් රයිස්', cookMinutes: 8, sizes: HALF_FULL, adds: [], station: 'right' };
 const MEALS_SECTION: Section = { id: 'meals', name: 'Meals · ආහාර', cookMinutes: 3, sizes: [], adds: [], station: 'left' };
 const KOTTU_SECTION: Section = { id: 'kottu', name: 'Kottu · කොත්තු', cookMinutes: 8, sizes: HALF_FULL, adds: [], station: 'right' };
-// A shop's items take their section's extras, so bread and string hoppers have sections of their own.
-const BREAD_SECTION: Section = { id: 'bread', name: 'Bread · පාන්', cookMinutes: 2, sizes: [], adds: BREAD_ADDS, station: 'left' };
-const STRING_HOPPERS_SECTION: Section = { id: 'string-hoppers', name: 'String Hoppers · ඉඳි ආප්ප', cookMinutes: 2, sizes: [], adds: STRING_HOPPER_ADDS, station: 'left' };
+// Few sections, so the counter never hunts (developer, 2026-11-14): everything eaten as a meal (bread,
+// string hoppers, roti, rolls, wade) is in Meals, everything drunk in Drinks, sweets and the rest in Other.
+// Bread and string hoppers carry their extras themselves (NewItem.adds), so Meals needs none.
 const OTHER_SECTION: Section = { id: 'other', name: 'Other · වෙනත් ආහාර', cookMinutes: 2, sizes: [], adds: [], station: 'left' };
-const ROTI_SECTION: Section = { id: 'roti', name: 'Roti & Rolls · රොටි / රෝල්ස්', cookMinutes: 2, sizes: [], adds: [], station: 'left' };
 const DRINKS_SECTION: Section = { id: 'drinks', name: 'Drinks · බීම', cookMinutes: 1, sizes: [], adds: [], station: 'left' };
 const names = (en: string, si: string) => (si ? { en, si } : { en });
 /** Prices by size, in rupees; a size without a price is not offered. */
@@ -50,11 +49,19 @@ const sized = (category: string, id: string, name: string, si: string, aliases: 
 });
 const halfFull = (category: string, id: string, name: string, si: string, aliases: string[], half: number, full: number): MenuItem =>
   sized(category, id, name, si, aliases, { normal: half, full }, HALF_FULL);
+/**
+ * One card, a price button per kind (Water: 500 ml, 1 L, 1.5 L; Tea: Plain, Milk, Jaggery): the item's own
+ * sizes (NewItem.sizes), as [id, label, rupees], so its section needs none.
+ */
+const kinds = (category: string, id: string, name: string, si: string, aliases: string[], options: [string, string, number][], adds: Option[] = []): MenuItem => ({
+  id, category, name: names(name, si), description: '', aliases,
+  variants: options.map(([size, label, rupees]) => ({ id: size, label, price: rupees * 100 })), adds, leaveOut: [],
+});
 const one = (category: string, id: string, name: string, si: string, aliases: string[], price: number, adds: Option[] = []): MenuItem => ({
   id, category, name: names(name, si), description: '', aliases, price: price * 100, adds, leaveOut: [],
 });
 export const BATA_KADE_MENU: StartingMenu = {
-  sections: [RICE_MORNING_SECTION, RICE_DAY_SECTION, FRIED_RICE_SECTION, KOTTU_SECTION, MEALS_SECTION, BREAD_SECTION, STRING_HOPPERS_SECTION, OTHER_SECTION, ROTI_SECTION, DRINKS_SECTION],
+  sections: [RICE_MORNING_SECTION, RICE_DAY_SECTION, FRIED_RICE_SECTION, KOTTU_SECTION, MEALS_SECTION, DRINKS_SECTION, OTHER_SECTION],
   items: [
     // The same names and aliases at breakfast and later: only one of the two is sold at a time.
     sized('rice-morning', 'rc-m-vege', 'Vegetable Rice & Curry', 'බත් එළවළු', ['vegetable rice', 'vege rice', 'veg rice', 'elawalu bath'], { normal: 200 }),
@@ -80,19 +87,36 @@ export const BATA_KADE_MENU: StartingMenu = {
     one('meals', 'ml-green-gram', 'Green Gram', 'මුං ඇට', ['green gram', 'mung', 'mun ata'], 150),
     one('meals', 'ml-chickpeas', 'Chickpeas', 'කඩල', ['chickpeas', 'kadala'], 150),
     one('meals', 'ml-noodles', 'Noodles', 'නූඩ්ල්ස්', ['noodles', 'noodle'], 160),
-    one('bread', 'br-dhal', 'Bread with Dhal', 'පාන් පරිප්පු සමඟ', ['bread dhal', 'bread parippu', 'bread', 'paan', 'bread gravy'], 150, BREAD_ADDS),
-    one('bread', 'br-potato', 'Bread with Potato Curry', 'පාන් අල හොදි සමඟ', ['bread potato', 'bread ala'], 150, BREAD_ADDS),
-    one('string-hoppers', 'sh-10', 'String Hoppers (10)', 'ඉඳි ආප්ප 10', ['string hoppers', 'string hopper', 'idiyappam', 'indiappa'], 120, STRING_HOPPER_ADDS),
-    one('string-hoppers', 'sh-15', 'String Hoppers (15)', 'ඉඳි ආප්ප 15', ['string hoppers 15', 'indiappa 15'], 160, STRING_HOPPER_ADDS),
-    one('string-hoppers', 'sh-20', 'String Hoppers (20)', 'ඉඳි ආප්ප 20', ['string hoppers 20', 'indiappa 20'], 200, STRING_HOPPER_ADDS),
-    one('other', 'ot-plain-tea', 'Plain Tea', 'ප්ලේන් ටී', ['plain tea', 'plaintea', 'tea'], 50),
-    one('other', 'ot-milk-tea', 'Milk Tea', 'කිරි තේ', ['milk tea', 'kiri the'], 120),
-    one('other', 'ot-coffee', 'Coffee', 'කෝපි', ['coffee', 'kopi'], 70),
-    one('other', 'ot-milk-coffee', 'Milk Coffee', 'කිරි කෝපි', ['milk coffee', 'kiri kopi'], 130),
+    kinds('meals', 'br-bread', 'Bread', 'පාන්', ['bread', 'paan', 'bread gravy', 'bread dhal', 'bread parippu', 'bread potato', 'bread ala'],
+      [['dhal', 'Dhal', 150], ['potato', 'Potato', 150]], BREAD_ADDS),
+    kinds('meals', 'sh-string-hoppers', 'String Hoppers', 'ඉඳි ආප්ප', ['string hoppers', 'string hopper', 'idiyappam', 'indiappa'],
+      [['10', '10', 120], ['15', '15', 160], ['20', '20', 200]], STRING_HOPPER_ADDS),
+    kinds('meals', 'rt-egg-roll', 'Roll', 'රෝල්ස්', ['roll', 'rolls', 'egg roll', 'egg rolls', 'fish roll', 'fish rolls'], [['egg', 'Egg', 100], ['fish', 'Fish', 100]]),
+    one('meals', 'rt-veg-roti', 'Vegetable Roti', 'එළවළු රොටි', ['vegetable roti', 'vege roti', 'veg roti'], 80),
+    kinds('meals', 'rt-egg-roti', 'Egg Roti', 'බිත්තර රොටි', ['egg roti', 'egg roti gravy'], [['plain', 'Plain', 100], ['gravy', 'Gravy', 120]]),
+    one('meals', 'rt-paratha', 'Paratha with Gravy', 'පරාට හොදි', ['paratha', 'parata'], 60),
+    one('meals', 'rt-wade', 'Parippu Wade', 'පරිප්පු වඩේ', ['parippu wade', 'dhal wade', 'wade', 'vadai'], 30),
+    kinds('meals', 'rt-ulundu-wade', 'Ulundu Wade', 'උළුඳු වඩේ', ['ulundu wade', 'ulundu', 'ulundu wade gravy', 'ulundu gravy'], [['plain', 'Plain', 60], ['gravy', 'Gravy', 70]]),
+    // Tea and coffee stay a card each, plain and milk (developer, 2026-11-14); no tea with jaggery.
+    one('drinks', 'ot-plain-tea', 'Plain Tea', 'ප්ලේන් ටී', ['plain tea', 'plaintea', 'tea'], 50),
+    one('drinks', 'ot-milk-tea', 'Milk Tea', 'කිරි තේ', ['milk tea', 'kiri the'], 120),
+    one('drinks', 'ot-coffee', 'Coffee', 'කෝපි', ['coffee', 'kopi'], 70),
+    one('drinks', 'ot-milk-coffee', 'Milk Coffee', 'කිරි කෝපි', ['milk coffee', 'kiri kopi'], 130),
+    one('drinks', 'ot-nestomalt', 'Nestomalt', 'පොස්ට්මෝල්ට්', ['nestomalt', 'postmalt', 'nesto'], 120),
+    one('drinks', 'ot-milo', 'Milo', 'මයිලෝ', ['milo'], 120),
+    // The Drink is sold by bottle size; which drink is said at the counter (2026-11-14).
+    kinds('drinks', 'dr-drink', 'Drink', 'බීම', ['drink', 'buddy', 'small drink', 'medium', 'medium drink'], [['buddy', 'Buddy', 100], ['medium', 'Medium', 180]]),
+    kinds('drinks', 'dr-water', 'Water', 'වතුර', ['water', 'big water'], [['500ml', '500 ml', 80], ['1l', '1 L', 120], ['1-5l', '1.5 L', 150]]),
+    one('drinks', 'dr-sun-crush', 'Sun Crush', 'සන් ක්‍රෂ්', ['sun crush', 'suncrush'], 150),
+    one('drinks', 'dr-faluda', 'Faluda / Rose Drink', 'ෆලූඩා / රෝස් බීම', ['faluda', 'rose drink'], 100),
+    kinds('drinks', 'dr-pepsi', 'Pepsi', 'පෙප්සි', ['pepsi', 'big pepsi'], [['400ml', '400 ml', 200], ['1l', '1 L', 300], ['1-5l', '1.5 L', 420]]),
+    kinds('drinks', 'dr-coke', 'Coca-Cola', 'කොකා කෝලා', ['coke', 'coca cola', 'big coke'], [['400ml', '400 ml', 200], ['1l', '1 L', 300], ['1-5l', '1.5 L', 420]]),
+    one('drinks', 'dr-sprite-400', 'Sprite (400 ml)', 'ස්ප්‍රයිට් 400 ml', ['sprite'], 200),
+    one('drinks', 'dr-mirinda-400', 'Mirinda (400 ml)', 'මිරින්ඩා 400 ml', ['mirinda'], 200),
+    one('drinks', 'dr-7up-400', '7UP (400 ml)', 'සෙවන් අප් 400 ml', ['7up', 'seven up'], 200),
+    one('drinks', 'dr-egb-1000', 'EGB (1 L)', 'ඊ.ජී.බී. ලීටර් 1', ['egb', 'ginger beer 1l'], 300),
+    one('drinks', 'dr-soda-1500', 'Cream Soda / Ginger Beer (1.5 L)', 'ක්‍රීම් සෝඩා / ජින්ජර් බියර් ලීටර් 1.5', ['cream soda', 'ginger beer'], 420),
     one('other', 'ot-popsicle', 'Popsicle', 'පොප්සිකල්', ['popsicle'], 120),
-    one('other', 'ot-nestomalt', 'Nestomalt', 'පොස්ට්මෝල්ට්', ['nestomalt', 'postmalt', 'nesto'], 120),
-    one('other', 'ot-milo', 'Milo', 'මයිලෝ', ['milo'], 120),
-    one('other', 'ot-kahata', 'Plain Tea with Jaggery', 'කහට හකුරු සමඟ', ['kahata', 'jaggery tea'], 30),
     one('other', 'ot-buns', 'Buns', 'ඊම් බනිස්', ['buns', 'bun', 'banis'], 100),
     one('other', 'ot-muffin', 'Muffin', 'මෆින්', ['muffin'], 150),
     one('other', 'ot-yoghurt', 'Yoghurt', 'යෝගට්', ['yoghurt', 'yogurt', 'curd'], 80),
@@ -100,33 +124,6 @@ export const BATA_KADE_MENU: StartingMenu = {
     one('other', 'ot-watalappan', 'Watalappan', 'වටලප්පන්', ['watalappan', 'watalappam'], 120),
     // As the shop wrote it; what it is is still to be asked (150 was crossed out for 250).
     one('other', 'ot-campa', 'Campa / N.K.G.', 'කැම්පා / එන්.කේ.ජී.', ['campa', 'nkg'], 250),
-    one('roti', 'rt-egg-roll', 'Egg Roll', 'බිත්තර රෝල්ස්', ['egg roll', 'egg rolls'], 100),
-    one('roti', 'rt-fish-roll', 'Fish Roll', 'මාළු රෝල්ස්', ['fish roll', 'fish rolls'], 100),
-    one('roti', 'rt-veg-roti', 'Vegetable Roti', 'එළවළු රොටි', ['vegetable roti', 'vege roti', 'veg roti'], 80),
-    one('roti', 'rt-egg-roti', 'Egg Roti', 'බිත්තර රොටි', ['egg roti'], 100),
-    one('roti', 'rt-egg-roti-gravy', 'Egg Roti with Gravy', 'බිත්තර රොටි හොදි සමඟ', ['egg roti gravy'], 120),
-    one('roti', 'rt-paratha', 'Paratha with Gravy', 'පරාට හොදි', ['paratha', 'parata'], 60),
-    one('roti', 'rt-wade', 'Parippu Wade', 'පරිප්පු වඩේ', ['parippu wade', 'dhal wade', 'wade', 'vadai'], 30),
-    one('roti', 'rt-ulundu-wade', 'Ulundu Wade', 'උළුඳු වඩේ', ['ulundu wade', 'ulundu'], 60),
-    one('roti', 'rt-ulundu-wade-gravy', 'Ulundu Wade with Gravy', 'උළුඳු වඩේ හොදි සමඟ', ['ulundu wade gravy', 'ulundu gravy'], 70),
-    // Sold by bottle size; which drink is said at the counter (2026-11-14).
-    one('drinks', 'dr-buddy', 'Drink (Buddy)', 'බීම (බඩී)', ['buddy', 'drink buddy', 'small drink'], 100),
-    one('drinks', 'dr-medium', 'Drink (Medium)', 'බීම (මීඩියම්)', ['medium', 'drink medium', 'medium drink'], 180),
-    one('drinks', 'dr-water-500', 'Water (500 ml)', 'වතුර 500 ml', ['water', 'water 500'], 80),
-    one('drinks', 'dr-water-1000', 'Water (1 L)', 'වතුර ලීටර් 1', ['water 1l', 'water 1 l', 'big water'], 120),
-    one('drinks', 'dr-water-1500', 'Water (1.5 L)', 'වතුර ලීටර් 1.5', ['water 1.5', 'water 1.5l'], 150),
-    one('drinks', 'dr-sun-crush', 'Sun Crush', 'සන් ක්‍රෂ්', ['sun crush', 'suncrush'], 150),
-    one('drinks', 'dr-faluda', 'Faluda / Rose Drink', 'ෆලූඩා / රෝස් බීම', ['faluda', 'rose drink'], 100),
-    one('drinks', 'dr-pepsi-400', 'Pepsi (400 ml)', 'පෙප්සි 400 ml', ['pepsi'], 200),
-    one('drinks', 'dr-coke-400', 'Coca-Cola (400 ml)', 'කොකා කෝලා 400 ml', ['coke', 'coca cola'], 200),
-    one('drinks', 'dr-sprite-400', 'Sprite (400 ml)', 'ස්ප්‍රයිට් 400 ml', ['sprite'], 200),
-    one('drinks', 'dr-mirinda-400', 'Mirinda (400 ml)', 'මිරින්ඩා 400 ml', ['mirinda'], 200),
-    one('drinks', 'dr-7up-400', '7UP (400 ml)', 'සෙවන් අප් 400 ml', ['7up', 'seven up'], 200),
-    one('drinks', 'dr-pepsi-1000', 'Pepsi (1 L)', 'පෙප්සි ලීටර් 1', ['pepsi 1l', 'big pepsi'], 300),
-    one('drinks', 'dr-coke-1000', 'Coca-Cola (1 L)', 'කොකා කෝලා ලීටර් 1', ['coke 1l', 'big coke'], 300),
-    one('drinks', 'dr-egb-1000', 'EGB (1 L)', 'ඊ.ජී.බී. ලීටර් 1', ['egb', 'ginger beer 1l'], 300),
-    one('drinks', 'dr-soda-1500', 'Cream Soda / Ginger Beer (1.5 L)', 'ක්‍රීම් සෝඩා / ජින්ජර් බියර් ලීටර් 1.5', ['cream soda', 'ginger beer'], 420),
-    one('drinks', 'dr-cola-1500', 'Coca-Cola / Pepsi (1.5 L)', 'කොකා කෝලා / පෙප්සි ලීටර් 1.5', ['coke 1.5', 'pepsi 1.5'], 420),
   ],
 };
 
@@ -145,20 +142,23 @@ export const BATA_KADE_UPDATES: MenuUpdate[] = [
     removed: ['rt-biriyani'],
   },
   {
-    // 2026-11-14: bread and string hoppers move to sections of their own with extras (new items, so the
-    // old ones go), one Biriyani at 330, Chicken Kottu Full 750, no beer, Sinhala names for every item.
+    // 2026-11-14: fewer sections: Meals (with bread and string hoppers, now new items with their extras,
+    // so the old ones go, and roti & rolls), Drinks (tea, coffee and malt drinks move there), Other; one
+    // card per item with a price button per kind (Roll: Egg / Fish; Egg Roti: Plain / Gravy); no tea with
+    // jaggery; one Biriyani at 330, Chicken Kottu Full 750, no beer, Sinhala names for every item.
     id: '2026-11-14',
-    sections: ['roti'],
     prices: ['kt-chicken'],
-    names: [
-      'ot-yoghurt', 'ot-jelly', 'ot-watalappan', 'ot-campa', 'rt-fish-roll', 'dr-water-500', 'dr-water-1000', 'dr-water-1500',
-      'dr-sun-crush', 'dr-faluda', 'dr-pepsi-400', 'dr-coke-400', 'dr-sprite-400', 'dr-mirinda-400', 'dr-7up-400',
-      'dr-pepsi-1000', 'dr-coke-1000', 'dr-egb-1000', 'dr-soda-1500', 'dr-cola-1500',
-    ],
+    names: ['ot-yoghurt', 'ot-jelly', 'ot-watalappan', 'ot-campa'],
     removed: [
       'ml-bread-dhal', 'ml-bread-potato', 'ml-bread-egg', 'ml-bread-fish', 'ml-bread-chicken',
       'ml-string-hoppers', 'ml-string-hoppers-15', 'ml-string-hoppers-20',
       'fr-biriyani-chicken', 'fr-biriyani-egg', 'fr-biriyani-mixed', 'dr-beer',
+      'ot-kahata',
     ],
+    moved: [
+      'ot-plain-tea', 'ot-milk-tea', 'ot-coffee', 'ot-milk-coffee', 'ot-nestomalt', 'ot-milo',
+      'rt-egg-roll', 'rt-veg-roti', 'rt-egg-roti', 'rt-wade',
+    ],
+    removedSections: ['roti'],
   },
 ];

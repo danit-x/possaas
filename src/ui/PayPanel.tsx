@@ -97,49 +97,49 @@ export function PayPanel({ number, total, lines, onPay, onClose }: Props) {
       <div className="pay__body">
         {pad
           ? <div className="pay__summary num">Total {fmt(total)}</div>
-          : (
-            <>
-              {lines}
-              {quick.length > 0 && (
-                <div className="pay__quick num" role="group" aria-label="Cash given">
-                  {quick.map((a) => (
-                    <button key={a} type="button" className="paykey paykey--solid" onClick={() => onPay('cash', a)}>{fmt(a)}</button>
-                  ))}
-                </div>
-              )}
-            </>
+          : lines}
+
+        {/* The controls sit on the bottom, by the thumb and the big button; the keypad opens upward into the free room. */}
+        <div className="pay__controls">
+          <div className={`payfield${pad ? ' payfield--on' : ''}`}>
+            <input
+              ref={field}
+              className="payfield__input num"
+              inputMode="none"
+              autoComplete="off"
+              maxLength={12}
+              placeholder="Other amount"
+              aria-label="Other amount"
+              value={typed}
+              onClick={() => setPad(true)}
+              onChange={(e) => setTyped(e.target.value.replace(/[^\d.,]/g, ''))}
+            />
+            <button type="button" className="payfield__toggle" aria-expanded={pad} onClick={() => { setPad(!pad); field.current?.focus(); }}>
+              {pad ? 'Hide' : 'Keypad'}
+            </button>
+          </div>
+
+          {pad && (
+            <div className="pay__pad num">
+              {PAD_KEYS.map((k) => (
+                <button key={k} type="button" className="paykey" onClick={() => pressPad(k)} aria-label={k === '⌫' ? 'Delete' : k}>{k}</button>
+              ))}
+            </div>
           )}
 
-        <div className={`payfield${pad ? ' payfield--on' : ''}`}>
-          <input
-            ref={field}
-            className="payfield__input num"
-            inputMode="none"
-            autoComplete="off"
-            maxLength={12}
-            placeholder="Other amount"
-            aria-label="Other amount"
-            value={typed}
-            onClick={() => setPad(true)}
-            onChange={(e) => setTyped(e.target.value.replace(/[^\d.,]/g, ''))}
-          />
-          <button type="button" className="payfield__toggle" aria-expanded={pad} onClick={() => { setPad(!pad); field.current?.focus(); }}>
-            {pad ? 'Hide' : 'Keypad'}
-          </button>
-        </div>
+          {!pad && quick.length > 0 && (
+            <div className="pay__quick num" role="group" aria-label="Cash given">
+              {quick.map((a) => (
+                <button key={a} type="button" className="paykey paykey--solid" onClick={() => onPay('cash', a)}>{fmt(a)}</button>
+              ))}
+            </div>
+          )}
 
-        {pad && (
-          <div className="pay__pad num">
-            {PAD_KEYS.map((k) => (
-              <button key={k} type="button" className="paykey" onClick={() => pressPad(k)} aria-label={k === '⌫' ? 'Delete' : k}>{k}</button>
-            ))}
+          <div className="pay__other">
+            <button type="button" className="paykey paykey--solid" aria-label="Bank transfer" onClick={() => onPay('transfer', total)}>Bank <kbd aria-hidden="true">B</kbd></button>
+            <button type="button" className="paykey paykey--solid" aria-label="Card" onClick={() => onPay('card', total)}>Card <kbd aria-hidden="true">C</kbd></button>
+            <button type="button" className="paykey paykey--solid" aria-label="QR" onClick={() => onPay('qr', total)}>QR <kbd aria-hidden="true">Q</kbd></button>
           </div>
-        )}
-
-        <div className="pay__other">
-          <button type="button" className="paykey paykey--solid" aria-label="Bank transfer" onClick={() => onPay('transfer', total)}>Bank <kbd aria-hidden="true">B</kbd></button>
-          <button type="button" className="paykey paykey--solid" aria-label="Card" onClick={() => onPay('card', total)}>Card <kbd aria-hidden="true">C</kbd></button>
-          <button type="button" className="paykey paykey--solid" aria-label="QR" onClick={() => onPay('qr', total)}>QR <kbd aria-hidden="true">Q</kbd></button>
         </div>
       </div>
 
