@@ -8,10 +8,13 @@ import {
 import { fmt } from '../domain/money.ts';
 import type { Actor } from '../domain/auth.ts';
 import type { Category, Cents, MenuItem, Section, SizeId, Station } from '../domain/types.ts';
+import { photoChoice, undoChoice } from '../domain/photos.ts';
 import { currentCashier } from '../services/auth.ts';
+import { photoSrc, photoUrl } from '../services/photos.ts';
 import { appendEvent } from './eventLog.ts';
 import { useMenu } from './menuStore.ts';
 import { OwnerNav } from './OwnerNav.tsx';
+import { PhotoSlot } from './PhotoSlot.tsx';
 
 /**
  * The owner's menu (#menu). Serves the owner: they know what they sell and want it on the counter
@@ -44,6 +47,12 @@ const setSoldOut = (itemId: string, out: boolean, actor: Actor = currentCashier(
   appendEvent({ type: 'menu.sold_out', at: Date.now(), orderNumber: 0, actor, itemId, until: out ? nextMorning(Date.now()) : null });
 const addItem = (itemId: string, item: NewItem | null, actor: Actor = currentCashier()) =>
   appendEvent({ type: 'menu.item_added', at: Date.now(), orderNumber: 0, actor, itemId, item });
+/** Gives an item a photo (an id), none (null) or its menu's own (''); returns what to send for Undo. */
+const setPhoto = (itemId: string, photo: string | null, actor: Actor = currentCashier()): string | null => {
+  const was = undoChoice(photoChoice(menuState(), itemId));
+  appendEvent({ type: 'menu.photo_set', at: Date.now(), orderNumber: 0, actor, itemId, photo });
+  return was;
+};
 /** Makes, changes or (null) takes off a section; returns what it was, for Undo. */
 const setSection = (sectionId: string, section: SectionDef | null, actor: Actor = currentCashier()): SectionDef | null => {
   const was = menuState().sections?.[sectionId];
@@ -296,6 +305,8 @@ export function AddItems({ section, actor, onClose }: { section: Section; actor?
   const [desc, setDesc] = useState('');
   const [error, setError] = useState('');
   const [added, setAdded] = useState<{ id: string; name: string } | null>(null);
+  /** A photo chosen before Add: it goes with the item. */
+  const [photo, setPhotoId] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   useEscape(onClose);
 
@@ -326,8 +337,9 @@ export function AddItems({ section, actor, onClose }: { section: Section; actor?
     if (bad) { setError(sentence(bad)); return; }
     const id = newId(item.name.en);
     addItem(id, item, actor);
+    if (photo) setPhoto(id, photo, actor);
     setAdded({ id, name: item.name.en });
-    setEn(''); setPrice({}); setNumber(''); setOuts(''); setSi(''); setTa(''); setDesc('');
+    setEn(''); setPrice({}); setNumber(''); setOuts(''); setSi(''); setTa(''); setDesc(''); setPhotoId(null);
     nameRef.current?.focus();
   };
 
@@ -350,6 +362,8 @@ export function AddItems({ section, actor, onClose }: { section: Section; actor?
             </div>
             {sizes.length > 1 && <p className="menued__note">Leave a size blank if this item is not sold in it.</p>}
           </section>
+          <PhotoSlot name={en.trim() || 'the new item'} url={photo ? photoSrc(photo) : null} onPhoto={setPhotoId}
+            onRemove={() => setPhotoId(null)} />
           <details className="group menued__more">
             <summary>More: number, leave-outs, Sinhala and Tamil names</summary>
             <div className="menued__grid">
@@ -401,8 +415,28 @@ export function Editor({ item, actor, onSaved, onClose }: {
   const [adds, setAdds] = useState<Record<string, string>>(() => Object.fromEntries(item.adds.map((a) => [a.id, String(a.price / 100)])));
   const [hidden, setHidden] = useState(Boolean(item.hidden));
   const [error, setError] = useState('');
+  /** A photo change is made at once (not on Save), with its own Undo. */
+  const [photoNote, setPhotoNote] = useState<{ message: string; undo: string | null } | null>(null);
+  useMenu();
 
   useEscape(onClose);
+  const changePhoto = (photo: string | null, message: string) => setPhotoNote({ message, undo: setPhoto(item.id, photo, actor) });
+
+  /**
+   * Off the menu for good, at once, with Undo (no confirmation): gone from the counter, the Menu
+   * screen, typing and online ordering; an order that already has it keeps it.
+   */
+  const takeOff = () => {
+    const own = menuState().added?.[item.id];
+    if (own) {
+      const { removed: _r, ...def } = own;
+      addItem(item.id, null, actor);
+      onSaved(`${item.name.en} is off the menu`, () => addItem(item.id, def, actor));
+    } else {
+      const before = record(item.id, { ...(menuState().overrides[item.id] ?? {}), removed: true }, actor);
+      onSaved(`${item.name.en} is off the menu`, () => record(item.id, before, actor));
+    }
+  };
 
   /** The price it started with; undefined for a size it was not sold in. */
   const basePrice = (id: string): Cents | undefined => (id === 'one' ? base.price ?? 0 : base.variants?.find((v) => v.id === id)?.price);
@@ -465,7 +499,17 @@ export function Editor({ item, actor, onSaved, onClose }: {
                 onSaved(item.soldOut ? `${item.name.en} is back` : `${item.name.en}: sold out until morning`, () => setSoldOut(item.id, Boolean(item.soldOut), actor));
               }}>Sold out today</button>
             )}
+            <button type="button" className="linkbtn" onClick={takeOff}>Take off the menu</button>
           </div>
+
+          <PhotoSlot name={item.name.en} url={photoUrl(item.id)}
+            onPhoto={(id) => changePhoto(id, 'Photo changed.')} onRemove={() => changePhoto(null, 'Photo removed.')} />
+          {photoNote && (
+            <p className="menued__added" role="status">
+              {photoNote.message}
+              <button type="button" className="linkbtn" onClick={() => { setPhoto(item.id, photoNote.undo, actor); setPhotoNote(null); }}>Undo</button>
+            </p>
+          )}
 
           <section className="group">
             <h2>Name</h2>
@@ -512,7 +556,7 @@ export function Editor({ item, actor, onSaved, onClose }: {
           <section className="group">
             <label className="menued__check">
               <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} />
-              Hide from the menu <span>(the counter and online ordering stop offering it; old orders keep it)</span>
+              Hide from the menu <span>(for now: the counter and online ordering stop offering it until you show it again; old orders keep it)</span>
             </label>
           </section>
           {error && <p className="reason-msg" role="alert">{error}</p>}

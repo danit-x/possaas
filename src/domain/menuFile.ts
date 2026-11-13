@@ -31,10 +31,15 @@ const fitName = (name: string): string => {
 /** A shop's own size ids are lowercase slugs ('normal'); the sample's are 'S', 'M', 'L'. */
 const sizeId = (z: { id: string; label: string }): string => (OPTION_ID.test(z.id) ? z.id : slug(z.id) || slug(z.label) || 'size');
 
+/** A section's id in a menu file (and on a shop that loaded it): 'kottu' → 'sec-kottu'. */
+export const fileSectionId = (id: string): string => (id.startsWith('sec-') ? id : `sec-${slug(id) || 'section'}`);
+/** An item's id in a menu file (and on a shop that loaded it): 'kt-egg' → 'new-kt-egg'. */
+export const fileItemId = (id: string): string => (id.startsWith('new-') ? id : `new-${slug(id, 48) || 'item'}`);
+
 /** The menu every screen shows now, as a file. Times of day do not matter: off-hours sections are kept. */
 export const menuFile = (start: StartingMenu, state: MenuState): MenuFile => {
   const sections = allSections(start, state).filter((x) => !x.removed);
-  const ids = new Map(sections.map((x) => [x.id, x.id.startsWith('sec-') ? x.id : `sec-${slug(x.id) || 'section'}`]));
+  const ids = new Map(sections.map((x) => [x.id, fileSectionId(x.id)]));
   const items = effectiveMenu(start, state, 0).filter((m) => !m.hidden && !m.removed && ids.has(m.category));
   return {
     lume: 'menu', v: 1,
@@ -47,7 +52,7 @@ export const menuFile = (start: StartingMenu, state: MenuState): MenuFile => {
         ? Object.fromEntries(m.variants.filter((v) => sizes.includes(v.id)).map((v) => [sizeId(v), v.price]))
         : { one: m.price ?? 0 };
       return {
-        id: m.id.startsWith('new-') ? m.id : `new-${slug(m.id, 48) || 'item'}`,
+        id: fileItemId(m.id),
         category: ids.get(m.category)!, name: m.name, description: m.description, prices,
         ...(m.number !== undefined ? { number: m.number } : {}),
         ...(m.leaveOut.length ? { leaveOut: m.leaveOut.map((o) => o.label) } : {}),

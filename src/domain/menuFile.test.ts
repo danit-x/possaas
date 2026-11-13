@@ -34,8 +34,9 @@ test('the rice demo copied and loaded on an empty shop sells the same items at t
   // Kitchens and hours stay with their sections; a long Sinhala name keeps its English part.
   const kottu = load.sections.find(([, s]) => s.name.startsWith('Kottu'))!;
   assert.equal(kottu[1].station, 'right');
-  const night = load.sections.find(([, s]) => s.name.startsWith('Fried Rice'))!;
-  assert.deepEqual(night[1].hours, { from: 18 * 60, to: 5 * 60 });
+  const breakfast = load.sections.find(([, s]) => s.name.startsWith('Rice & Curry') && s.hours?.from === 5 * 60)!;
+  assert.deepEqual(breakfast[1].hours, { from: 5 * 60, to: 11 * 60 });
+  assert.equal(load.sections.find(([, s]) => s.name.startsWith('Fried Rice'))![1].hours, undefined);
   assert.ok(load.sections.some(([, s]) => s.name === 'String Hoppers, Roti & Rolls'));
   assert.ok(load.sections.every(([id, s]) => id.startsWith('sec-') && checkSection(s) === null));
   assert.ok(load.items.every(([id]) => id.startsWith('new-')));

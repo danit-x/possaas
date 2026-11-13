@@ -84,7 +84,7 @@ const cashOutList = (day: CashOutDay): Insight => ({
 
 /**
  * `phone`: on the owner's phone (the cloud site): no links to the counter's screens.
- * `onBack`: back to the Register (F3 does the same).
+ * `onBack`: back to the Register (F7 does the same).
  */
 export function OwnerView({ phone = false, onBack, shop }: {
   phone?: boolean;

@@ -18,7 +18,6 @@ import type { OnlineOrder } from '../domain/online.ts';
 import { Menu, type CategoryId, type MenuEditing } from './Menu.tsx';
 import { AddItems, Editor, SectionSheet } from './MenuView.tsx';
 import { OrderPanel, VOID_REASONS, type ManagePanel } from './OrderPanel.tsx';
-import { PaySheet } from './PaySheet.tsx';
 import { PinSheet } from './PinSheet.tsx';
 import { ShorthandBar, describe } from './ShorthandBar.tsx';
 import { SyncSign } from './SyncSign.tsx';
@@ -63,9 +62,9 @@ export function App({
   onSwitch,
 }: {
   onKitchen?: (station?: Station) => void;
-  /** Opens the Owner view (owners and managers; F3 does the same). */
+  /** Opens the Owner view (owners and managers; F7 does the same). */
   onOwner?: () => void;
-  /** Opens Cash out: the paper list of cash taken from the drawer (F7 does the same). */
+  /** Opens Cash out: the paper list of cash taken from the drawer (F3 does the same). */
   onCashOut?: () => void;
   onSwitch?: () => void;
 } = {}) {
@@ -103,7 +102,6 @@ export function App({
   const collect = useCallback(() => {
     if (reg.pay('cash', orderTotal(reg.order), { next: true }) && canPrint()) void openDrawer();
   }, [reg]);
-  const total = orderTotal(reg.order);
   const hasNew = unsentLines(reg.order).length > 0;
   /** A waiting order opened from the list, with nothing new on it: Charge, or go back. */
   const canCharge = !hasNew && reg.order.sentAt !== undefined && !reg.paid;
@@ -256,7 +254,13 @@ export function App({
     reg.startNew();
   };
 
+  // Paying, and the order has nothing left on it (an Undo took the last line): back to the order.
+  const paying = sheet?.kind === 'pay';
+  useEffect(() => { if (paying && listing) setSheet(null); }, [paying, listing]);
+
   const quickAdd = (item: MenuItem, size?: SizeId) => {
+    // The menu stays live while paying: the customer remembered a drink, so it goes on and the order is back.
+    if (paying) setSheet(null);
     const label = item.variants?.find((v) => v.id === size)?.label;
     reg.addSpec(bareLine(item.id, size), `Added ${item.name.en}${label ? ` · ${label}` : ''}`);
   };
@@ -296,7 +300,7 @@ export function App({
       // The developer's laptop only (its server holds the admin password).
       ...(fleet ? [{ id: 'shops', label: "Shops: every shop's sales (developer)", run: () => { location.hash = '#shops'; } }] : []),
       { id: 'menu', label: 'Menu: every item on one list', run: () => { location.hash = '#menu'; } },
-      ...(parts.cashOut ? [{ id: 'cashout', label: 'Cash out: fish, bank, gas, paid from the drawer', hint: 'F7', run: () => { location.hash = '#cashout'; } }] : []),
+      ...(parts.cashOut ? [{ id: 'cashout', label: 'Cash out: fish, bank, gas, paid from the drawer', hint: 'F3', run: () => { location.hash = '#cashout'; } }] : []),
       { id: 'close', label: 'Close the day: count the cash', run: () => { location.hash = '#close'; } },
       // This screen's look; the current choice says "On".
       ...(['light', 'dark', 'auto'] as ThemeChoice[]).map((t) => ({
@@ -311,7 +315,7 @@ export function App({
   }, [manager, listing, reg, selectedLine, sound, manage, askAdjust, askVoid, mode.exit, fleet, parts.cashOut]);
 
   return (
-    <div className={`register${manager ? ' register--managing' : ''}`} onClick={onBackground}>
+    <div className={`register${manager ? ' register--managing' : ''}${paying ? ' register--paying' : ''}`} onClick={onBackground}>
       <KitchenFlight />
       <header className="register__head">
         <ShopBrand />
@@ -334,9 +338,9 @@ export function App({
               {busy ? 'Busy · no bill' : 'Busy'} <kbd>F6</kbd>
             </button>
             )}
-            {onCashOut && parts.cashOut && <button type="button" className="corner__key" onClick={onCashOut}>Cash out <kbd>F7</kbd></button>}
+            {onCashOut && parts.cashOut && <button type="button" className="corner__key" onClick={onCashOut}>Cash out <kbd>F3</kbd></button>}
             {/* The owner and managers see their own screen without any shortcut. */}
-            {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Owner view <kbd>F3</kbd></button>}
+            {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Owner view <kbd>F7</kbd></button>}
             {onSwitch
               ? (
                 <button type="button" className="corner__key" onClick={onSwitch} aria-label={`${currentCashier().name}: switch user`}>
@@ -386,6 +390,7 @@ export function App({
           onOpen={reg.openOrder}
           onNext={reg.startNew}
           onUndo={reg.undo}
+          paying={paying ? { onPay: (tender, tendered) => { pay(tender, tendered); closeSheet(); }, onClose: closeSheet } : null}
         />
       </div>
 
@@ -416,9 +421,6 @@ export function App({
           onSubmit={(spec) => { reg.editLine({ ...spec, id: sheet.line.id }, 'Updated'); closeSheet(); }}
           onRemove={() => { reg.dropLine(sheet.line.id, 'Removed'); closeSheet(); }}
         />
-      )}
-      {sheet?.kind === 'pay' && (
-        <PaySheet total={total} onClose={closeSheet} onPay={(tender, tendered) => { pay(tender, tendered); closeSheet(); }} />
       )}
       {sheet?.kind === 'online' && <OnlineSheet state={online} onAccept={acceptOnline} onClose={closeSheet} />}
       {sheet?.kind === 'pin' && (

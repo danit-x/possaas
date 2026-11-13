@@ -4,6 +4,7 @@ import {
   checkNewItem, checkOverride, checkSection, MENU_EVENT_TYPES, NEW_ITEM_ID, NEW_SECTION_ID, OPTION_ID, SIZE_KEY, type ItemOverride, type NewItem, type SectionDef,
 } from '../src/domain/menuEdits.ts';
 import { CASH_EVENT_TYPES, MAX_CASH_OUT, MAX_NAME } from '../src/domain/cashOut.ts';
+import { validPhotoChoice } from '../src/domain/photos.ts';
 import type { MenuItem } from '../src/domain/types.ts';
 import {
   KITCHEN_EVENT_TYPES, ORDER_EVENT_TYPES, PUSH_BATCH, type SyncEvent,
@@ -66,6 +67,7 @@ const validOverride = (itemId: unknown, value: unknown): boolean => {
         !['en', 'si', 'ta'].includes(key) || (name !== undefined && typeof name !== 'string')))) return false;
   if (value.description !== undefined && typeof value.description !== 'string') return false;
   if (value.hidden !== undefined && typeof value.hidden !== 'boolean') return false;
+  if (value.removed !== undefined && typeof value.removed !== 'boolean') return false;
   if (value.prices !== undefined && (!isObj(value.prices) ||
       Object.values(value.prices).some((price) => typeof price !== 'number'))) return false;
   if (value.adds !== undefined && (!isObj(value.adds) ||
@@ -130,6 +132,9 @@ export const validatePush = (body: unknown, tenantId: string): { events: SyncEve
     }
     if (e.type === 'menu.section_set' && (typeof e.sectionId !== 'string' || !NEW_SECTION_ID.test(e.sectionId) || !validSection(e.section))) {
       return { reason: `event ${e.id} has an invalid menu section` };
+    }
+    if (e.type === 'menu.photo_set' && (!shortString(e.itemId) || !onMenu(e.itemId) || !validPhotoChoice(e.photo))) {
+      return { reason: `event ${e.id} has an invalid photo change` };
     }
   }
   return { events: body.events as SyncEvent[] };

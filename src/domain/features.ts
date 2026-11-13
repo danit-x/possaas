@@ -10,7 +10,7 @@
 export interface ShopFeatures {
   /** Sections set to the Right kitchen get their own ticket there, a key per kitchen, orders fly to their side. */
   twoKitchens: boolean;
-  /** The owner's paper list: F7, the Cash out tab, its card in the Owner view, its lines in Close the day. */
+  /** The owner's paper list: F3, the Cash out tab, its card in the Owner view, its lines in Close the day. */
   cashOut: boolean;
   /** Busy time (F6): one tap takes the cash, no bill. */
   busyMode: boolean;
@@ -34,7 +34,7 @@ export const DEFAULT_FEATURES: ShopFeatures = {
 
 /** The dashboard's list, in this order: the name and one line on what it does. */
 export const PARTS: { key: Part; name: string; what: string }[] = [
-  { key: 'cashOut', name: 'Cash out', what: "The owner's paper list (F7): fish, bank, gas. Close the day counts it." },
+  { key: 'cashOut', name: 'Cash out', what: "The owner's paper list (F3): fish, bank, gas. Close the day counts it." },
   { key: 'twoKitchens', name: 'Two kitchens', what: 'Left and Right kitchen tickets, a key per kitchen, orders fly to their side.' },
   { key: 'busyMode', name: 'Busy mode', what: 'F6 at rush time: one tap takes the cash, no bill.' },
   { key: 'onlineOrders', name: 'Online orders', what: 'Pickup orders from the online page; the counter accepts them.' },
