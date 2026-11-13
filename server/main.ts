@@ -6,7 +6,7 @@ import { dryRunPrinter, printerFor, switchablePrinter } from './printer.ts';
 import { startOnline, type Online } from './online.ts';
 import { createFleet } from './fleet.ts';
 import { firstMenu } from './firstMenu.ts';
-import { BATA_KADE_MENU } from '../src/shop/bataKade.ts';
+import { BATA_KADE_MENU, BATA_KADE_UPDATES } from '../src/shop/bataKade.ts';
 import { BATA_KADE_LOGO } from './shopLogo.ts';
 import { dailyReports, defaultReportsDir } from './dailyReport.ts';
 import { startReplicator } from './replicator.ts';
@@ -129,7 +129,7 @@ const server = createApp({
   updating: () => activeUpdate(updates.status(), Date.now()),
   fleet,
   // possaas is Bata Kade's POS: its menu is added once, when a shop without one first connects its counter.
-  firstMenu: firstMenu({ store, menu: BATA_KADE_MENU, shopId: () => settings.get().shopId }),
+  firstMenu: firstMenu({ store, menu: BATA_KADE_MENU, updates: BATA_KADE_UPDATES, shopId: () => settings.get().shopId }),
 });
 startCloud();
 reports.start();

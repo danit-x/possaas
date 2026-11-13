@@ -268,7 +268,7 @@ test('manager mode: a rice & curry sold in Normal only gets a Full price from it
   }
 });
 
-test('a section with hours shows only then: morning rice prices, then lunch & dinner prices, fried rice at night', async () => {
+test('a section with hours shows only then: morning rice prices, then lunch & dinner prices; the rest all day', async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
   try {
     const user = userEvent.setup();
@@ -278,7 +278,9 @@ test('a section with hours shows only then: morning rice prices, then lunch & di
     await user.click(screen.getByRole('button', { name: 'Rice & Curry' }));
     expect(screen.getAllByRole('button', { name: 'Normal 200' })).toHaveLength(1); // morning vegetable
     expect(screen.queryByRole('button', { name: 'Normal 220' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Fried Rice' })).toBeNull();
+    // Everything else is sold all day: fried rice too, at the same price morning and night.
+    await user.click(screen.getByRole('button', { name: 'Fried Rice' }));
+    expect(screen.getAllByRole('button', { name: 'Full 750' })).toHaveLength(2); // chicken fried rice and biriyani
     cleanup();
 
     vi.setSystemTime(new Date(2026, 9, 30, 19, 0));
@@ -289,7 +291,7 @@ test('a section with hours shows only then: morning rice prices, then lunch & di
     expect(screen.getByRole('button', { name: 'Normal 220' })).toBeTruthy(); // lunch & dinner vegetable
     expect(screen.queryByRole('button', { name: 'Normal 200' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Fried Rice' }));
-    expect(screen.getByRole('button', { name: 'Full 750' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Full 750' })).toHaveLength(2); // chicken fried rice and biriyani
   } finally {
     vi.useRealTimers();
     setStartingMenu(SAMPLE_START);

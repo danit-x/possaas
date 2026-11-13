@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
-import { EMPTY_START, effectiveMenu, menuStateFromEvents } from '../src/domain/menuEdits.ts';
+import { EMPTY_MENU_STATE, EMPTY_START, effectiveMenu, menuStateFromEvents } from '../src/domain/menuEdits.ts';
+import { loadMenu, menuFile, menuLoadEvents, type MenuLoad } from '../src/domain/menuFile.ts';
 import type { PullResponse, SyncEvent } from '../src/domain/sync.ts';
-import { BATA_KADE_MENU } from '../src/shop/bataKade.ts';
+import { BATA_KADE_MENU, BATA_KADE_UPDATES } from '../src/shop/bataKade.ts';
 import { createApp } from './app.ts';
-import { firstMenu } from './firstMenu.ts';
+import { MENU_INSTALLER, firstMenu } from './firstMenu.ts';
 import { memoryStore, type EventStore } from './store.ts';
 import { validatePush } from './validate.ts';
 
@@ -14,7 +15,7 @@ const SHOP = 'shop-bata';
 /** A shop server with the first-menu step, and its counter's pull. */
 async function shop(store: EventStore, counterToken?: string) {
   const counter = counterToken ? { token: counterToken } : await store.addDevice(SHOP, 'Bata Kade', 'counter');
-  const server = createApp({ store, now: () => 5000, firstMenu: firstMenu({ store, menu: BATA_KADE_MENU, shopId: () => SHOP, now: () => 5000 }) });
+  const server = createApp({ store, now: () => 5000, firstMenu: firstMenu({ store, menu: BATA_KADE_MENU, updates: BATA_KADE_UPDATES, shopId: () => SHOP, now: () => 5000 }) });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const pull = async (token = counter.token) =>
@@ -73,6 +74,54 @@ test("a shop that had other menu changes still gets the menu; the owner's own ch
   const k = await shop(fresh, kitchen.token);
   assert.equal((await k.pull()).events.length, 0);
   await k.stop();
+});
+
+test("a shop with the old menu gets the new price list once: prices, Half / Full, fried rice all day, biriyani by kind; the owner's own changes stay", async () => {
+  const store = memoryStore();
+  const counter = await store.addDevice(SHOP, 'Bata Kade', 'counter');
+  const owner = { id: 'o', name: 'Owner', role: 'owner' as const };
+  // What a shop PC got from the menu before 2026-11-13 (same event ids), then the owner's own change.
+  const load = loadMenu(menuFile(BATA_KADE_MENU, EMPTY_MENU_STATE), { sections: [], items: [] }) as MenuLoad;
+  const old = menuLoadEvents(load, SHOP, MENU_INSTALLER, 1).map((e) => {
+    if (e.type === 'menu.section_set' && e.sectionId === 'sec-fried-rice') {
+      return { ...e, section: { ...e.section, hours: { from: 1080, to: 300 }, sizes: [{ id: 'normal', label: 'Normal' }, { id: 'full', label: 'Full' }] } };
+    }
+    if (e.type === 'menu.item_added' && e.itemId === 'new-rc-m-egg') return { ...e, item: { ...e.item, prices: { normal: 25000 } } };
+    if (e.type === 'menu.item_added' && e.itemId === 'new-ml-bread-egg') return { ...e, item: { ...e.item, name: { en: 'Bread ½ with Egg', si: 'පාන් 1/2 බිත්තර සමඟ' } } };
+    return e;
+  });
+  const biriyani = { id: 'menu-load-new-rt-biriyani', shopId: SHOP, at: 1, orderNumber: 0, actor: MENU_INSTALLER, type: 'menu.item_added',
+    itemId: 'new-rt-biriyani', item: { category: 'sec-roti', name: { en: 'Biriyani' }, description: '', prices: { one: 50000 } } };
+  const own = { id: 'o1', shopId: SHOP, at: 2, orderNumber: 0, actor: owner, type: 'menu.price_set', itemId: 'new-ml-bread-egg', before: {}, after: { prices: { one: 21000 } } };
+  await store.push({ id: counter.device.id, tenantId: SHOP, kind: 'counter' }, [...old, biriyani, own] as SyncEvent[], 2);
+
+  const s = await shop(store, counter.token);
+  const events = (await s.pull()).events.map((e) => e.event);
+  // The cloud checks every copied event the same way: the update must pass.
+  assert.ok(!('reason' in validatePush({ events }, SHOP)));
+  const state = menuStateFromEvents(events);
+  const menu = effectiveMenu(EMPTY_START, state, 0).filter((m) => !m.hidden && !m.removed);
+  const price = (en: string, section = '') => menu.find((m) => m.name.en === en && m.category.includes(section))!;
+  assert.equal(price('Egg Rice & Curry', 'morning').variants!.map((v) => v.price).join(), '23000');
+  assert.equal(price('Egg Rice & Curry', 'day').variants!.map((v) => v.price).join(), '28000');
+  assert.equal(price('Noodles').price, 16000);
+  assert.equal(menu.find((m) => m.name.en === 'Biriyani'), undefined);
+  assert.equal(price('Chicken Biriyani').variants!.map((v) => `${v.label} ${v.price}`).join(), 'Half 45000,Full 75000');
+  assert.equal(state.sections['sec-fried-rice'].hours, undefined);
+  assert.equal(state.sections['sec-kottu'].sizes[0].label, 'Half');
+  // Renamed, and the owner's own price stays.
+  assert.equal(price('Bread with Gravy & Egg').price, 21000);
+  assert.equal(price('Bread with Gravy & Egg').name.si, 'පාන් හොදි බිත්තර');
+  await s.stop();
+
+  // Sent once: a restart stores nothing more, and a later owner price stays.
+  await store.push({ id: counter.device.id, tenantId: SHOP, kind: 'counter' },
+    [{ id: 'o2', shopId: SHOP, at: 9000, orderNumber: 0, actor: owner, type: 'menu.price_set', itemId: 'new-ml-noodles', before: {}, after: { prices: { one: 17000 } } }] as SyncEvent[], 9000);
+  const again = await shop(store, counter.token);
+  const after = (await again.pull()).events;
+  assert.equal(after.length, events.length + 1);
+  assert.equal(effectiveMenu(EMPTY_START, menuStateFromEvents(after.map((e) => e.event)), 0).find((m) => m.name.en === 'Noodles')!.price, 17000);
+  await again.stop();
 });
 
 test('a test PC that had its own menu sections gets the menu too', async () => {
