@@ -12,6 +12,7 @@ import { dailyReports, defaultReportsDir } from './dailyReport.ts';
 import { startReplicator } from './replicator.ts';
 import { cleanFeatures } from '../src/domain/features.ts';
 import { settingsFile } from './settings.ts';
+import { filePhotos } from './photos.ts';
 import { setupApi } from './setup.ts';
 import { sqliteStore } from './sqliteStore.ts';
 import { memoryStore, mysqlStore, type EventStore } from './store.ts';
@@ -130,6 +131,7 @@ const server = createApp({
   fleet,
   // possaas is Bata Kade's POS: its menu is added once, when a shop without one first connects its counter.
   firstMenu: firstMenu({ store, menu: BATA_KADE_MENU, updates: BATA_KADE_UPDATES, shopId: () => settings.get().shopId }),
+  photos: filePhotos(`${dataDir}/photos`),
 });
 startCloud();
 reports.start();

@@ -15,6 +15,8 @@ import type { Fleet } from './fleet.ts';
 import { SetupError, isLocal, type SetupApi, type ShopInfo } from './setup.ts';
 import type { Device, EventStore } from './store.ts';
 import { validatePush } from './validate.ts';
+import { MAX_PHOTO_BYTES, isWebp } from '../src/domain/photos.ts';
+import type { PhotoStore } from './photos.ts';
 
 /**
  * The sync server (docs/sync-contract.md): stores events, hands them out in
@@ -46,6 +48,8 @@ export interface AppOptions {
   fleet?: Fleet | null;
   /** Before a device's first pull: events to add once (the shop's menu, server/firstMenu.ts). */
   firstMenu?: (device: Device) => Promise<SyncedEvent[]>;
+  /** Menu photos (server/photos.ts). Omit and photos answer 404. */
+  photos?: PhotoStore;
   now?: () => number;
 }
 
@@ -110,7 +114,7 @@ const nonNegInt = (v: string | null, fallback: number): number => {
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
-  '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.json': 'application/json',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.json': 'application/json',
 };
 
 /** One open stream. Until its catch-up is sent, live events wait in `held`. */
@@ -121,7 +125,7 @@ interface Stream {
 
 const send = (ws: WebSocket, m: StreamMessage) => ws.send(JSON.stringify(m));
 
-export function createApp({ store, staticDir, printer, onStored, online, cloudStatus, shop, setup, version, updating, fleet, firstMenu, now = Date.now }: AppOptions): Server {
+export function createApp({ store, staticDir, printer, onStored, online, cloudStatus, shop, setup, version, updating, fleet, firstMenu, photos, now = Date.now }: AppOptions): Server {
   /** Open streams per shop. A shop's events never go to another shop's devices. */
   const streams = new Map<string, Set<Stream>>();
   /** Wrong PIN guesses per device. 10,000 PINs: without a brake, guessing would take minutes. */
@@ -273,6 +277,28 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
       try { await o.answer(id, body as unknown as OnlineAnswer); }
       catch (e) { if (e instanceof OnlineError) throw new HttpError(e.status === 404 ? 404 : 409, 'forbidden', e.message); throw e; }
       json(res, 200, o.view());
+      return;
+    }
+    // Menu photos: anyone on the shop's network may look (they are the menu's public face, named by
+    // an id nobody can guess); only the counter adds one, and the event naming it says who.
+    const photo = /^\/api\/v1\/photos\/([a-f0-9]{64})\.webp$/.exec(url.pathname);
+    if (photo && req.method === 'GET') {
+      const bytes = (await photos?.get(photo[1])) ?? null;
+      if (!bytes) throw new HttpError(404, 'server', 'no such photo');
+      res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'public, max-age=31536000, immutable' });
+      res.end(bytes);
+      return;
+    }
+    if (url.pathname === '/api/v1/photos' && req.method === 'POST') {
+      const device = await authenticate(req, url);
+      if (device.kind !== 'counter') throw new HttpError(403, 'forbidden', 'only the counter adds photos');
+      if (!photos) throw new HttpError(503, 'server', 'photos are not kept on this server');
+      const body = await readBody(req);
+      const data = typeof body === 'object' && body !== null ? (body as { data?: unknown }).data : undefined;
+      if (typeof data !== 'string') throw new HttpError(400, 'invalid_event', 'body must be { data: base64 }');
+      const bytes = Buffer.from(data, 'base64');
+      if (bytes.length > MAX_PHOTO_BYTES || !isWebp(bytes)) throw new HttpError(400, 'invalid_event', 'a photo is a small WebP picture');
+      json(res, 200, { id: await photos.put(bytes) });
       return;
     }
     if (url.pathname !== '/api/v1/events') throw new HttpError(404, 'server', 'no such endpoint');
