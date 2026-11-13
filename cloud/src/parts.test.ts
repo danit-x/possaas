@@ -55,7 +55,7 @@ test("a shop's parts: switched on /admin, logged with what changed, picked up by
     onFeatures: (f) => { kept = f; },
   });
   await rep.syncNow();
-  assert.deepEqual(kept, { twoKitchens: true, cashOut: true, busyMode: false, onlineOrders: true, ownerPhone: true });
+  assert.deepEqual(kept, { twoKitchens: true, cashOut: true, busyMode: false, onlineOrders: true, ownerPhone: true, serving: false });
   await rep.syncNow(); // the next pass says what it now has
   rep.stop();
   assert.match(await (await admin(req('/admin/shops/bata-kade/parts', { session }))).text(), /The shop has these/);

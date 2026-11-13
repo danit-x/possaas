@@ -18,13 +18,18 @@ export interface ShopFeatures {
   onlineOrders: boolean;
   /** The owner's phone: its QR code in Shop setup (phones already paired keep working until withdrawn). */
   ownerPhone: boolean;
+  /** A pay-first counter's Serving list (paid portions handed over one tap each) instead of kitchen tickets. */
+  serving: boolean;
 }
 
 export type Part = keyof ShopFeatures;
 
-/** What each shop has until the dashboard says otherwise. Two kitchens waits (Bata Kade, 2026-11-13). */
+/**
+ * What each shop has until the dashboard says otherwise. Two kitchens waits (Bata Kade, 2026-11-13);
+ * so does the Serving list, the kitchen's next module once the owner is at home with the POS (2026-11-13).
+ */
 export const DEFAULT_FEATURES: ShopFeatures = {
-  twoKitchens: false, cashOut: true, busyMode: true, onlineOrders: true, ownerPhone: true,
+  twoKitchens: false, cashOut: true, busyMode: true, onlineOrders: true, ownerPhone: true, serving: false,
 };
 
 /** The dashboard's list, in this order: the name and one line on what it does. */
@@ -34,6 +39,7 @@ export const PARTS: { key: Part; name: string; what: string }[] = [
   { key: 'busyMode', name: 'Busy mode', what: 'F6 at rush time: one tap takes the cash, no bill.' },
   { key: 'onlineOrders', name: 'Online orders', what: 'Pickup orders from the online page; the counter accepts them.' },
   { key: 'ownerPhone', name: "Owner's phone", what: 'A QR code in Shop setup puts the Owner view on the phone.' },
+  { key: 'serving', name: 'Serving list', what: 'Pay-first kitchen hands paid portions over, one tap each, instead of cooking tickets.' },
 ];
 
 let current: ShopFeatures = { ...DEFAULT_FEATURES };
