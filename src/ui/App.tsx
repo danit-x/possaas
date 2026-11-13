@@ -2,7 +2,7 @@ import { useFeatures } from '../services/shop.ts';
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { seesTakings } from '../domain/auth.ts';
 import { DISCOUNT_CHIPS, type ManagerChange } from '../domain/manager.ts';
-import { itemById, menuSections } from '../domain/menu.ts';
+import { itemById, menuSections, sectionsNow } from '../domain/menu.ts';
 import { bareLine, orderTotal, unsentLines } from '../domain/order.ts';
 import { twoKitchens } from '../domain/kitchen.ts';
 import type { MenuItem, OrderLine, PaidOrder, Section, SizeId, Station, Tender } from '../domain/types.ts';
@@ -113,6 +113,16 @@ export function App({
   const [pendingVoid, setPendingVoid] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const [palette, setPalette] = useState(false);
+  // A small counter screen folds the corner's keys behind one "More" key (CSS shows it only there).
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    if (!more) return;
+    const away = (e: PointerEvent) => { if (!(e.target as Element).closest('.corner')) setMore(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setMore(false); };
+    document.addEventListener('pointerdown', away);
+    window.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('pointerdown', away); window.removeEventListener('keydown', esc); };
+  }, [more]);
   const [menuEdit, setMenuEdit] = useState<MenuEdit | null>(null);
   const [menuToast, setMenuToast] = useState<{ id: number; message: string; undo: () => void } | null>(null);
   const [sound, setSound] = useState(soundOn);
@@ -237,6 +247,12 @@ export function App({
         return;
       }
       if (e.key === 'F6' && !sheet && parts.busyMode) { e.preventDefault(); setBusy(!busy); return; }
+      // Alt+1 … Alt+9: Popular, then the sections in their order (digits alone start typing an order).
+      if (e.altKey && !mod && /^[1-9]$/.test(e.key) && !sheet) {
+        const id = ['popular', ...sectionsNow().map((x) => x.id)][Number(e.key) - 1];
+        if (id) { e.preventDefault(); setCategory(id); }
+        return;
+      }
       if (sheet || typed !== null || mod || e.altKey || isTypingTarget(e.target)) return;
       if (e.key === 'Escape' && canCharge) { reg.startNew(); return; }
       if (e.key.length === 1 && /[a-z0-9]/i.test(e.key)) { e.preventDefault(); setTyped(e.key); }
@@ -314,6 +330,13 @@ export function App({
     return list;
   }, [manager, listing, reg, selectedLine, sound, manage, askAdjust, askVoid, mode.exit, fleet, parts.cashOut]);
 
+  const busyKey = (
+    <button type="button" className={`corner__key${busy ? ' corner__key--on' : ''}`} aria-pressed={busy} onClick={() => setBusy(!busy)}
+      title={busy ? 'Busy: Collected takes the cash, no bill. F6 for bills again' : 'Busy time: one tap takes the cash, no bill'}>
+      {busy ? 'Busy · no bill' : 'Busy'} <kbd>F6</kbd>
+    </button>
+  );
+
   return (
     <div className={`register${manager ? ' register--managing' : ''}${paying ? ' register--paying' : ''}`} onClick={onBackground}>
       <KitchenFlight />
@@ -332,23 +355,25 @@ export function App({
               ? (['left', 'right'] as const).map((k) => <KitchenChip key={k} tickets={tickets} station={k} onOpen={() => onKitchen(k)} />)
               : <KitchenChip tickets={tickets} onOpen={() => onKitchen()} />)}
             <SyncSign />
-            {parts.busyMode && (
-            <button type="button" className={`corner__key${busy ? ' corner__key--on' : ''}`} aria-pressed={busy} onClick={() => setBusy(!busy)}
-              title={busy ? 'Busy: Collected takes the cash, no bill. F6 for bills again' : 'Busy time: one tap takes the cash, no bill'}>
-              {busy ? 'Busy · no bill' : 'Busy'} <kbd>F6</kbd>
+            {parts.busyMode && busy && busyKey}
+            <span className={`corner__rest${more ? ' corner__rest--open' : ''}`} id="corner-rest" onClick={() => setMore(false)}>
+              {parts.busyMode && !busy && busyKey}
+              {onCashOut && parts.cashOut && <button type="button" className="corner__key" onClick={onCashOut}>Cash out <kbd>F3</kbd></button>}
+              {/* The owner and managers see their own screen without any shortcut. */}
+              {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Owner view <kbd>F7</kbd></button>}
+              {onSwitch
+                ? (
+                  <button type="button" className="corner__key" onClick={onSwitch} aria-label={`${currentCashier().name}: switch user`}>
+                    {currentCashier().name} <kbd>F4</kbd>
+                  </button>
+                )
+                : <span className="cashier">{currentCashier().name}</span>}
+              <button type="button" className="corner__key" onClick={() => setSheet({ kind: 'pin' })}>Manager <kbd>Ctrl M</kbd></button>
+            </span>
+            <button type="button" className="corner__more" aria-label="More" aria-expanded={more} aria-controls="corner-rest"
+              onClick={() => setMore(!more)}>
+              <span aria-hidden="true">•••</span>
             </button>
-            )}
-            {onCashOut && parts.cashOut && <button type="button" className="corner__key" onClick={onCashOut}>Cash out <kbd>F3</kbd></button>}
-            {/* The owner and managers see their own screen without any shortcut. */}
-            {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Owner view <kbd>F7</kbd></button>}
-            {onSwitch
-              ? (
-                <button type="button" className="corner__key" onClick={onSwitch} aria-label={`${currentCashier().name}: switch user`}>
-                  {currentCashier().name} <kbd>F4</kbd>
-                </button>
-              )
-              : <span className="cashier">{currentCashier().name}</span>}
-            <button type="button" className="corner__key" onClick={() => setSheet({ kind: 'pin' })}>Manager <kbd>Ctrl M</kbd></button>
           </span>
         )}
       </header>

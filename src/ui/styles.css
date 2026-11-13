@@ -130,11 +130,10 @@ button:active:not(:disabled) { transform: scale(0.97); transition: transform 60m
 /* ---------- shell ---------- */
 .register { height: 100dvh; display: flex; flex-direction: column; background: var(--ground); overflow: hidden; }
 .register__head { flex: 0 0 auto; min-height: var(--sp-6); display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: 0 var(--sp-5); }
-/* One line, always: the shop's name gives way first (...), then the keys' F-key hints, then the keys scroll. */
+/* Keep the shop name and keys on one line. Smaller screens use the More menu below. */
 .register__head .brand { flex: 0 1 auto; min-width: 0; font-size: var(--fs-b); }
 .brand__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.register__head .corner { flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; gap: var(--sp-1); }
-.register__head .corner::-webkit-scrollbar { display: none; }
+.register__head .corner { flex: 0 1 auto; min-width: 0; gap: var(--sp-1); }
 .register__head .corner__key { min-height: var(--tap); padding: 0 var(--sp-3); font-size: var(--fs-s); white-space: nowrap; flex: none; }
 .register__head .cashier, .register__head .syncsign, .register__head .corner__who { font-size: var(--fs-s); white-space: nowrap; flex: none; }
 @media (max-width: 1180px) { .register__head .corner kbd { display: none; } }
@@ -147,6 +146,10 @@ button:active:not(:disabled) { transform: scale(0.97); transition: transform 60m
 .corner__key:hover { background: var(--chip); color: var(--ink); }
 .corner__key--on { background: var(--primary); color: var(--on-primary); }
 .corner__key--on:hover { background: var(--primary); color: var(--on-primary); }
+/* Wide screens show every key; the small counter screen folds them behind "More" (see the counter-screen block). */
+.corner__rest { display: contents; }
+.corner__more { display: none; min-width: 48px; min-height: 48px; padding: 0 12px; border-radius: 12px; font-size: 13px; letter-spacing: 1px; color: var(--ink-2); align-items: center; justify-content: center; }
+.corner__more:hover, .corner__more[aria-expanded='true'] { background: var(--chip); color: var(--ink); }
 a.corner__key { text-decoration: none; }
 .kchip { margin-right: 6px; }
 /* Online orders: a quiet key that pulses only while an order waits for an answer. */
@@ -220,8 +223,8 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .palette__item[aria-selected='true'] { background: var(--chip); }
 .palette__empty { padding: 14px; color: var(--ink-3); }
 .register__body { flex: 1; min-height: 0; display: flex; }
-.menu { flex: 1; min-width: 0; padding: 0 var(--sp-5) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-4); overflow-y: auto; position: relative; }
-/* Every bar above the cards keeps its height: a sideways-scrolling row would otherwise be squeezed to nothing. */
+.menu { flex: 1; min-width: 0; scrollbar-width: thin; padding: 0 var(--sp-5) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-4); overflow-y: auto; position: relative; }
+/* Keep the section bar and other controls from shrinking in a short window. */
 .menu > * { flex-shrink: 0; }
 /* The sections stay in view while the menu scrolls under them. */
 .menu .cats { position: sticky; top: 0; z-index: 1; margin: 0 calc(-1 * var(--sp-5)); padding: var(--sp-2) var(--sp-5); background: var(--ground); }
@@ -229,8 +232,11 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .menu .hint { font-size: var(--fs-xs); white-space: nowrap; flex: none; padding-left: var(--sp-3); }
 
 /* ---------- category pills + type hint ---------- */
-/* One line of tabs; more sections than fit scroll sideways instead of wrapping. */
-.cats { display: flex; align-items: center; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+/* Every section always in sight: the bar never shrinks under a long menu (it once squashed to 0 px on a
+   small counter screen), wraps onto a second line instead of hiding sections off the edge, and stays put
+   while the items scroll under it. */
+.cats { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+  position: sticky; top: 0; z-index: 1; padding: 4px 0; background: var(--ground); }
 .pill { flex: none; white-space: nowrap; padding: 10px 20px; border-radius: 980px; font-size: 15px; font-weight: 500; color: var(--ink-2); letter-spacing: -0.2px; min-height: 44px; }
 .pill[aria-pressed='true'] { background: var(--pill-on); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
 .hint { margin-left: auto; font-size: 13px; color: var(--ink-3); letter-spacing: -0.1px; }
@@ -500,6 +506,42 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
   .toast { left: 24px; }
 }
 
+/* ---------- the shop's counter screen: small and nearly square (1024×768, often at 125%) ----------
+   More of the menu, less of everything else: a slimmer order panel, one-line cards, no help text. */
+@media (max-width: 1180px), (max-height: 820px) {
+  .register { --panel-w: 300px; }
+  .register__head { flex-basis: 52px; padding: 0 20px; }
+  .corner { position: relative; }
+  .corner__more { display: inline-flex; }
+  .corner__rest { display: none; }
+  .corner__rest--open { display: flex; flex-direction: column; align-items: stretch; position: absolute; top: calc(100% + 4px); right: 0; z-index: 6;
+    min-width: 220px; padding: 6px; border-radius: 16px; background: var(--surface); box-shadow: var(--sheet-shadow); animation: rise 150ms var(--ease); }
+  .corner__rest--open .corner__key, .corner__rest--open .cashier { justify-content: space-between; color: var(--ink); }
+  .corner__rest--open .cashier { min-height: 48px; display: flex; align-items: center; padding: 0 12px; }
+  .menu { padding: 0 20px 20px; gap: 12px; }
+  .pill { padding: 0 14px; font-size: 14px; }
+  .hint { display: none; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .card { padding: 12px; gap: 10px; border-radius: 14px; }
+  .card__title { min-height: 0; gap: 2px; }
+  .card__name, .card__si { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card__name { font-size: 15px; }
+  .card__si { font-size: 13px; }
+  .card__desc { display: none; }
+  .card__prices { gap: 6px; }
+  /* A price chip is never narrower than its words ("Normal 450"): the longer one takes the extra room. */
+  .price { flex: 1 0 auto; padding: 0 8px; white-space: nowrap; font-size: 14px; }
+  .panel__no, .panel__lines, .paid, .panel__stamp, .discounts { padding-left: 20px; padding-right: 20px; }
+  .panel__lines { padding-top: 16px; gap: 18px; }
+  .panel__foot { padding: 20px; gap: 14px; }
+  .total { font-size: 38px; }
+  .cta { height: 64px; }
+  .empty span { display: none; } /* the typing example: typing shows its own preview */
+  .sheet__body, .sheet__foot { padding-left: 24px; padding-right: 24px; }
+  .sheet__body { padding-top: 28px; gap: 24px; }
+  .toast { left: 20px; }
+}
+
 @media (max-width: 1000px) {
   .kitchen__head, .kitchen__list { padding-left: 24px; padding-right: 24px; }
   .ticket { grid-template-columns: 110px minmax(0, 1fr) 120px; gap: 20px; }
@@ -519,7 +561,7 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
   .register__body { flex-direction: column; }
   .menu { flex: 1 1 50%; }
   .hint { display: none; }
-  .cats { overflow-x: auto; }
+  .cats { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .panel { flex: 0 0 auto; width: 100%; max-height: 46%; box-shadow: 0 -1px 0 rgba(127, 127, 127, 0.2); }
   .panel__no, .panel__lines, .panel__foot, .paid, .panel__stamp, .discounts { padding-left: 16px; padding-right: 16px; }
   .panel__foot { padding-top: 14px; padding-bottom: 16px; gap: 12px; flex-direction: row; align-items: center; }
