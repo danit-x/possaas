@@ -11,8 +11,11 @@ with what it was ("Two kitchens on").
 | Busy mode | no Busy key, F6 does nothing |
 | Online orders | no Online key at the counter |
 | Owner's phone | no owner QR code in Shop setup (paired phones keep working until withdrawn) |
+| Serving list | a pay-first kitchen shows cooking tickets (Done) instead of the Serving list; the bill says Cooking / Done |
 
-Defaults (a shop never set): everything on except **Two kitchens**. The list and the defaults are
+Defaults (a shop never set): everything on except **Two kitchens** and **Serving list** (the kitchen's
+next module, once the owner is at home with the POS). Paying (or Send, in an eat-first shop) always flies
+the order off the Register with a whap: to its side with two kitchens, to the left with one. The list and the defaults are
 `src/domain/features.ts` (`PARTS`, `DEFAULT_FEATURES`).
 
 ## How a switch reaches the shop

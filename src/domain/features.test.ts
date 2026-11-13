@@ -5,6 +5,7 @@ import { cleanFeatures, DEFAULT_FEATURES, features, PARTS, sameFeatures, setFeat
 test('every part has a name, a line and a default; two kitchens waits, the rest are on as before', () => {
   assert.deepEqual(PARTS.map((p) => p.key).sort(), Object.keys(DEFAULT_FEATURES).sort());
   assert.equal(DEFAULT_FEATURES.twoKitchens, false);
+  assert.equal(DEFAULT_FEATURES.serving, false);
   assert.equal(DEFAULT_FEATURES.cashOut, true);
 });
 
