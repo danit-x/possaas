@@ -67,6 +67,7 @@ const validOverride = (itemId: unknown, value: unknown): boolean => {
         !['en', 'si', 'ta'].includes(key) || (name !== undefined && typeof name !== 'string')))) return false;
   if (value.description !== undefined && typeof value.description !== 'string') return false;
   if (value.hidden !== undefined && typeof value.hidden !== 'boolean') return false;
+  if (value.removed !== undefined && typeof value.removed !== 'boolean') return false;
   if (value.prices !== undefined && (!isObj(value.prices) ||
       Object.values(value.prices).some((price) => typeof price !== 'number'))) return false;
   if (value.adds !== undefined && (!isObj(value.adds) ||

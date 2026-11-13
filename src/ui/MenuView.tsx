@@ -422,6 +422,22 @@ export function Editor({ item, actor, onSaved, onClose }: {
   useEscape(onClose);
   const changePhoto = (photo: string | null, message: string) => setPhotoNote({ message, undo: setPhoto(item.id, photo, actor) });
 
+  /**
+   * Off the menu for good, at once, with Undo (no confirmation): gone from the counter, the Menu
+   * screen, typing and online ordering; an order that already has it keeps it.
+   */
+  const takeOff = () => {
+    const own = menuState().added?.[item.id];
+    if (own) {
+      const { removed: _r, ...def } = own;
+      addItem(item.id, null, actor);
+      onSaved(`${item.name.en} is off the menu`, () => addItem(item.id, def, actor));
+    } else {
+      const before = record(item.id, { ...(menuState().overrides[item.id] ?? {}), removed: true }, actor);
+      onSaved(`${item.name.en} is off the menu`, () => record(item.id, before, actor));
+    }
+  };
+
   /** The price it started with; undefined for a size it was not sold in. */
   const basePrice = (id: string): Cents | undefined => (id === 'one' ? base.price ?? 0 : base.variants?.find((v) => v.id === id)?.price);
 
@@ -483,6 +499,7 @@ export function Editor({ item, actor, onSaved, onClose }: {
                 onSaved(item.soldOut ? `${item.name.en} is back` : `${item.name.en}: sold out until morning`, () => setSoldOut(item.id, Boolean(item.soldOut), actor));
               }}>Sold out today</button>
             )}
+            <button type="button" className="linkbtn" onClick={takeOff}>Take off the menu</button>
           </div>
 
           <PhotoSlot name={item.name.en} url={photoUrl(item.id)}
@@ -539,7 +556,7 @@ export function Editor({ item, actor, onSaved, onClose }: {
           <section className="group">
             <label className="menued__check">
               <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} />
-              Hide from the menu <span>(the counter and online ordering stop offering it; old orders keep it)</span>
+              Hide from the menu <span>(for now: the counter and online ordering stop offering it until you show it again; old orders keep it)</span>
             </label>
           </section>
           {error && <p className="reason-msg" role="alert">{error}</p>}

@@ -63,9 +63,9 @@ export function App({
   onSwitch,
 }: {
   onKitchen?: (station?: Station) => void;
-  /** Opens the Owner view (owners and managers; F3 does the same). */
+  /** Opens the Owner view (owners and managers; F7 does the same). */
   onOwner?: () => void;
-  /** Opens Cash out: the paper list of cash taken from the drawer (F7 does the same). */
+  /** Opens Cash out: the paper list of cash taken from the drawer (F3 does the same). */
   onCashOut?: () => void;
   onSwitch?: () => void;
 } = {}) {
@@ -312,7 +312,7 @@ export function App({
       // The developer's laptop only (its server holds the admin password).
       ...(fleet ? [{ id: 'shops', label: "Shops: every shop's sales (developer)", run: () => { location.hash = '#shops'; } }] : []),
       { id: 'menu', label: 'Menu: every item on one list', run: () => { location.hash = '#menu'; } },
-      ...(parts.cashOut ? [{ id: 'cashout', label: 'Cash out: fish, bank, gas, paid from the drawer', hint: 'F7', run: () => { location.hash = '#cashout'; } }] : []),
+      ...(parts.cashOut ? [{ id: 'cashout', label: 'Cash out: fish, bank, gas, paid from the drawer', hint: 'F3', run: () => { location.hash = '#cashout'; } }] : []),
       { id: 'close', label: 'Close the day: count the cash', run: () => { location.hash = '#close'; } },
       // This screen's look; the current choice says "On".
       ...(['light', 'dark', 'auto'] as ThemeChoice[]).map((t) => ({
@@ -354,9 +354,9 @@ export function App({
             {parts.busyMode && busy && busyKey}
             <span className={`corner__rest${more ? ' corner__rest--open' : ''}`} id="corner-rest" onClick={() => setMore(false)}>
               {parts.busyMode && !busy && busyKey}
-              {onCashOut && parts.cashOut && <button type="button" className="corner__key" onClick={onCashOut}>Cash out <kbd>F7</kbd></button>}
+              {onCashOut && parts.cashOut && <button type="button" className="corner__key" onClick={onCashOut}>Cash out <kbd>F3</kbd></button>}
               {/* The owner and managers see their own screen without any shortcut. */}
-              {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Owner view <kbd>F3</kbd></button>}
+              {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Owner view <kbd>F7</kbd></button>}
               {onSwitch
                 ? (
                   <button type="button" className="corner__key" onClick={onSwitch} aria-label={`${currentCashier().name}: switch user`}>

@@ -179,10 +179,10 @@ test('the owner and managers see an Owner view key; a cashier does not', async (
   expect(screen.queryByRole('button', { name: /^Owner view/ })).toBeNull();
   await user.keyboard('{F4}2580');
   await screen.findByRole('button', { name: 'Ravi: switch user' });
-  expect(screen.getByRole('button', { name: 'Owner view F3' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Owner view F7' })).toBeTruthy();
 });
 
-test('F3 flips a manager between the Register and the Owner view; a cashier stays on the Register', async () => {
+test('F7 flips a manager between the Register and the Owner view; a cashier stays on the Register', async () => {
   pair();
   const user = userEvent.setup();
   render(<Root />);
@@ -191,18 +191,18 @@ test('F3 flips a manager between the Register and the Owner view; a cashier stay
   await user.keyboard('1111');
   await screen.findByRole('button', { name: 'Nimal: switch user' });
   expect(screen.queryByRole('button', { name: /^Owner view/ })).toBeNull();
-  await user.keyboard('{F3}');
+  await user.keyboard('{F7}');
   expect(owner()).toBeNull();
 
   await user.keyboard('{F4}2580');
   await screen.findByRole('button', { name: 'Ravi: switch user' });
-  await user.keyboard('{F3}');
+  await user.keyboard('{F7}');
   expect(owner()).toBeTruthy();
-  await user.keyboard('{F3}');
+  await user.keyboard('{F7}');
   expect(owner()).toBeNull();
   expect(panel()).toBeTruthy();
 
-  await user.click(screen.getByRole('button', { name: 'Owner view F3' }));
+  await user.click(screen.getByRole('button', { name: 'Owner view F7' }));
   expect(owner()).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Register' }));
   expect(panel()).toBeTruthy();

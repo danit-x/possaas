@@ -6,7 +6,7 @@ with what it was ("Two kitchens on").
 
 | Part | Off means |
 |---|---|
-| Cash out | no F7, no Cash out tab, no card in the Owner view |
+| Cash out | no F3, no Cash out tab, no card in the Owner view |
 | Two kitchens | one kitchen whatever the menu's Left/Right say: one ticket, one key, nothing flies |
 | Busy mode | no Busy key, F6 does nothing |
 | Online orders | no Online key at the counter |
