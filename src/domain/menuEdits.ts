@@ -66,9 +66,14 @@ export type MenuEvent =
   /** Owner only: a new item, or `null` to take back an item just added (Undo). */
   | (MenuBase & { type: 'menu.item_added'; item: NewItem | null })
   /** Owner only: a section made or changed (the whole definition), or `null` to take it off the menu. */
-  | (SectionBase & { type: 'menu.section_set'; section: SectionDef | null });
+  | (SectionBase & { type: 'menu.section_set'; section: SectionDef | null })
+  /**
+   * Owners and managers: the item's photo. A photo id (the picture is kept on the shop server, by its
+   * SHA-256: src/domain/photos.ts), `null` for no photo, or '' for the photo the shop's menu came with.
+   */
+  | (MenuBase & { type: 'menu.photo_set'; photo: string | null });
 
-export const MENU_EVENT_TYPES = ['menu.item_set', 'menu.price_set', 'menu.sold_out', 'menu.item_added', 'menu.section_set'] as const satisfies readonly MenuEvent['type'][];
+export const MENU_EVENT_TYPES = ['menu.item_set', 'menu.price_set', 'menu.sold_out', 'menu.item_added', 'menu.section_set', 'menu.photo_set'] as const satisfies readonly MenuEvent['type'][];
 
 /** Where a shop's menu starts before its own events: empty for a new shop, the sample for the demo. */
 export interface StartingMenu { sections: Section[]; items: MenuItem[] }
@@ -85,8 +90,10 @@ export interface MenuState {
   added: Record<string, NewItem & { removed?: true }>;
   /** The owner's sections (and changes to starting ones), oldest first; a taken-off one keeps its definition. */
   sections: Record<string, SectionDef & { removed?: true }>;
+  /** Item id → the photo the shop chose: a photo id, or null for none. Absent = the menu's own photo, if any. */
+  photos?: Record<string, string | null>;
 }
-export const EMPTY_MENU_STATE: MenuState = { overrides: {}, soldOut: {}, added: {}, sections: {} };
+export const EMPTY_MENU_STATE: MenuState = { overrides: {}, soldOut: {}, added: {}, sections: {}, photos: {} };
 
 /** Folds menu events (oldest first) into the shop's current changes. Other events are ignored. */
 export const menuStateFromEvents = (events: readonly { type: string }[]): MenuState => {
@@ -94,6 +101,7 @@ export const menuStateFromEvents = (events: readonly { type: string }[]): MenuSt
   const soldOut: Record<string, number> = {};
   const added: MenuState['added'] = {};
   const sections: MenuState['sections'] = {};
+  const photos: NonNullable<MenuState['photos']> = {};
   for (const e of events) {
     if (e.type === 'menu.item_set') {
       const m = e as Extract<MenuEvent, { type: 'menu.item_set' }>;
@@ -117,9 +125,13 @@ export const menuStateFromEvents = (events: readonly { type: string }[]): MenuSt
       const m = e as Extract<MenuEvent, { type: 'menu.section_set' }>;
       if (m.section) sections[m.sectionId] = m.section;
       else if (sections[m.sectionId]) sections[m.sectionId] = { ...sections[m.sectionId], removed: true };
+    } else if (e.type === 'menu.photo_set') {
+      const m = e as Extract<MenuEvent, { type: 'menu.photo_set' }>;
+      if (m.photo === '') delete photos[m.itemId];
+      else photos[m.itemId] = m.photo;
     }
   }
-  return { overrides, soldOut, added, sections };
+  return { overrides, soldOut, added, sections, photos };
 };
 
 const clean = (s: string | undefined) => s?.trim() || undefined;

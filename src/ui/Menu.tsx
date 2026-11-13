@@ -3,6 +3,7 @@ import { NEW_SECTION_ID } from '../domain/menuEdits.ts';
 import { fmtPlain } from '../domain/money.ts';
 import type { MenuItem, Section, SizeId } from '../domain/types.ts';
 import { usesLogin } from '../services/auth.ts';
+import { photoUrl, shopHasPhotos } from '../services/photos.ts';
 import { signedIn } from '../services/serverAuth.ts';
 import { useMenu } from './menuStore.ts';
 
@@ -73,6 +74,14 @@ export function Menu({ category, onCategory, onQuickAdd, onCustomise, hint, edit
   // While editing, every tap opens the item; nothing is added to the order.
   const quickAdd = edit ? (item: MenuItem) => edit.onItem(item) : onQuickAdd;
   const customise = edit ? edit.onItem : onCustomise;
+  // Photos on the tiles once the shop has any; an item without one keeps a blank, so the grid stays even.
+  const photos = shopHasPhotos();
+  /** A tap on the photo: the first size (the one sold most), or the item's only price; more sizes open the item. */
+  const photoTap = (item: MenuItem) => {
+    if (item.variants && item.variants.length <= 2 && item.variants[0]) quickAdd(item, item.variants[0].id);
+    else if (!item.variants) quickAdd(item);
+    else customise(item);
+  };
   return (
     <>
       <nav className="cats" aria-label="Menu">
@@ -95,7 +104,13 @@ export function Menu({ category, onCategory, onQuickAdd, onCustomise, hint, edit
 
       <div className="grid">
         {visible(shown, Boolean(edit)).map((item) => (
-          <div key={item.id} className={`card${item.soldOut || item.hidden || item.offHours ? ' card--soldout' : ''}`}>
+          <div key={item.id} className={`card${photos ? ' card--photo' : ''}${item.soldOut || item.hidden || item.offHours ? ' card--soldout' : ''}`}>
+            {photos && (
+              // The same as the size or price buttons below, for the hand: no second stop for the keyboard.
+              <button type="button" className="card__photo" tabIndex={-1} aria-hidden="true" disabled={item.soldOut && !edit} onClick={() => photoTap(item)}>
+                {photoUrl(item.id) && <img src={photoUrl(item.id)!} alt="" loading="lazy" decoding="async" draggable={false} />}
+              </button>
+            )}
             {(item.soldOut || item.hidden || item.offHours) && (
               <span className="card__soldout">{item.hidden ? 'Hidden' : item.offHours ? 'Not now' : 'Sold out'}</span>
             )}
