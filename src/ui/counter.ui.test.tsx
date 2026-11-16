@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { FAKE_STAFF } from '../fake/data.ts';
 import { printReceipt } from '../services/printer.ts';
 import { App } from './App.tsx';
 import { Root } from './Root.tsx';
@@ -33,7 +32,6 @@ type User = ReturnType<typeof userEvent.setup>;
 const panel = () => within(screen.getByRole('complementary', { name: 'Current order' }));
 const bar = () => within(screen.getByRole('navigation', { name: 'Bill actions' }));
 const btn = (name: string) => bar().getByRole('button', { name }) as HTMLButtonElement;
-const pinFor = (role: string) => FAKE_STAFF.find((s) => s.actor.role === role)!.pin;
 const margherita = (user: User) => user.click(screen.getAllByRole('button', { name: 'M 1,450' })[0]);
 const burger = (user: User) => user.click(screen.getAllByRole('button', { name: '450' })[0]);
 const net = () => screen.getByRole('complementary', { name: 'Current order' }).querySelector('.total')!.textContent;
@@ -178,7 +176,7 @@ test('SEND TO KITCHEN (F3), with the Kitchen view on: the new lines go to the ki
   expect(screen.getByRole('status').textContent).toContain('Sent 1001 to kitchen');
 });
 
-test('VOID on a line already sent to the kitchen asks for a manager PIN, then the reason; a cashier PIN does not do', async () => {
+test('VOID on a line already sent to the kitchen: off at once, no PIN, the kitchen told, Undo brings it back (owner, 2026-11-17)', async () => {
   setKitchenScreen(true);
   const user = userEvent.setup();
   render(<App />);
@@ -188,20 +186,14 @@ test('VOID on a line already sent to the kitchen asks for a manager PIN, then th
   expect(btn('Clear bill').disabled).toBe(true); // sent: not the cashier's to clear
 
   await user.click(btn('Void item'));
-  const pin = screen.getByRole('dialog');
-  expect(within(pin).getByText('To void an item already sent to the kitchen')).toBeTruthy();
-  await user.keyboard(pinFor('cashier'));
-  expect(screen.getByRole('dialog')).toBeTruthy(); // still asking
-  expect(panel().getByText('Margherita')).toBeTruthy();
-  await user.keyboard(pinFor('manager'));
   expect(screen.queryByRole('dialog')).toBeNull();
-
-  await user.click(panel().getByRole('button', { name: /Wrong item entered/ }));
   expect(panel().queryByText('Margherita')).toBeNull();
-  expect(readEvents().at(-1)).toMatchObject({ type: 'order.item_cancelled', reason: 'Wrong item entered' });
+  expect(readEvents().at(-1)).toMatchObject({ type: 'order.item_cancelled', reason: 'Before it was made' });
+  await user.click(screen.getByRole('button', { name: 'Undo' }));
+  expect(panel().getByText('Margherita')).toBeTruthy();
 });
 
-test('the row ✕ on a sent line asks for the PIN too; on a new line it just goes', async () => {
+test('the row ✕ takes a sent line off as easily as a new one: no PIN either way', async () => {
   setKitchenScreen(true);
   const user = userEvent.setup();
   render(<App />);
@@ -211,9 +203,9 @@ test('the row ✕ on a sent line asks for the PIN too; on a new line it just goe
   await burger(user);
   await user.click(panel().getByRole('button', { name: 'Void Chicken Burger' }));
   expect(panel().queryByText('Chicken Burger')).toBeNull();
-  expect(screen.queryByRole('dialog')).toBeNull();
   await user.click(panel().getByRole('button', { name: 'Void Margherita' }));
-  expect(screen.getByRole('dialog')).toBeTruthy();
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(panel().queryByText('Margherita')).toBeNull();
 });
 
 test('keys: arrows move the selection, + and − change how many', async () => {

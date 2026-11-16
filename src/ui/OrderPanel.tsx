@@ -322,8 +322,8 @@ export function OrderPanel({
     const name = lineItemName(l);
     const adj = lineAdjustment(shown, l);
     const isSel = i === sel;
-    // A line added to a paid order and not yet settled (SCRUM-253) is still unsent: − / + and ✕ work on it.
-    const canStep = !l.sent && !inBox && !manage;
+    // − / + work on any line still on the bill, sent ones too (the kitchen is told); a paid order's sent lines change through their sheet.
+    const canStep = !inBox && !manage && !(paid && l.sent);
     const edit = editOf.get(l.id);
     const cook = l.sent ? lineCookState(tickets, l.id) : 'waiting';
     const extra = inBox && l.box ? lineNet(shown, l) - l.box.share : 0;

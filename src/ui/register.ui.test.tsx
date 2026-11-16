@@ -309,16 +309,38 @@ test('− / + on the line just added: one more, one fewer, and below one it come
   expect(panel().getByText('Margherita')).toBeTruthy();
 });
 
-test('every line not yet sent has − / +; a sent line keeps them greyed', async () => {
+test('every line has − / +, sent ones too: a sent line changes with the kitchen told, and Undo', async () => {
   const user = userEvent.setup();
   render(<App />);
   await user.click(screen.getAllByRole('button', { name: 'M 1,450' })[0]);
   await user.click(screen.getAllByRole('button', { name: '450' })[0]); // Chicken Burger
-  expect((panel().getByRole('button', { name: 'One more Margherita' }) as HTMLButtonElement).disabled).toBe(false);
-  expect((panel().getByRole('button', { name: 'One more Chicken Burger' }) as HTMLButtonElement).disabled).toBe(false);
   await user.click(sendBtn());
   await user.click(heldList().getByRole('button', { name: /^1001/ }));
-  expect((panel().getByRole('button', { name: 'One more Margherita' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(panel().getByRole('button', { name: 'One more Margherita' }));
+  expect(await screen.findByText(/Changed Margherita · kitchen told/)).toBeTruthy();
+  expect(within(panel().getByRole('group', { name: 'How many Margherita' })).getByText('2')).toBeTruthy();
+  await user.click(panel().getByRole('button', { name: 'Remove Chicken Burger' }));
+  expect(panel().queryByText('Chicken Burger')).toBeNull();
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('Switch item: the next item tapped takes the place of the line, sent or not; Esc lets it go', async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(screen.getAllByRole('button', { name: 'M 1,450' })[0]); // Margherita M
+  await user.click(sendBtn());
+  await user.click(heldList().getByRole('button', { name: /^1001/ }));
+  await user.click(panel().getByRole('button', { name: /^Margherita/ }));
+  await user.click(screen.getByRole('button', { name: 'Switch item' }));
+  expect(screen.getByText('Tap the new item for Margherita')).toBeTruthy();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByText('Tap the new item for Margherita')).toBeNull();
+  await user.click(panel().getByRole('button', { name: /^Margherita/ }));
+  await user.click(screen.getByRole('button', { name: 'Switch item' }));
+  await user.click(screen.getAllByRole('button', { name: '450' })[0]); // Chicken Burger
+  expect(panel().queryByText('Margherita')).toBeNull();
+  expect(panel().getByText('Chicken Burger')).toBeTruthy();
+  expect(await screen.findByText(/Changed Chicken Burger · kitchen told/)).toBeTruthy();
 });
 
 test('Held bills counts the other bills still going', async () => {

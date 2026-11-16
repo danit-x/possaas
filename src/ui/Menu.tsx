@@ -153,6 +153,8 @@ export function Menu({ category, onCategory, onQuickAdd, onCustomise, onAddCombo
                   {item.number !== undefined && <span className="card__no num" aria-hidden="true">{item.number}</span>}
                   {item.name.en}
                 </span>
+                {/* The Sinhala name the shop gave it, under the English, for staff who read Sinhala first. */}
+                {item.name.si && <span className="card__si" lang="si">{item.name.si}</span>}
                 <span className="card__desc">{item.description}</span>
               </button>
               <div className="card__prices">

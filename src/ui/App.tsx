@@ -241,22 +241,56 @@ export function App({
     // On a paid order only a line added since and not yet settled (SCRUM-253) comes off this way.
     if (!line || (reg.paid && line.sent)) return;
     const sent = line.box ? reg.order.lines.some((l) => l.box?.id === line.box!.id && l.sent) : Boolean(line.sent);
-    if (sent) {
-      if (manager) askVoid(line);
-      else { setTyped(null); setSheet({ kind: 'pin', voidLine: line.id }); }
-      return;
-    }
     if (manager) { askVoid(line); return; }
+    // A sent dish (owner, 2026-11-17: customers change their minds, no manager on shift): off at once,
+    // no PIN, audited with whether the kitchen had started it, the kitchen told, Undo on the toast.
+    // A combo box still asks a manager: its dishes go together.
+    if (sent && !line.box) { reg.changeSent({ kind: 'void', lineId: line.id }, lineCookState(tickets, line.id) !== 'waiting'); return; }
+    if (sent) { setTyped(null); setSheet({ kind: 'pin', voidLine: line.id }); return; }
     if (line.box) reg.dropBox(line.box.id, `Removed ${line.box.name}`);
     else reg.dropLine(line.id, `Removed ${lineItemName(line)}`);
-  }, [reg, manager, askVoid]);
+  }, [reg, manager, askVoid, tickets]);
 
+  /** − and + on a line: an unsent one at once; a sent one as a change the kitchen is told of (one fewer made = waste). */
   const stepLine = useCallback((line: OrderLine, by: 1 | -1) => {
-    if (line.sent || line.box) return;
+    if (line.box || (reg.paid && line.sent)) return;
     const qty = line.qty + by;
+    if (line.sent) {
+      const { id: _id, ...spec } = line;
+      if (qty < 1) voidLine(line);
+      else reg.changeSent({ kind: 'edit', lineId: line.id, after: { ...spec, qty } }, by < 0 && lineCookState(tickets, line.id) !== 'waiting');
+      return;
+    }
     if (qty < 1) reg.dropLine(line.id, `Removed ${lineItemName(line)}`);
     else reg.editLine({ ...line, qty }, `${qty} × ${lineItemName(line)}`);
-  }, [reg]);
+  }, [reg, tickets, voidLine]);
+
+  /** Switch item: the line waiting to be replaced by the next item tapped on the menu (Esc lets it go). */
+  const [switching, setSwitching] = useState<OrderLine | null>(null);
+  // Another bill on screen, or the line gone: nothing waits to be switched.
+  useEffect(() => {
+    if (switching && !reg.order.lines.some((l) => l.id === switching.id)) setSwitching(null);
+  }, [reg.order.lines, switching]);
+  useEffect(() => {
+    if (!switching) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); setSwitching(null); } };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [switching]);
+  const switchTo = useCallback((line: OrderLine, item: MenuItem, size?: SizeId) => {
+    setSwitching(null);
+    const sizes = item.variants?.map((v) => v.id) ?? [];
+    const sz = sizes.length ? (size ?? (line.size && sizes.includes(line.size) ? line.size : sizes[0])) : undefined;
+    const { id: _id, size: _size, half: _half, ...rest } = line;
+    const after = { ...rest, itemId: item.id, adds: [], outs: [], ...(sz ? { size: sz } : {}) };
+    if (line.sent) {
+      // Made or cooking already: the old one is waste and the new one a new ticket; not started: the ticket changes.
+      const made = lineCookState(tickets, line.id) !== 'waiting';
+      reg.changeSent({ kind: 'edit', lineId: line.id, after, ...(made ? { remake: true } : {}) }, made);
+    } else {
+      reg.editLine({ ...after, id: line.id }, `Switched to ${item.name.en}`);
+    }
+  }, [reg, tickets]);
 
   // ---------- the bar's actions (always there; greyed when they cannot be done) ----------
   const due = reg.paid ? balanceDue(reg.paid) : 0;
@@ -403,6 +437,7 @@ export function App({
   useEffect(() => { if (paying && listing) setSheet(null); }, [paying, listing]);
 
   const quickAdd = (item: MenuItem, size?: SizeId) => {
+    if (switching) { switchTo(switching, item, size); return; }
     // The menu stays live while paying or in extras: the customer remembered a drink, so it goes on and the order is back.
     if (paying || inExtras) setSheet(null);
     const label = item.variants?.find((v) => v.id === size)?.label;
@@ -460,12 +495,13 @@ export function App({
             reg.changeSent({ kind: 'edit', lineId: line.id, after: spec, ...(remake ? { remake } : {}) }, remake);
             closeSheet();
           }}
-          // Taking a sent line off is VOID's: a manager's PIN first, then the reason. A paid order
-          // changed afterwards (SCRUM-242) settles the difference instead, as before.
+          // Taking a sent line off: at once, the kitchen told (VOID's way). A paid order changed
+          // afterwards (SCRUM-242) settles the difference instead, as before.
           onRemove={() => {
             closeSheet();
             if (reg.paid) reg.changeSent({ kind: 'void', lineId: line.id }, cook !== 'waiting'); else voidLine(line);
           }}
+          onSwitch={line.box || reg.paid ? undefined : () => { closeSheet(); setSwitching(line); }}
         />
       );
     }
@@ -473,6 +509,7 @@ export function App({
       <ExtrasPanel
         key={key}
         {...common}
+        onSwitch={line.box ? undefined : () => { closeSheet(); setSwitching(line); }}
         onSubmit={(spec) => { reg.editLine({ ...spec, id: line.id }, 'Updated'); closeSheet(); }}
         onRemove={() => {
           const box = line.box;
@@ -617,7 +654,7 @@ export function App({
             category={category}
             onCategory={setCategory}
             onQuickAdd={quickAdd}
-            onCustomise={(item) => setSheet({ kind: 'extras', item })}
+            onCustomise={(item) => (switching ? switchTo(switching, item) : setSheet({ kind: 'extras', item }))}
             onAddCombo={addCombo}
           />
         </main>
@@ -688,8 +725,14 @@ export function App({
       )}
       {palette && manager && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
 
+      {switching && (
+        <div className="toast toast--switch" role="status">
+          <span>Tap the new item for {lineItemName(switching)}</span>
+          <button type="button" onClick={() => setSwitching(null)}>Cancel <kbd>Esc</kbd></button>
+        </div>
+      )}
       {/* Hidden under an open sheet: it would cover the sheet's buttons (e.g. Card). */}
-      {noted && !sheet && !palette && (
+      {noted && !sheet && !palette && !switching && (
         <div className="toast" role="status" key={`waste-${noted.id}`}>
           <span>{noted.message}</span>
           <button type="button" onClick={undoNoted}>Undo</button>
