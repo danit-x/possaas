@@ -23,7 +23,7 @@ test("Bata Kade's menu is stored on the counter's first pull, once; CheesyBeez' 
   const events = (await store.pull('bata-kade-ab12', 0, 1000)).map((r) => r.event);
   const state = menuStateFromEvents(events);
   const offered = effectiveMenu(MENU, state, 3_000).filter((m) => !m.hidden);
-  assert.ok(offered.some((m) => m.name.en === 'Chicken Kottu' && m.variants?.map((v) => `${v.label} ${v.price}`).join() === 'Normal 50000,Full 80000'));
+  assert.ok(offered.some((m) => m.name.en === 'Chicken Kottu' && m.variants?.map((v) => `${v.label} ${v.price}`).join() === 'Half 50000,Full 75000'));
   assert.ok(offered.some((m) => m.name.en === 'Plain Tea' && m.price === 5000));
   assert.ok(!offered.some((m) => m.id === 'margherita'), 'no pizza');
   assert.deepEqual(sectionsOf(state).slice(0, 4).map((s) => s.label), ['Rice & Curry', 'Rice & Curry', 'Fried Rice', 'Kottu']);
@@ -36,5 +36,9 @@ test("Bata Kade's menu is stored on the counter's first pull, once; CheesyBeez' 
   const veg = (h: number) => sold(h).filter((m) => m.name.en === 'Vegetable Rice & Curry').map((m) => m.price);
   assert.deepEqual(veg(7), [20000]);
   assert.deepEqual(veg(13), [22000]);
-  assert.ok(!sold(13).some((m) => m.name.en === 'Chicken Fried Rice') && sold(20).some((m) => m.name.en === 'Chicken Fried Rice'));
+  assert.ok(sold(13).some((m) => m.name.en === 'Chicken Fried Rice') && sold(7).some((m) => m.name.en === 'Chicken Fried Rice'), 'fried rice all day');
+  const egg = (h: number) => sold(h).filter((m) => m.name.en === 'Egg Rice & Curry').map((m) => m.price);
+  assert.deepEqual([egg(7), egg(13)], [[23000], [28000]]);
+  assert.ok(offered.some((m) => m.name.en === 'Water (1.5 L)' && m.price === 15000));
+  assert.ok(offered.some((m) => m.name.en === 'Biriyani' && m.price === 33000));
 });
