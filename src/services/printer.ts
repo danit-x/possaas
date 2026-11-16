@@ -1,7 +1,11 @@
 import { drawerOnly, escpos, opensDrawer, receipt, type ReceiptLine } from '../domain/receipt.ts';
 import type { PaidOrder } from '../domain/types.ts';
 import { syncToken } from './pairing.ts';
-import { receiptWidth, shopHeader } from './shop.ts';
+import { receiptWidth, shopDetails, shopHeader, shopLogo } from './shop.ts';
+import { logoDots } from './logoDots.ts';
+import { madeInMinutes } from '../domain/madeIn.ts';
+import { readAll } from '../ui/eventLog.ts';
+import type { ShopHeader } from '../domain/receipt.ts';
 
 /**
  * Prints the customer receipt through the server on the counter PC, which
@@ -26,8 +30,15 @@ const base64 = (bytes: Uint8Array): string => {
  * never opens the drawer and is marked COPY.
  */
 export async function printReceipt(paid: PaidOrder, cashier: string, { reprint = false } = {}): Promise<PrintResult> {
-  return send(escpos(receipt(paid, { shop: shopHeader(), cashier, copy: reprint, width: receiptWidth() }), { openDrawer: !reprint && opensDrawer(paid) }));
+  const madeIn = madeInMinutes(readAll(), paid.number, Date.now());
+  return send(escpos(receipt(paid, { shop: await printedHeader(), cashier, copy: reprint, width: receiptWidth(), madeIn }), { openDrawer: !reprint && opensDrawer(paid) }));
 }
+
+/** The shop's header with its logo as printer dots, when it has one (Shop setup). */
+export const printedHeader = async (): Promise<ShopHeader> => {
+  const logo = await logoDots(shopLogo(), shopDetails()?.paper ?? 80);
+  return { ...shopHeader(), ...(logo ? { logo } : {}) };
+};
 
 /** Any lines on the receipt printer (the day's close), without opening the drawer. */
 export const printLines = (lines: ReceiptLine[]): Promise<PrintResult> => send(escpos(lines));

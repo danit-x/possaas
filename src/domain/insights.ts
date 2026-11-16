@@ -207,7 +207,7 @@ const discountsToday = (events: readonly SyncEvent[], sales: Sale[], now: number
 };
 
 /** How long each ticket took, from Send to the kitchen's first Done. */
-const ticketTimes = (events: readonly SyncEvent[]) => {
+export const ticketTimes = (events: readonly SyncEvent[]) => {
   const sent = new Map<string, { at: number; orderNumber: number }>();
   const out: { orderNumber: number; sentAt: number; minutes: number }[] = [];
   for (const e of events) {
