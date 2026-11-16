@@ -14,55 +14,33 @@ const sent = (n: number, itemId: string, size?: 'M' | 'L'): SyncEvent =>
     lines: [{ id: `l${n}`, itemId, qty: 1, size, adds: [], outs: [] }] });
 const paid = (n: number, total: number): SyncEvent =>
   ({ ...base, id: `p${n}`, at: NOW - 3000_000, orderNumber: n, type: 'order.paid', total, tender: 'cash', tendered: total });
-const counted = (itemId: string, packs: number): SyncEvent =>
-  ({ ...base, id: `c-${itemId}`, at: NOW - 7200_000, orderNumber: 0, type: 'stock.adjusted', itemId, deltaPacks: packs, reason: 'audit' });
+const cashOut = (id: string, name: string, amount: number, at = NOW - 600_000): SyncEvent =>
+  ({ ...base, id, at, orderNumber: 0, type: 'cash.out', name, amount });
 
 test('a quiet shop: every part says what is there, nothing has a badge', () => {
   const parts = ownerParts([], NOW);
+  assert.deepEqual(Object.keys(parts), ['sell', 'owner', 'cashout', 'menu', 'customers', 'setup']);
   assert.equal(parts.owner.preview, 'No sales yet today');
-  assert.equal(parts.count.preview, 'Nothing counted today');
-  assert.equal(parts.items.preview, '3 dishes without a recipe'); // Sausages, BBQ Pork, Italian Pasta
-  assert.equal(parts.order.preview, 'Nothing to order');
-  assert.equal(parts.receive.preview, 'No deliveries expected');
+  assert.equal(parts.cashout.preview, 'Nothing out today');
+  assert.equal(parts.menu.preview, 'Prices, names, sold out');
   assert.equal(parts.sell.preview, 'The register');
   assert.ok(Object.values(parts).every((p) => p.badge === 0));
 });
 
-test("today's takings; stock low or out is a decision; a count shows under Counts", () => {
-  const parts = ownerParts([
-    sent(1, 'margherita', 'L'), paid(1, 199000), sent(2, 'margherita', 'M'), paid(2, 145000),
-    counted('inv-0024', 0.25), counted('inv-0006', 0),
-  ], NOW);
+test("today's takings", () => {
+  const parts = ownerParts([sent(1, 'margherita', 'L'), paid(1, 199000), sent(2, 'margherita', 'M'), paid(2, 145000)], NOW);
   assert.equal(parts.owner.preview, 'Rs 3,440 · 2 orders');
-  assert.equal(parts.items.preview, 'Mozzarella (Prabhat) out');
-  // Low is the reorder rule's call: a quarter pack of onion with two pizzas sold lasts, so only mozzarella counts.
-  assert.equal(parts.items.badge, 1, 'mozzarella out; onion is not low by the reorder rule');
-  assert.equal(parts.count.preview, '2 items counted today');
 });
 
-test('items: sold out shows; a dish sold without a recipe is a decision', () => {
+test("cash out: today's lines (5 am to 5 am) add up; a line taken off does not count", () => {
+  const fish = cashOut('c1', 'Fish', 450000);
+  const off: SyncEvent = { ...base, id: 'u1', at: NOW - 60_000, orderNumber: 0, type: 'cash.out_undone', undoneEventId: 'c2' };
+  const parts = ownerParts([fish, cashOut('c2', 'Gas', 300000), off, cashOut('old', 'Bank', 2000000, NOW - 86_400_000)], NOW);
+  assert.equal(parts.cashout.preview, 'Rs 4,500 out today');
+  assert.equal(parts.cashout.badge, 0);
+});
+
+test('menu: an item sold out shows', () => {
   const soldOut: SyncEvent = { ...base, id: 'so', at: NOW - 600_000, orderNumber: 0, type: 'menu.sold_out', itemId: 'seafood', until: nextMorning(NOW) };
-  assert.equal(ownerParts([soldOut], NOW).items.preview, 'Seafood sold out today');
-  const pasta = ownerParts([sent(3, 'italian-pasta', 'M')], NOW);
-  assert.equal(pasta.items.badge, 1);
-  assert.ok(pasta.owner.badge >= 1, 'Today counts it among what needs him');
-});
-
-test('order: what the reorder rule says to buy is a decision; receive: a delivery past its day is late', () => {
-  const DAY = 86_400_000;
-  // 500 large margheritas yesterday: flour goes fast; one pack on the shelf is not enough.
-  const sales: SyncEvent = { ...base, id: 'big', at: NOW - DAY, orderNumber: 9, type: 'order.sent', ticketId: 'tb', addOn: false,
-    lines: [{ id: 'lb', itemId: 'margherita', qty: 500, size: 'L', adds: [], outs: [] }] };
-  const flour = (packs: number): SyncEvent => ({ ...base, id: `f${packs}`, at: NOW - 3600_000, orderNumber: 0, type: 'stock.movement', itemId: 'inv-0001', kind: 'COUNT_ADJUST', qtyBase: packs, docId: 'x' });
-  const parts = ownerParts([sales, flour(111_288 + 25_000)], NOW);
-  assert.equal(parts.order.preview, 'Pizza Flour to order');
-  assert.equal(parts.order.badge, 1);
-
-  const po: SyncEvent = { ...base, id: 'po1', at: NOW - 10 * DAY, orderNumber: 0, type: 'stock.ordered', supplierId: 'sup_prima', lines: [{ itemId: 'inv-0001', packs: 2 }] };
-  const late = ownerParts([po], NOW);
-  assert.equal(late.receive.preview, '1 delivery late');
-  assert.equal(late.receive.badge, 1);
-  const fresh = ownerParts([{ ...po, at: NOW - 3600_000 }], NOW);
-  assert.equal(fresh.receive.preview, '1 delivery expected');
-  assert.equal(fresh.receive.badge, 0);
+  assert.equal(ownerParts([soldOut], NOW).menu.preview, 'Seafood sold out today');
 });

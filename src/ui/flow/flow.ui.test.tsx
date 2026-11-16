@@ -2,7 +2,6 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { BigStepper } from './BigStepper.tsx';
-import { ChoiceCard, InfoCard } from './ChoiceCard.tsx';
 import { DoneStep } from './DoneStep.tsx';
 import { FlowSheet } from './FlowSheet.tsx';
 
@@ -71,21 +70,6 @@ test('the big stepper: − and + step, the number can be typed, orange when it d
   expect(onText).toHaveBeenLastCalledWith('5'); // the box selects its text on focus, so typing replaces it
   expect(screen.getByText('packs')).toBeTruthy();
   expect(container.querySelector('.bigstep--warn')).toBeTruthy();
-});
-
-test('cards: a choice can be picked, a summary line is not a button', async () => {
-  const user = userEvent.setup();
-  const pick = vi.fn();
-  render(<>
-    <ChoiceCard name="Prima" line="3 to order" badge={3} tone="warn" pressed={false} onClick={pick} />
-    <ChoiceCard name="Wait for the rest" pressed onClick={pick} />
-    <InfoCard name="Pizza Flour" line="Expected 3 · Received 2" tone="warn" aside="short −1" label="Pizza Flour: short" />
-  </>);
-  await user.click(screen.getByRole('button', { name: /Prima/ }));
-  expect(pick).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole('button', { name: 'Wait for the rest' }).getAttribute('aria-pressed')).toBe('true');
-  expect(screen.getAllByRole('button')).toHaveLength(2);
-  expect(screen.getByRole('group', { name: 'Pizza Flour: short' }).textContent).toContain('short −1');
 });
 
 test('the finish says what happened and offers what to do next', () => {

@@ -2111,7 +2111,7 @@ button.glance__card:disabled { cursor: default; }
 .glance__bar-today { position: relative; width: 100%; border-radius: 4px 4px 0 0; background: var(--ink); }
 .glance__axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-2); }
 
-.glance__trio { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; }
+.glance__trio { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .glance__trio > .glance__card { min-height: 220px; }
 .glance__split { display: flex; height: 28px; gap: 2px; }
 .glance__split > span { flex-basis: 0; }
@@ -2663,3 +2663,30 @@ button.glance__card:disabled { cursor: default; }
   100% { box-shadow: 0 0 0 0 transparent; transform: scale(1); }
 }
 @media (prefers-reduced-motion: reduce) { .rail__row--landed { animation-duration: 1ms; } }
+
+/* #cashout: the paper list (CashOut.tsx). One line to write, the names used before, today's lines and their total. */
+.cashout { display: flex; flex-direction: column; gap: var(--sp-4); width: 100%; max-width: 720px; margin: 0 auto; padding: 24px 16px 96px; }
+.cashout__bar { display: flex; align-items: center; justify-content: space-between; gap: 13px; padding: 12px 16px; }
+.cashout__head { display: flex; align-items: baseline; justify-content: space-between; gap: 13px; flex-wrap: wrap; }
+.cashout__day { color: var(--ink-2); font-size: 15px; }
+.cashout__entry { display: flex; gap: 8px; }
+.cashout__entry input { flex: 1; min-width: 0; height: 56px; padding: 0 21px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-size: 19px; letter-spacing: -0.2px; }
+.cashout__entry input:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+.cashout__add { flex: none; width: auto; height: 56px; padding: 0 21px; display: inline-flex; align-items: center; gap: 8px; font-size: 16px; }
+.cashout__add kbd { border-color: currentColor; color: inherit; opacity: 0.6; }
+.cashout__error { margin: -8px 0 0; }
+.cashout__names { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -5px; }
+.cashout__name { background: var(--chip); color: var(--ink); min-height: 44px; }
+.cashout__list { list-style: none; margin: 0; padding: 0; border-radius: 16px; background: var(--surface); box-shadow: var(--card-shadow); overflow: hidden; }
+.cashout__row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 13px; min-height: 55px; padding: 0 8px 0 21px; border-bottom: 1px solid var(--line); animation: rise 180ms var(--ease) both; }
+.cashout__row:last-child { border-bottom: 0; }
+.cashout__what { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.cashout__what b { font-size: 17px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cashout__what span { flex: none; font-size: 13px; color: var(--ink-3); }
+.cashout__amount { font-size: 17px; }
+.cashout__off { width: 44px; height: 44px; border-radius: 10px; font-size: 21px; color: var(--ink-3); }
+.cashout__off:hover { background: var(--chip); color: var(--bad); }
+.cashout__empty { padding: 21px; color: var(--ink-3); font-size: 15px; }
+.cashout__total { margin: 0; padding: 13px 21px 0; display: flex; justify-content: space-between; align-items: baseline; }
+.cashout__total span { color: var(--ink-2); font-size: 15px; }
+.cashout__total b { font-size: 34px; font-weight: 500; letter-spacing: -1px; }

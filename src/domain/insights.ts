@@ -1,24 +1,16 @@
 import { AUDIENCE_LABEL, campaignsFromEvents } from './campaigns.ts';
 import { regularsGoneQuiet } from './customerInsights.ts';
-import { gapCases, shortStreaks, toCheck, weekLoss, type GapCase } from './gapReview.ts';
-import { costsToAnswer, marginsFell, soldWithoutRecipe } from './costInsights.ts';
-import { inventoryFromEvents, isLowStock, isOutOfStock } from './inventory.ts';
+import type { GapCase } from './gapReview.ts';
 import type { InventoryItem, Supplier } from './inventoryData.ts';
 import { MENU, itemById } from './menu.ts';
+import { effectiveMenu, menuStateFromEvents } from './menuEdits.ts';
 import { fmt } from './money.ts';
-import { grnValueCents, pricesToCheck, purchasesFromEvents } from './purchaseOrders.ts';
-import { formatQuantity } from './quantity.ts';
-import { reasonLabel, reasonText } from './counting.ts';
 import type { SyncEvent } from './sync.ts';
 import type { PaidPart } from './events.ts';
-import type { Cents, OrderLine, Tender } from './types.ts';
+import type { Cents, MenuItem, OrderLine, Tender } from './types.ts';
 import { lineItemName } from './halves.ts';
 import { lineGross } from './totals.ts';
-import { PREP_STOCK, prepItems, prepStockId } from './prep.ts';
-import { answersFromEvents } from './costing.ts';
-import { stockValueCard } from './valuation.ts';
-import { camerasOffline, tablesVsUsual, tableUse, visitLength } from './tableInsights.ts';
-import { wasteAboveUsual, wasteReasonRepeats } from './wasteInsights.ts';
+import { wasteReasonRepeats } from './wasteInsights.ts';
 
 /**
  * The Owner view's brain (CLAUDE.md: "tell the owner what needs attention and
@@ -130,10 +122,25 @@ const openDays = (sales: Sale[], today: number, days: number): number[] => {
   return out;
 };
 
+/**
+ * The shop's menu as its own events say (its added items too), set at the start of each
+ * insights() call: the cards name items the way this shop does, on the counter, on the owner's
+ * phone and in tests alike, whatever menu this screen has loaded.
+ */
+let shopMenu = new Map<string, MenuItem>();
+const itemOf = (id: string): MenuItem | null => {
+  const own = shopMenu.get(id);
+  if (own) return own;
+  try { return itemById(id); } catch { return null; }
+};
+const nameOf = (id: string): string => itemOf(id)?.name.en ?? id;
+
 const lineName = (l: OrderLine): string => {
-  const item = itemById(l.itemId);
-  const size = item.variants?.find((v) => v.id === l.size)?.label;
-  return `${l.qty} × ${lineItemName(l)}${size ? ` ${size}` : ''}`;
+  const item = itemOf(l.itemId);
+  const size = item?.variants?.find((v) => v.id === l.size)?.label;
+  let name: string;
+  try { name = l.half ? lineItemName(l) : nameOf(l.itemId); } catch { name = nameOf(l.itemId); }
+  return `${l.qty} × ${name}${size ? ` ${size}` : ''}`;
 };
 
 // ----- the rules -----
@@ -303,123 +310,6 @@ const kitchenSlow = (events: readonly SyncEvent[], now: number): Insight | null 
   };
 };
 
-const runningLow = (events: readonly SyncEvent[], stock: ShopData['stock'], now: number): Insight | null => {
-  if (!stock) return null;
-  // Only items someone has counted: a never-counted item is unknown, not empty. Low is the
-  // reorder rule's call (it needs a rate of use), so an empty shelf is named too.
-  const low = inventoryFromEvents(stock.items, events, { now }).filter((r) => !r.archived && r.counted && (isLowStock(r) || isOutOfStock(r)));
-  if (!low.length) return null;
-  const names = low.slice(0, 3).map((r) => r.name).join(', ');
-  return {
-    id: 'running-low',
-    tone: 'attention',
-    title: `${plural(low.length, 'item')} running low`,
-    detail: `${names}${low.length > 3 ? ` and ${low.length - 3} more` : ''}.`,
-    action: {
-      label: 'Order list',
-      items: [...low].sort((a, b) => a.name.localeCompare(b.name))
-        .map((r) => ({
-          primary: r.name,
-          // Stock here is worked out from sales, never seen: out means "go and look", not "stop selling".
-          secondary: `${isOutOfStock(r) ? 'may be out: check the shelf' : `${plural(Math.round(r.onHandPacks * 10) / 10, 'pack')} left`} · ${r.supplierIds.map((id) =>
-            stock.suppliers.find((s) => s.id === id)?.name ?? id).join(', ')}`,
-        })),
-    },
-  };
-};
-
-/**
- * Counts this week that found less than the recipes said should be there: waste or
- * loss. Every shortfall is listed, the costliest first; no made-up "normal" amount.
- */
-const countedShort = (events: readonly SyncEvent[], stock: ShopData['stock'], now: number): Insight | null => {
-  if (!stock) return null;
-  const since = daysBack(startOfDay(now), 7);
-  const rows = inventoryFromEvents(stock.items, events, { now });
-  const short = new Map<string, number>(); // packs, below zero
-  /** The manager's reasons for this week's gaps (shelf counts), per item. */
-  const why = new Map<string, Set<string>>();
-  const undone = new Set(events.flatMap((e) => (e.type === 'stock.count_undone' ? [e.countId] : [])));
-  for (const e of events) {
-    if (e.at < since || e.at > now) continue;
-    if (e.type === 'stock.adjusted' && e.reason === 'audit') short.set(e.itemId, (short.get(e.itemId) ?? 0) + e.deltaPacks);
-    if (e.type === 'stock.counted' && !undone.has(e.id)) {
-      const packQty = rows.find((r) => r.id === e.itemId)?.packQty ?? 1;
-      short.set(e.itemId, (short.get(e.itemId) ?? 0) + (e.counted - e.expected) / packQty);
-      if (e.reason) why.set(e.itemId, new Set([...(why.get(e.itemId) ?? []), reasonLabel(e.reason)]));
-    }
-  }
-  const lost = [...short]
-    .map(([id, packs]) => ({ row: rows.find((r) => r.id === id), packs }))
-    .filter((x): x is { row: (typeof rows)[number]; packs: number } => !!x.row && x.packs < 0)
-    .map(({ row, packs }) => ({ row, qty: -packs * row.packQty, cents: Math.round(-packs * row.workingPriceCents), why: [...(why.get(row.id) ?? [])] }))
-    .sort((a, b) => b.cents - a.cents || a.row.name.localeCompare(b.row.name));
-  if (!lost.length) return null;
-  const [top] = lost;
-  const total = lost.reduce((n, l) => n + l.cents, 0);
-  // The week before, for scale (SCRUM-95): shelf counts only, the same way.
-  const { lastWeek } = weekLoss(events, now);
-  return {
-    id: 'counted-short',
-    tone: 'attention',
-    title: `${top.row.name} counted ${formatQuantity(top.qty, top.row.baseUnit)} below expected this week`,
-    detail: `${lost.length > 1 ? `And ${plural(lost.length - 1, 'more item')}. ` : ''}Rs ${fmt(total)} in all: waste or loss.${lastWeek > 0 ? ` Last week: Rs ${fmt(lastWeek)}.` : ''}`,
-    action: {
-      label: 'See counts',
-      items: lost.map((l) => ({
-        primary: l.row.name,
-        secondary: `${formatQuantity(l.qty, l.row.baseUnit)} below expected${l.why.length ? ` · ${l.why.join(', ')}` : ''}`,
-        amount: l.cents,
-      })),
-    },
-  };
-};
-
-/**
- * The owner's count review (SCRUM-95): gaps beyond the allowance not yet reviewed, each with the
- * manager's reason and photo; the owner marks it Reviewed (which changes no stock), or asks. Answers come back on the same card.
- */
-const gapsToCheck = (events: readonly SyncEvent[], stock: ShopData['stock']): Insight | null => {
-  const open = toCheck(gapCases(events));
-  if (!open.length) return null;
-  const items = stock ? inventoryFromEvents(stock.items, events) : [];
-  // A semi-processed item's count (SCRUM-228, prep:<key>): its name and its own unit.
-  const semis = open.some((g) => g.itemId.startsWith(PREP_STOCK)) ? prepItems(answersFromEvents(events)) : [];
-  const cases = open.map((gap) => {
-    const item = items.find((i) => i.id === gap.itemId);
-    const semi = semis.find((p) => prepStockId(p.key) === gap.itemId);
-    const qty = item ? formatQuantity(Math.abs(gap.delta), item.baseUnit) : `${Math.round(Math.abs(gap.delta) * 1000) / 1000}${semi ? ` ${semi.unit}` : ''}`;
-    return { gap, name: item?.name ?? semi?.name ?? gap.itemId, gapText: `${qty} ${gap.delta < 0 ? 'short' : 'over'} · ${reasonText(gap.reason, gap.note)}` };
-  });
-  const answered = open.filter((g) => g.review.kind === 'asked' && g.review.answer).length;
-  const [first] = cases;
-  return {
-    id: 'gaps-to-check',
-    tone: 'attention',
-    title: open.length === 1 ? `${first.name}: ${first.gapText}` : `${plural(open.length, 'gap')} in the count review`,
-    detail: answered ? `${plural(answered, 'answer')} from the manager.`
-      : `With the manager's reason${open.some((g) => g.photo) ? ' and a photo of the shelf' : ''}. Mark it reviewed, or ask.`,
-    action: { label: 'Count review', items: [] },
-    cases,
-  };
-};
-
-/** An item short beyond the allowance three counts running: a pattern worth a look. */
-const shortStreak = (events: readonly SyncEvent[], stock: ShopData['stock']): Insight | null => {
-  const streaks = shortStreaks(events);
-  if (!streaks.length || !stock) return null;
-  const items = inventoryFromEvents(stock.items, events);
-  const named = streaks.map((s) => ({ ...s, name: items.find((i) => i.id === s.itemId)?.name ?? s.itemId }));
-  const [top] = named;
-  return {
-    id: 'short-streak',
-    tone: 'attention',
-    title: `${top.name} short ${top.counts} counts in a row`,
-    detail: `Rs ${fmt(top.cents)} over those counts. Not bad luck: worth a look at how it is kept or used.`,
-    action: { label: 'See items', items: named.map((s) => ({ primary: s.name, secondary: `short ${s.counts} counts in a row`, amount: s.cents })) },
-  };
-};
-
 /** Menu items ordered per item id, over a window. */
 const itemsSold = (events: readonly SyncEvent[], from: number, to: number) => {
   const sold = new Map<string, number>();
@@ -437,7 +327,9 @@ const notSelling = (events: readonly SyncEvent[], sales: Sale[], now: number): I
   const today = startOfDay(now);
   if (openDays(sales, today, 14).length < 10) return null; // need two real weeks to say "never"
   const sold = itemsSold(events, daysBack(today, 14), now);
-  const idle = MENU.filter((m) => !sold.has(m.id));
+  // The shop's own menu as it stands (its added items; the printed sample's hidden ones left out).
+  const menu = effectiveMenu(MENU, menuStateFromEvents(events), now).filter((m) => !m.removed && !m.hidden);
+  const idle = menu.filter((m) => !sold.has(m.id));
   if (!idle.length) return null;
   return {
     id: 'not-selling',
@@ -455,9 +347,9 @@ const bestSeller = (events: readonly SyncEvent[], now: number): Insight | null =
   return {
     id: 'best-seller',
     tone: 'good',
-    title: `${itemById(id).name.en} is today's best seller`,
+    title: `${nameOf(id)} is today's best seller`,
     detail: `${qty} sold so far.`,
-    action: { label: 'Top items', items: sold.slice(0, 8).map(([i, q]) => ({ primary: itemById(i).name.en, secondary: `${q} sold` })) },
+    action: { label: 'Top items', items: sold.slice(0, 8).map(([i, q]) => ({ primary: nameOf(i), secondary: `${q} sold` })) },
   };
 };
 
@@ -484,72 +376,6 @@ const campaignReach = (events: readonly SyncEvent[], now: number): Insight | nul
   };
 };
 
-/**
- * Deliveries a manager approved today (short, extra or at another price) and GRNs undone today:
- * the decision is made at the shop, and the owner is told who made it.
- */
-const grnApprovals = (events: readonly SyncEvent[], stock: ShopData['stock'], now: number): Insight | null => {
-  const today = startOfDay(now);
-  const grns = purchasesFromEvents(events).grns.filter((g) => (g.approvedBy && g.at >= today && g.at <= now) || (g.undone && g.undone.at >= today && g.undone.at <= now));
-  if (!grns.length) return null;
-  const supplier = (id: string) => stock?.suppliers.find((s) => s.id === id)?.name ?? 'a supplier';
-  const said = (g: (typeof grns)[number]) => (g.undone && g.undone.at >= today
-    ? `Undone by ${g.undone.by ?? 'a manager'}: ${g.undone.reason}`
-    : `Approved by ${g.approvedBy?.name ?? 'a manager'}${g.differs.length ? ` · ${g.differs.join(', ')}` : ''}`);
-  const [first] = grns;
-  const firstUndone = first.undone !== null && first.undone.at >= today;
-  const who = firstUndone ? first.undone!.by ?? 'A manager' : first.approvedBy?.name ?? 'A manager';
-  return {
-    id: 'grn-approvals',
-    tone: 'info',
-    title: grns.length === 1
-      ? `${who} ${firstUndone ? 'undid' : 'approved'} a delivery: ${first.grnNo} · ${supplier(first.supplierId)}`
-      : `${plural(grns.length, 'delivery approval')} today`,
-    detail: grns.length === 1
-      ? firstUndone ? `Undone: ${first.undone!.reason}.` : `${first.differs.length ? `${first.differs.join(', ').replace(/^./, (c) => c.toUpperCase())} · ` : ''}${rs(grnValueCents(first.lines))}.`
-      : 'What came differed from the order; a manager approved each with their PIN.',
-    action: {
-      label: 'See them',
-      items: grns.map((g) => ({ primary: `${g.grnNo} · ${supplier(g.supplierId)}`, secondary: said(g), amount: grnValueCents(g.lines), at: g.undone?.at ?? g.at })),
-    },
-  };
-};
-
-/**
- * A delivered price the counter saved without a manager (SCRUM-226): the owner decides it,
- * one tap to that GRN, where Use new price or Keep the item's price settles it.
- */
-const grnPricesToCheck = (events: readonly SyncEvent[], stock: ShopData['stock']): Insight | null => {
-  const state = purchasesFromEvents(events);
-  const list = pricesToCheck(state);
-  if (!list.length) return null;
-  const supplier = (id: string) => stock?.suppliers.find((s) => s.id === id)?.name ?? 'a supplier';
-  const item = (id: string) => stock?.items.find((i) => i.id === id)?.name ?? 'An item';
-  const [first] = list;
-  const changed = (g: (typeof list)[number]) => {
-    const ordered = state.orders.find((o) => o.id === g.orderId)?.lines ?? [];
-    return g.lines.flatMap((l) => {
-      const was = ordered.find((o) => o.itemId === l.itemId)?.unitPriceCents;
-      return was === undefined || l.unitPriceCents === undefined || was === l.unitPriceCents ? [] : [{ l, was, now: l.unitPriceCents }];
-    });
-  };
-  return {
-    id: 'grn-prices',
-    tone: 'attention',
-    title: list.length === 1
-      ? `${first.grnNo} · ${supplier(first.supplierId)} came at a different price`
-      : `${plural(list.length, 'delivery', 'deliveries')} came at a different price`,
-    detail: `Saved at the counter by ${first.receivedBy}. Use the new price, or keep the old one.`,
-    action: {
-      label: 'Decide',
-      go: `#receive/${encodeURIComponent(first.id)}`,
-      items: list.flatMap((g) => changed(g).map(({ l, was, now }) => ({
-        primary: `${item(l.itemId)} · ${g.grnNo}`, secondary: `${rs(was)} → ${rs(now)} a pack · ${supplier(g.supplierId)}`, amount: now - was, at: g.at,
-      }))),
-    },
-  };
-};
-
 const ORDER: Record<Tone, number> = { attention: 0, info: 1, good: 2 };
 
 /** The rules engine. Cards needing a decision come first, good news last. */
@@ -560,30 +386,17 @@ export const rulesSuggestions: SuggestionsService = {
     const salesCents = sales.reduce((n, s) => n + s.total, 0);
     return { salesCents, orders: sales.length, averageCents: sales.length ? Math.round(salesCents / sales.length) : 0 };
   },
-  insights({ events, now, stock }) {
+  // Bata Kade keeps no stock, tables, cameras or recipes: only what its own sales and staff say.
+  insights({ events, now }) {
+    shopMenu = new Map(effectiveMenu(MENU, menuStateFromEvents(events), now).map((m) => [m.id, m]));
     const sales = salesFrom(events);
     return [
-      camerasOffline(events, now), // first: the floor is guessing until it is back
       salesVsUsual(sales, now),
-      tablesVsUsual(events, now),
       voidsToday(events, sales, now),
       madeThrownToday(events, sales, now),
       discountsToday(events, sales, now),
       kitchenSlow(events, now),
-      runningLow(events, stock, now),
-      gapsToCheck(events, stock),
-      shortStreak(events, stock),
-      countedShort(events, stock, now),
-      wasteAboveUsual(events, stock, now),
       wasteReasonRepeats(events, now),
-      soldWithoutRecipe(events, now),
-      marginsFell(events, stock, now),
-      costsToAnswer(events, stock, now),
-      grnPricesToCheck(events, stock),
-      grnApprovals(events, stock, now),
-      stockValueCard(events, stock, now),
-      visitLength(events, now),
-      tableUse(events, now),
       notSelling(events, sales, now),
       bestSeller(events, now),
       campaignReach(events, now),

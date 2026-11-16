@@ -67,7 +67,7 @@ test('a raw item is wasted in its own unit', async () => {
 
 test('the bin shows in manager mode even when a cashier is signed in (the PIN is a manager\'s)', async () => {
   const user = userEvent.setup();
-  render(<App canManageStock={false} />);
+  render(<App />);
   await user.keyboard('{Control>}m{/Control}');
   await user.keyboard(pin);
   expect(screen.getByRole('button', { name: /Waste/ })).toBeTruthy();

@@ -589,7 +589,7 @@ export function MenuView({ owner, onBack }: { owner: boolean; onBack: () => void
 
   return (
     <div className="owner">
-      <OwnerNav current="items" onRegister={onBack} />
+      <OwnerNav current="menu" onRegister={onBack} />
       <main className="owner__main menuv" aria-label="Menu">
         <ItemsTabs current={location.hash === '#menu' ? 'menu' : 'finished'} />
         <h1 className="menuv__title">Menu</h1>

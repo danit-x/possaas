@@ -1,19 +1,10 @@
-import { answersFromEvents, menuCost, type CostContext } from './costing.ts';
-import { PLATFORMS } from './platforms.ts';
-import { salesFrom, ticketTimes, type Insight, type ShopData } from './insights.ts';
-import { stockFromEvents, stockStatus } from './inventory.ts';
+import { businessDayStart, cashOutsBetween } from './cashOut.ts';
+import { salesFrom, ticketTimes, type Insight } from './insights.ts';
 import { queue, ticketsFromEvents } from './kitchen.ts';
-import { menuItems } from './menu.ts';
-import { fmt, unitPrice } from './money.ts';
-import { MONEY_LABEL, drawerOutToday, moneyMonth, moneyOutFromEvents, monthOf } from './moneyOut.ts';
+import { fmt } from './money.ts';
 import { OUT_TOO_LONG_MS } from './online.ts';
-import { grnValueCents, purchasesFromEvents } from './purchaseOrders.ts';
-import { formatStock } from './itemStory.ts';
 import type { SyncEvent } from './sync.ts';
 import type { Cents, Tender } from './types.ts';
-import { valuationOf, valueAt } from './valuation.ts';
-import { wasteRecords } from './waste.ts';
-import { wasteCents } from './wasteInsights.ts';
 
 /**
  * Today at a glance (SCRUM-173): the whole shop in one look for the owner, and in words for
@@ -24,7 +15,7 @@ import { wasteCents } from './wasteInsights.ts';
  * "Usual" is the same weekday over the last 4 weeks, days the shop was open only; with fewer
  * than 2 such days there is no usual yet, and the screen says so instead of guessing.
  */
-export type StationId = 'deliveries' | 'shelves' | 'kitchen' | 'counter' | 'money';
+export type StationId = 'kitchen' | 'counter' | 'money';
 export type StationTone = 'ok' | 'warn';
 
 export interface Station {
@@ -49,9 +40,6 @@ export interface HourBar {
   explain: string;
 }
 
-export type DotStatus = 'ok' | 'low' | 'out' | 'unknown';
-export interface StockDot { id: string; name: string; status: DotStatus; explain: string }
-
 export interface Glance {
   sales: Cents;
   orders: number;
@@ -62,9 +50,6 @@ export interface Glance {
   ringExplain: string;
   stations: Station[];
   hours: HourBar[];
-  /** Of every Rs 100 sold today, whole rupees; null: nothing sold yet. */
-  split: { food: number; waste: number; kept: number; explain: string } | null;
-  stock: { value: Cents; dots: StockDot[]; low: number; out: number; unknown: number; explain: string };
   summary: string;
 }
 
@@ -99,7 +84,7 @@ export const unpaidDeliveries = (events: readonly SyncEvent[], today: number, no
 };
 
 /** The shop at a glance, now. `insights`: the To do list, so the summary names the first. */
-export const glanceOf = (events: readonly SyncEvent[], shop: NonNullable<ShopData['stock']>, insights: readonly Insight[], now: number): Glance => {
+export const glanceOf = (events: readonly SyncEvent[], insights: readonly Insight[], now: number): Glance => {
   const today = startOfDay(now);
   const weekday = WEEKDAYS[new Date(now).getDay()];
   const sales = salesFrom(events).filter((s) => s.at <= now);
@@ -133,59 +118,7 @@ export const glanceOf = (events: readonly SyncEvent[], shop: NonNullable<ShopDat
     hours.push({ hour: h, label: hourLabel(h), today: t, usual: u, explain: lines.join('\n') });
   }
 
-  // ----- stock and its value -----
-  const stock = stockFromEvents(shop.items, events, { now });
-  const answers = answersFromEvents(events);
-  const valuation = valuationOf(stock, answers);
-  const unitCost = new Map(valuation.items.map((v) => [v.id, v.unitCents]));
-  const rows = stock.rows.filter((r) => !r.archived);
-  const dotOf = (r: (typeof rows)[number]): DotStatus => {
-    const s = stockStatus(r);
-    return s === 'unsure' ? 'low' : s;
-  };
-  const dots: StockDot[] = rows.map((r) => {
-    const status = dotOf(r);
-    const value = valuation.items.find((v) => v.id === `stock:${r.id}`)?.cents ?? null;
-    const lines = status === 'unknown'
-      ? [`${r.name}: never counted.`, 'Count it once and its stock is kept from then on.']
-      : [`${r.name}: ${status === 'out' ? 'out of stock' : status === 'low' ? (r.missedSales > 0 ? 'check the shelf' : 'low') : 'in stock'}.`,
-        `${formatStock(r.onHandBaseUnits, r)} on hand${value !== null ? `, worth ${rs(value)}` : ''}.`,
-        ...(r.lastsDays !== null ? [`Lasts about ${Math.max(1, Math.round(r.lastsDays))} ${Math.round(r.lastsDays) === 1 ? 'day' : 'days'} at this week's use.`] : []),
-        ...(r.suggestedPacks > 0 ? [`Order ${plural(r.suggestedPacks, 'pack')}.`] : [])];
-    return { id: r.id, name: r.name, status, explain: lines.join('\n') };
-  });
-  const count = (s: DotStatus) => dots.filter((d) => d.status === s).length;
-  const weekAgo = valueAt(shop.items, events, now - 7 * DAY).total;
-  const change = weekAgo > 0 ? Math.round(((valuation.total - weekAgo) / weekAgo) * 100) : null;
-  const stockExplain = [
-    `Shelves: ${rs(valuation.total)} in stock (on hand × latest price).`,
-    ...(change !== null && Math.abs(change) >= 10 ? [`${change > 0 ? 'Up' : 'Down'} ${Math.abs(change)}% since last ${weekday}.`] : []),
-    count('low') + count('out') > 0
-      ? `${count('low')} low, ${count('out')} out: ${dots.filter((d) => d.status === 'low' || d.status === 'out').slice(0, 4).map((d) => d.name).join(', ')}.`
-      : 'Nothing low or out.',
-    ...(count('unknown') ? [`${plural(count('unknown'), 'item')} never counted: not in the value.`] : []),
-  ].join('\n');
-
-  // ----- the five stations -----
-  const purchases = purchasesFromEvents(events);
-  const supplier = (id: string) => shop.suppliers.find((x) => x.id === id)?.name ?? 'a supplier';
-  const received = purchases.grns.filter((g) => !g.undone && g.at >= today && g.at <= now);
-  const receivedCents = received.reduce((n, g) => n + grnValueCents(g.lines), 0);
-  const late = purchases.open.filter((o) => now > o.at + ((purchases.leadDays.get(o.supplierId) ?? 3) + 1) * DAY);
-  const daysAgo = (t: number) => { const d = Math.floor((now - t) / DAY); return d === 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`; };
-  const deliveries: Station = {
-    id: 'deliveries', label: 'Deliveries', value: rs(receivedCents), tone: late.length ? 'warn' : 'ok', badge: late.length, href: '#receive',
-    explain: [
-      received.length ? `Deliveries: ${rs(receivedCents)} received today.` : 'No deliveries received today.',
-      ...received.slice(0, 4).map((g) => `${g.grnNo} · ${supplier(g.supplierId)} · ${rs(grnValueCents(g.lines))} · ${clock(g.at)}`),
-      ...purchases.open.slice(0, 3).map((o) => `Still coming: ${o.poNo} from ${supplier(o.supplierId)}, ordered ${daysAgo(o.at)}${late.includes(o) ? ': late' : ''}.`),
-    ].join('\n'),
-  };
-  const low = count('low') + count('out');
-  const shelves: Station = {
-    id: 'shelves', label: 'Shelves', value: rs(valuation.total), tone: low ? 'warn' : 'ok', badge: low, href: '#items', explain: stockExplain,
-  };
-
+  // ----- the stations: the kitchen, the counter, the money -----
   const times = ticketTimes(events);
   const mins = (xs: { minutes: number }[]) => (xs.length ? xs.reduce((n, t) => n + t.minutes, 0) / xs.length : null);
   const kitchenToday = mins(times.filter((t) => t.sentAt >= today && t.sentAt <= now));
@@ -225,56 +158,20 @@ export const glanceOf = (events: readonly SyncEvent[], shop: NonNullable<ShopDat
   const unpaid = unpaidDeliveries(events, today, now);
   const owed = unpaid.reduce((n, d) => n + d.due, 0);
   const overdue = unpaid.filter((d) => now - d.readyBy > OUT_TOO_LONG_MS);
-  // What the shop paid (SCRUM-105). The phone has no Money out page: these words are its view of it.
-  const paidOut = moneyOutFromEvents(events);
-  const drawerOut = drawerOutToday(paidOut, now);
-  const thisMonth = moneyMonth(paidOut, monthOf(now));
+  // Cash out (cashOut.ts): what left the drawer this business day, the owner's paper list.
+  const day = businessDayStart(now);
+  const cashOut = cashOutsBetween(events, day, day + DAY);
   const money: Station = {
-    id: 'money', label: 'Money', value: rs(total), tone: overdue.length ? 'warn' : 'ok', badge: overdue.length, href: '#money',
+    id: 'money', label: 'Money', value: rs(total), tone: overdue.length ? 'warn' : 'ok', badge: overdue.length, href: '#cashout',
     explain: [
       `Money: ${rs(total)} taken today.`,
       ...[...byTender].filter(([, c]) => c > 0).map(([t, c]) => `${TENDER[t]}: ${rs(c)}`),
-      ...(drawerOut ? [`Paid out of the drawer today: ${rs(drawerOut)}.`] : []),
-      ...(byTender.get('cash') ? [`The drawer should hold the cash plus the opening float${drawerOut ? ', less what was paid out' : ''}.`] : []),
-      ...PLATFORMS.filter((p) => byTender.get(p.id)).map((p) => `${p.name} pays the shop later, less its commission: not in the drawer.`),
+      ...(cashOut.total ? [`Cash out of the drawer today: ${rs(cashOut.total)} (${cashOut.lines.slice(0, 4).map((l) => l.name).join(', ')}${cashOut.lines.length > 4 ? ' and more' : ''}).`] : []),
+      ...(byTender.get('cash') ? [`The drawer should hold the cash plus the opening float${cashOut.total ? ', less the cash out' : ''}.`] : []),
       ...(unpaid.length ? [`About ${rs(owed)} still to come from ${plural(unpaid.length, 'delivery', 'deliveries')}, paid when the rider is back.`] : []),
       ...overdue.map((d) => `Delivery ${d.number} was ready at ${clock(d.readyBy)} and is not paid yet.`),
-      ...(thisMonth.costs ? [`Bills and other costs this month: ${rs(thisMonth.costs)}.`, ...thisMonth.byWhat.map((w) => `${MONEY_LABEL[w.what]}: ${rs(w.cents)}`)] : []),
     ].join('\n'),
   };
-
-  // ----- every Rs 100 sold: food (his recipes × latest prices), waste (at cost), the rest -----
-  let split: Glance['split'] = null;
-  if (total > 0) {
-    const ctx: CostContext = { items: stock.rows, answers };
-    let priced = 0;
-    let cost = 0;
-    let unknown = 0;
-    for (const e of events) {
-      if (e.type !== 'order.sent' || e.at < today || e.at > now) continue;
-      for (const l of e.lines) {
-        const item = menuItems().find((m) => m.id === l.itemId); // one since taken off the menu: no price to compare
-        const c = menuCost(l.itemId, l.size ?? '', ctx);
-        if (!item || !c.complete) { unknown += l.qty; continue; }
-        priced += unitPrice(item, l) * l.qty;
-        cost += c.cents * l.qty;
-      }
-    }
-    const wasted = wasteRecords(events, shop.items).filter((w) => w.at >= today && w.at <= now)
-      .reduce((n, w) => n + wasteCents(w.takes, unitCost), 0);
-    const food = priced > 0 ? Math.round((cost / priced) * 100) : 0;
-    const waste = Math.min(100 - food, Math.round((wasted / total) * 100));
-    split = {
-      food, waste, kept: Math.max(0, 100 - food - waste),
-      explain: [
-        'Of every Rs 100 sold today:',
-        `Rs ${food} paid for the food (your recipes × latest prices).`,
-        `Rs ${waste} went in the waste bin, at cost.`,
-        `Rs ${Math.max(0, 100 - food - waste)} is left for wages, rent, power and profit.`,
-        ...(unknown ? [`${plural(unknown, 'item')} sold without a recipe cost: not counted in food.`] : []),
-      ].join('\n'),
-    };
-  }
 
   // ----- the ring and the day in a sentence -----
   const share = usualDay ? total / usualDay : null;
@@ -302,9 +199,8 @@ export const glanceOf = (events: readonly SyncEvent[], shop: NonNullable<ShopDat
 
   return {
     sales: total, orders: todays.length, usualDay, share, ringExplain,
-    stations: [deliveries, shelves, kitchen, counter, money],
-    hours, split,
-    stock: { value: valuation.total, dots, low: count('low'), out: count('out'), unknown: count('unknown'), explain: stockExplain },
+    stations: [kitchen, counter, money],
+    hours,
     summary,
   };
 };

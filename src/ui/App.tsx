@@ -1,5 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { canManage, seesTakings } from '../domain/auth.ts';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { seesTakings } from '../domain/auth.ts';
 import { DISCOUNT_CHIPS, type ManagerChange } from '../domain/manager.ts';
 import { comboById, itemById, menuItems } from '../domain/menu.ts';
 import { boxLines } from '../domain/combos.ts';
@@ -14,8 +14,6 @@ import { deliveryBill } from '../domain/receipt.ts';
 import { lineGross } from '../domain/totals.ts';
 import { fmt } from '../domain/money.ts';
 import { CommandPalette, type Command } from './CommandPalette.tsx';
-import { MoneyOutSheet } from './MoneyOutSheet.tsx';
-import { ReceiveSheet } from './WorkViews.tsx';
 import { ExtrasPanel } from './ExtrasPanel.tsx';
 import { KitchenChip } from './KitchenChip.tsx';
 import { OnlineChip, OnlineSheet, useOnline } from './Online.tsx';
@@ -48,8 +46,7 @@ import { useMenu } from './menuStore.ts';
 import { THEME_LABEL, applyTheme, setTheme, themeChoice, themeStored, type ThemeChoice } from './theme.ts';
 import { useFleet } from './ShopsView.tsx';
 import { lineItemName } from '../domain/halves.ts';
-import { isPlatformId, PLATFORMS, type Platform } from '../domain/platforms.ts';
-import { PlatformSheet } from './PlatformSheet.tsx';
+import { isPlatformId, PLATFORMS } from '../domain/platforms.ts';
 
 type Sheet =
   | { kind: 'extras'; item: MenuItem; size?: SizeId }
@@ -59,15 +56,7 @@ type Sheet =
   | { kind: 'pin'; voidLine?: string }
   | { kind: 'online' }
   | { kind: 'waste' }
-  | { kind: 'platform'; platform: Platform }
-  | { kind: 'money' }
-  | { kind: 'receive' }
   | null;
-
-/** The Tables chip carries the floor's fold (SCRUM-168): loaded beside the Register, so the Register does not grow. */
-const TablesChip = lazy(() => import('./TablesChip.tsx'));
-/** "Table N needs cleaning" for 5 s (the owner's exception to "no banners", 2026-10-26): from the same chunk. */
-const CleaningNote = lazy(() => import('./TablesChip.tsx').then((m) => ({ default: m.CleaningNote })));
 
 const isTypingTarget = (el: EventTarget | null): boolean =>
   el instanceof HTMLElement && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
@@ -83,19 +72,17 @@ const MANAGER_KEYS = [['↑ ↓', 'Pick a line'], ['Enter', 'Change'], ['Del', '
 
 export function App({
   onKitchen,
-  onTables,
   onOwner,
+  onCashOut,
   onSwitch,
-  canManageStock = true,
   onVoice,
 }: {
   onKitchen?: () => void;
-  /** Opens the floor of tables (SCRUM-168; F1 does the same). The chip shows only once there is a layout. */
-  onTables?: () => void;
   /** Opens the Owner view (owners and managers; F10 does the same). */
   onOwner?: () => void;
+  /** Opens Cash out, the owner's paper list (F1 does the same). */
+  onCashOut?: () => void;
   onSwitch?: () => void;
-  canManageStock?: boolean;
   /** Hold to say which page to open (SCRUM-145; F9 does the same). */
   onVoice?: { start: () => void; stop: () => void };
 } = {}) {
@@ -193,7 +180,7 @@ export function App({
     setPalette(false);
     setPendingVoid(null);
     setAdjusting(null);
-    setSheet((s) => (s?.kind === 'edit' || s?.kind === 'waste' || s?.kind === 'money' ? null : s));
+    setSheet((s) => (s?.kind === 'edit' || s?.kind === 'waste' ? null : s));
     setNoted(null);
     endManagerSession();
   }, [endManagerSession]));
@@ -538,24 +525,15 @@ export function App({
       ...(['light', 'dark', 'auto'] as ThemeChoice[]).map((t) => ({
         id: `theme-${t}`, label: THEME_LABEL[t], hint: themeChoice() === t ? 'On' : undefined, run: () => setTheme(t),
       })),
-      { id: 'setup', label: "Settings: staff, printer, devices, stock rules (owner's PIN)", run: () => { location.hash = '#setup'; } },
-      { id: 'cameras', label: 'Computer vision: cameras and tables', run: () => { location.hash = '#vision'; } },
+      { id: 'setup', label: "Settings: staff, printer, devices (owner's PIN)", run: () => { location.hash = '#setup'; } },
       { id: 'undo', label: 'Undo last change', hint: 'Ctrl+Z', run: () => reg.undoManager(manager) },
       { id: 'sound', label: sound ? 'Turn sound off' : 'Turn sound on', run: () => { setSoundOn(!sound); setSound(!sound); } },
       { id: 'leave', label: 'Leave manager mode', hint: 'Esc', run: mode.exit },
     );
     list.push({ id: 'waste', label: 'Waste: something was thrown away', hint: 'W', run: () => setSheet({ kind: 'waste' }) });
-    list.push({ id: 'money', label: 'Money out: a bill paid, or cash from the drawer', hint: 'F6', run: () => setSheet({ kind: 'money' }) });
-    list.push({ id: 'money-page', label: 'Money out this month', run: () => { location.hash = '#money'; } });
-    if (canManageStock) {
-      list.push({ id: 'receive', label: 'Receive: a delivery came', hint: 'F7', run: () => setSheet({ kind: 'receive' }) });
-      list.push({ id: 'order', label: 'Order: what to buy', run: () => { location.hash = '#order'; } });
-      list.push({ id: 'count', label: 'Count the shelves', run: () => { location.hash = '#count'; } });
-      list.push({ id: 'inventory', label: 'Items: raw materials and stock', run: () => { location.hash = '#items'; } });
-      list.push({ id: 'suppliers', label: 'Suppliers', run: () => { location.hash = '#suppliers'; } });
-    }
+    list.push({ id: 'cashout', label: 'Cash out: cash taken from the drawer', hint: 'F1', run: () => { location.hash = '#cashout'; } });
     return list;
-  }, [manager, listing, reg, selectedLine, sound, canManageStock, manage, askAdjust, askVoid, mode.exit, fleet, kitchenOn]);
+  }, [manager, listing, reg, selectedLine, sound, manage, askAdjust, askVoid, mode.exit, fleet, kitchenOn]);
 
   return (
     <div className={`register${manager ? ' register--managing' : ''}${paying ? ' register--paying' : ''}${inExtras ? ' register--extras' : ''}`}>
@@ -566,15 +544,9 @@ export function App({
         <nav className="tabs" aria-label="Places">
           <span className="tab tab--on" aria-current="page">Register</span>
           {!manager && kitchenOn && onKitchen && <KitchenChip tickets={tickets} onOpen={onKitchen} />}
-          {!manager && onTables && <Suspense fallback={null}><TablesChip onOpen={onTables} /></Suspense>}
           {/* The owner and managers see their own screen. */}
           {!manager && onOwner && <button type="button" className="corner__key" onClick={onOwner}>Today <kbd>F10</kbd></button>}
-          {!manager && <button type="button" className="corner__key" onClick={() => setSheet({ kind: 'money' })}>Money out</button>}
-          {!manager && <button type="button" className="corner__key" onClick={() => setSheet({ kind: 'receive' })}>Receive</button>}
-          {!manager && PLATFORMS.map((p) => (
-            <button key={p.id} type="button" className="corner__key" disabled={reg.order.sentAt !== undefined || Boolean(reg.paid)}
-              onClick={() => setSheet({ kind: 'platform', platform: p })}>{p.name}</button>
-          ))}
+          {!manager && <button type="button" className="corner__key" onClick={onCashOut ?? (() => { location.hash = '#cashout'; })}>Cash out <kbd>F1</kbd></button>}
         </nav>
         {manager ? (
           <span className="corner corner--managing" role="status">
@@ -583,7 +555,6 @@ export function App({
             <button type="button" className="corner__key corner__bin" onClick={() => setSheet({ kind: 'waste' })}>
               <BinIcon /> Waste <kbd>W</kbd>
             </button>
-            <button type="button" className="corner__key" onClick={() => setSheet({ kind: 'money' })}>Money out</button>
             <button type="button" className="corner__key" onClick={() => setPalette(true)}>Commands <kbd>Ctrl K</kbd></button>
             <button type="button" className="corner__key" onClick={mode.exit}>Done <kbd>Esc</kbd></button>
           </span>
@@ -694,9 +665,6 @@ export function App({
 
       <ActionBar actions={barActions} />
 
-      {sheet?.kind === 'platform' && (
-        <PlatformSheet platform={sheet.platform} onClose={closeSheet} onMark={(m) => { reg.setPlatform(m); closeSheet(); }} />
-      )}
       {sheet?.kind === 'online' && <OnlineSheet state={online} onAccept={acceptOnline} onOut={outOnline} onClose={closeSheet} />}
       {sheet?.kind === 'pin' && (
         <PinSheet
@@ -718,26 +686,8 @@ export function App({
           onWasted={(message, undo) => { closeSheet(); setNoted({ id: Date.now(), message, undo }); }}
         />
       )}
-      {sheet?.kind === 'money' && (
-        <MoneyOutSheet
-          actor={manager ?? currentCashier()}
-          full={Boolean(manager) || canManage(currentCashier())}
-          onClose={closeSheet}
-          onDone={(message, undo) => { closeSheet(); setNoted({ id: Date.now(), message, undo }); }}
-        />
-      )}
-      {sheet?.kind === 'receive' && (
-        <ReceiveSheet
-          manages={Boolean(manager) || canManage(currentCashier())}
-          onClose={closeSheet}
-          // The sheet says what happened on its own Done step (with Undo there); no toast under it.
-          onDone={() => {}}
-        />
-      )}
       {palette && manager && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
 
-      {/* Hidden under an open sheet, like the toasts: it never covers the sheet, the order or the primary action. */}
-      {onTables && !sheet && !palette && <Suspense fallback={null}><CleaningNote /></Suspense>}
       {/* Hidden under an open sheet: it would cover the sheet's buttons (e.g. Card). */}
       {noted && !sheet && !palette && (
         <div className="toast" role="status" key={`waste-${noted.id}`}>

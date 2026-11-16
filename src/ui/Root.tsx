@@ -1,50 +1,35 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from 'react';
 import { flushSync } from 'react-dom';
-import { managesStock, seesTakings } from '../domain/auth.ts';
+import { seesTakings } from '../domain/auth.ts';
 import { voicePages } from '../domain/voicePages.ts';
 import { usesLogin } from '../services/auth.ts';
-import { loadMe } from '../services/managerPhone.ts';
 import { adminShop, fleetShop, isCloudSite, isKitchenDevice, isManagerPhone, ownerToken, syncToken } from '../services/pairing.ts';
 import { isDemo } from './storage.ts';
 import { lock, signedIn, subscribeAuth } from '../services/serverAuth.ts';
 import { App } from './App.tsx';
-import { InventoryView } from './InventoryView.tsx';
+import { CashOut } from './CashOut.tsx';
 import { Kitchen } from './Kitchen.tsx';
 import { LockScreen } from './LockScreen.tsx';
-import { ManagerView } from './ManagerView.tsx';
 import { MenuView } from './MenuView.tsx';
 import { useMenu } from './menuStore.ts';
 import { OwnerView } from './OwnerView.tsx';
 import { OwnerWelcome } from './OwnerWelcome.tsx';
 import { ShopsView } from './ShopsView.tsx';
 import { ReceiptPreview } from './ReceiptPreview.tsx';
-import { RecipesView } from './RecipesView.tsx';
-import { SemiView } from './SemiView.tsx';
-import { WarehousesView } from './WarehousesView.tsx';
 import { SetupWizard } from './SetupWizard.tsx';
-import { SupplierView } from './SupplierView.tsx';
-import { OrderView, ReceiveView } from './WorkViews.tsx';
 import { useVoice, VoiceNote } from './VoiceKey.tsx';
-import { navData, navigate, onNavigate, startNav, useBackKeys } from './nav.ts';
+import { navigate, onNavigate, startNav, useBackKeys } from './nav.ts';
 import { kitchenScreenOn } from './kitchenScreen.ts';
-
-import { MoneyOutView } from './MoneyOutView.tsx';
 import { SHOP_NAME } from '../shop/identity.ts';
 
-/** Visual Flow carries its own drawing library: loaded when it is opened, so the Register stays light. */
-const VisualFlowView = lazy(() => import('./visualFlow/VisualFlowView.tsx'));
 /** The developers' module codes (#unlock): opened once in a shop's life. */
 const UnlockView = lazy(() => import('./UnlockView.tsx'));
 /** Customers (CRM): a module, on only where the developers turned it on. */
 const CustomersView = lazy(() => import('./customers/CustomersView.tsx'));
-/** The floor (SCRUM-168): loaded when it is opened, so the Register does not grow. */
-const FloorView = lazy(() => import('./floor/FloorView.tsx'));
-/** Computer vision (SCRUM-174): the owner's page, on the counter and the owner's phone. */
-const VisionView = lazy(() => import('./vision/VisionView.tsx'));
 
 const KITCHEN = '#kitchen';
 const OWNER = '#owner';
-const TABLES = '#tables';
+const CASHOUT = '#cashout';
 
 /** Changing screens cross-fades (view transitions, 200 ms in styles.css) where the browser can; instant elsewhere. */
 const withTransition = (change: () => void) => {
@@ -116,8 +101,7 @@ function NotConnected() {
  *   and the screen locks itself when quiet. A kitchen login sees the Kitchen only.
  * - The Kitchen view is hidden on the counter until it is turned back on (kitchenScreen.ts);
  *   then the Kitchen key opens it and F2 comes back. F10 flips to the Owner view and back
- *   (owners and managers); F1 flips to the floor of tables and back, once the shop has a
- *   table layout (SCRUM-168). The Kitchen stays visible while the
+ *   (owners and managers). The Kitchen stays visible while the
  *   screen is locked; only going back to the Register needs a PIN.
  * Development and the demo have no login (fake staff), as before.
  */
@@ -126,34 +110,24 @@ export function Root() {
   const [hash, setHash] = useState(() => { startNav(); return location.hash; });
   /** Came here from the Register, so the Kitchen offers a way back. */
   const [fromRegister, setFromRegister] = useState(false);
-  /** Suppliers found for one ingredient: kept in the place's history entry, so Back and Forward keep it. */
-  const [filterIngredientId, setFilterIngredientId] = useState<string | null>(() => navData()?.ingredient ?? null);
   const needsLogin = usesLogin();
   const staff = useSyncExternalStore(subscribeAuth, signedIn);
   const kitchenOnly = isKitchenDevice() || staff?.role === 'kitchen';
   const setup = useSetupCheck();
   useIdleLock(needsLogin && staff !== null);
 
-  useEffect(() => onNavigate(() => {
-    setHash(location.hash);
-    setFilterIngredientId(navData()?.ingredient ?? null);
-  }), []);
+  useEffect(() => onNavigate(() => setHash(location.hash)), []);
 
   // The Kitchen view is hidden on the counter until it is turned back on (kitchenScreen.ts).
   const inKitchen = hash === KITCHEN && kitchenScreenOn();
   /** The Owner view shows the takings: owners and managers only (SCRUM-41). */
   const seesOwner = !kitchenOnly && (!needsLogin || (staff !== null && seesTakings(staff.role)));
-  /** The floor: whoever works the counter (a kitchen login records no table changes). */
-  const seesFloor = !kitchenOnly && !isManagerPhone() && !isCloudSite() && (!needsLogin || staff !== null);
   // Every move is one step (nav.ts), the Register too, so Back is always "where I just was".
   const go = useCallback((to: string) => withTransition(() => {
     navigate(to);
     if (to === KITCHEN) setFromRegister(true);
   }), []);
   const show = useCallback((kitchen: boolean) => go(kitchen ? KITCHEN : ''), [go]);
-  const findSupplier = useCallback((ingredientId: string) => withTransition(() => {
-    navigate('#suppliers', { ingredient: ingredientId });
-  }), []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -162,29 +136,24 @@ export function Root() {
       if (e.key === 'F2' && !kitchenOnly && (inKitchen || (needsLogin && !staff && kitchenScreenOn()))) { e.preventDefault(); show(!inKitchen); }
       if (e.key === 'F10' && seesOwner) { e.preventDefault(); go(hash === OWNER ? '' : OWNER); }
       if (e.key === 'F4' && needsLogin && staff && (inKitchen || kitchenOnly)) { e.preventDefault(); lock(); }
+      // Cash out and back (F1 is the browser's help page otherwise).
+      if (e.key === 'F1' && !kitchenOnly && !isCloudSite() && (!needsLogin || staff)) { e.preventDefault(); go(hash === CASHOUT ? '' : CASHOUT); }
       // The developers' Modules page (#unlock): the installed app has no address bar, so a hidden
       // key opens it on the shop PC, locked or not; the developers' password is still the authority.
       if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === 'KeyU' && !isCloudSite() && !isManagerPhone()) {
         e.preventDefault();
         go(hash === '#unlock' ? '' : '#unlock');
       }
-      if (e.key === 'F1' && seesFloor) {
-        e.preventDefault(); // F1 is the browser's help page otherwise
-        if (hash === TABLES) go('');
-        // The floor's fold is loaded with the floor, not with the Register.
-        else void import('./tablesStore.ts').then(({ hasFloor }) => { if (hasFloor()) go(TABLES); });
-      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [hash, inKitchen, show, go, seesOwner, seesFloor, kitchenOnly, needsLogin, staff]);
+  }, [hash, inKitchen, show, go, seesOwner, kitchenOnly, needsLogin, staff]);
 
   // Opening a page by voice (SCRUM-145): only the pages this person could open anyway.
-  const mayManageStock = !needsLogin || (staff !== null && managesStock(staff.role));
   const isOwnerHere = !needsLogin || staff?.role === 'owner';
   const pages = useMemo(() => voicePages({
-    seesOwner, managesStock: mayManageStock, owner: isOwnerHere, setup: !needsLogin || staff?.role === 'owner' || staff?.role === 'manager',
-  }), [seesOwner, mayManageStock, isOwnerHere, needsLogin, staff]);
+    seesOwner, owner: isOwnerHere, setup: !needsLogin || staff?.role === 'owner' || staff?.role === 'manager',
+  }), [seesOwner, isOwnerHere, needsLogin, staff]);
   const voiceOn = !isManagerPhone() && !isCloudSite() && (setup === 'none' || setup === 'done') && !kitchenOnly && (!needsLogin || staff !== null);
   const voice = useVoice(voiceOn ? pages : [], hash, go);
 
@@ -200,13 +169,9 @@ export function Root() {
   function renderScreen(): ReactElement {
   // The cloud site is the owner's phone page and nothing else (the demo for examiners too).
   // A manager's phone app (SCRUM-94): the counts and the stock, nothing else.
-  if (isManagerPhone()) return <ManagerPhone hash={hash} />;
+  if (isManagerPhone()) return <NotConnected />;
   if (isCloudSite()) {
     if (!(ownerToken() || isDemo() || adminShop())) return <OwnerWelcome />;
-    // The Shadow week card opens Computer vision: read-only on the phone.
-    if (hash === '#vision' || hash.startsWith('#vision/')) {
-      return <Suspense fallback={<div className="setup" aria-busy="true" />}><VisionView hash={hash} phone /></Suspense>;
-    }
     return <OwnerView phone />;
   }
   if (setup === 'checking') return <div className="setup" aria-busy="true" />;
@@ -232,77 +197,19 @@ export function Root() {
   // The developer's Shops screen (only answers on the developer's laptop: server/fleet.ts).
   if (hash === '#shops' && seesOwner) return <ShopsView onBack={() => go('')} />;
   if (fleetShop() && seesOwner) return <OwnerView key={hash} shop={fleetShop()!} onBack={() => go('#shops')} />;
-  // The shop's day (Shop Day Navigation): Receive, Order and Count are places of their own;
-  // Items holds raw materials, semi-processed and finished items. The older addresses
-  // (#inventory, #manager, #menu, #recipes) still open the same places.
-  if ((hash === '#receive' || hash.startsWith('#receive/')) && mayManageStock) {
-    return <ReceiveView key={hash} openGrn={hash.startsWith('#receive/') ? decodeURIComponent(hash.slice('#receive/'.length)) : undefined} onRegister={() => go('')} />;
-  }
-  // #order/suppliers: ordering by supplier, a place of its own. #order/<supplier id> opens that supplier's cart.
-  if (hash === '#order/suppliers' && mayManageStock) return <OrderView key={hash} bySupplier onRegister={() => go('')} />;
-  if ((hash === '#order' || hash.startsWith('#order/')) && mayManageStock) {
-    return <OrderView key={hash} supplierId={hash.startsWith('#order/') ? decodeURIComponent(hash.slice('#order/'.length)) : undefined} onRegister={() => go('')} />;
-  }
-  if ((hash === '#count' || hash === '#manager') && mayManageStock) return <ManagerView onRegister={() => go('')} />;
-  // #items/low: opened to order (Orders' Order by item), out and low first.
-  if ((hash === '#items' || hash === '#items/raw' || hash === '#items/low' || hash === '#inventory') && mayManageStock) {
-    return <InventoryView onFindSupplier={findSupplier} onRegister={() => go('')} lowFirst={hash === '#items/low'} />;
-  }
-  // #items/item/<id>: one raw material's sheet, on its History (Visual Flow's Stock view links here).
-  if (hash.startsWith('#items/item/') && mayManageStock) {
-    return <InventoryView key={hash} onFindSupplier={findSupplier} onRegister={() => go('')} openId={decodeURIComponent(hash.slice('#items/item/'.length))} />;
-  }
   // The owner changes the menu; managers can mark items sold out during service.
-  if ((hash === '#items/finished' || hash === '#menu') && (!needsLogin || (staff !== null && seesTakings(staff.role)))) {
+  if ((hash === '#items/finished' || hash === '#menu' || hash === '#items') && (!needsLogin || (staff !== null && seesTakings(staff.role)))) {
     return <MenuView owner={isOwnerHere} onBack={() => go('')} />;
   }
-  // Recipes are the owner's alone, opened with his PIN on the screen itself: a dish's recipe from
-  // the dish (#items/recipe/<id>), all of them (#items/recipe, or the old #recipes), and what the kitchen makes.
-  // Semi-processed items are items, not recipes: no PIN; the owner changes them.
-  if (hash === '#items/semi' && mayManageStock) return <SemiView onRegister={() => go('')} />;
-  // Where the raw and semi-processed items are kept (SCRUM-184); the owner edits the warehouses with his PIN.
-  if (hash === '#items/warehouses' && mayManageStock) return <WarehousesView onRegister={() => go('')} />;
-  if ((hash === '#items/recipe' || hash === '#recipes') && isOwnerHere) return <RecipesView onRegister={() => go('')} />;
-  if (hash.startsWith('#items/recipe/') && isOwnerHere) {
-    return <RecipesView key={hash} focus={decodeURIComponent(hash.slice('#items/recipe/'.length))} onRegister={() => go('')} />;
-  }
-  // How each dish is made, drawn (the owner's, like the recipes): #flow, or #flow/<item> for one item.
-  if ((hash === '#flow' || hash.startsWith('#flow/')) && seesOwner) {
-    return <Suspense fallback={<div className="owner" aria-busy="true" />}><VisualFlowView key={hash} onRegister={() => go('')} /></Suspense>;
-  }
-  // What the shop paid (SCRUM-105): owners and managers; a cashier records cash out from the Register.
-  if (hash === '#money' && seesOwner) return <MoneyOutView onRegister={() => go('')} />;
+  // Cash out, the owner's paper list: anyone opens it (F1 on the Register); writing takes a manager's PIN.
+  if (hash === CASHOUT) return <CashOut nav={seesOwner} onBack={() => go('')} />;
   if ((hash === '#customers' || hash.startsWith('#customers/')) && seesOwner) {
     return <Suspense fallback={<div className="inv-page" aria-busy="true" />}><CustomersView hash={hash} onRegister={() => go('')} /></Suspense>;
   }
-  if (hash === TABLES && seesFloor) {
-    return <Suspense fallback={<div className="floor" aria-busy="true" />}><FloorView onBack={() => go('')} /></Suspense>;
-  }
-  // Computer vision (SCRUM-174): owners and managers see it; only the owner changes it. One page: what the side panel
-  // shows is in the address (#vision/camera-<id>, #vision/live from the Shadow week card). #cameras, its old setup, opens it too.
-  if ((hash === '#vision' || hash.startsWith('#vision/') || hash === '#cameras') && seesOwner) {
-    return <Suspense fallback={<div className="setup" aria-busy="true" />}><VisionView hash={hash === '#cameras' ? '#vision' : hash} onRegister={() => go('')} /></Suspense>;
-  }
-  if ((hash === '#suppliers' || hash === '#items/suppliers') && mayManageStock) {
-    return <SupplierView filterIngredientId={filterIngredientId} onRegister={() => go('')} />;
-  }
   return (
-    <App onKitchen={() => show(true)} onTables={seesFloor ? () => go(TABLES) : undefined} onOwner={needsLogin && seesOwner ? () => go(OWNER) : undefined}
-      onSwitch={needsLogin ? lock : undefined} canManageStock={mayManageStock}
+    <App onKitchen={() => show(true)} onOwner={needsLogin && seesOwner ? () => go(OWNER) : undefined}
+      onCashOut={() => go(CASHOUT)} onSwitch={needsLogin ? lock : undefined}
       onVoice={voiceOn ? { start: () => void voice.start(), stop: voice.stop } : undefined} />
   );
   }
-}
-
-/** The manager's phone app: who it belongs to comes from the cloud once, then the counts. */
-function ManagerPhone({ hash }: { hash: string }) {
-  const [me, setMe] = useState<'loading' | 'ready' | string>('loading');
-  useEffect(() => { loadMe().then(() => setMe('ready'), (e: unknown) => setMe(e instanceof Error ? e.message : String(e))); }, []);
-  if (me === 'loading') return <div className="setup" aria-busy="true" />;
-  if (me !== 'ready') return <main className="setup"><p className="setup__error" role="alert">{me}</p></main>;
-  // Count, Receive and the stock (Items): what a manager does away from the counter.
-  if (hash === '#receive' || hash.startsWith('#receive/')) {
-    return <ReceiveView key={hash} openGrn={hash.startsWith('#receive/') ? decodeURIComponent(hash.slice('#receive/'.length)) : undefined} />;
-  }
-  return hash === '#items' || hash === '#inventory' ? <InventoryView /> : <ManagerView />;
 }

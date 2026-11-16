@@ -1,11 +1,10 @@
 /**
  * The owner's and manager's screens share one sidebar (SCRUM-131), arranged by the shop's day
  * (the "Shop Day Navigation" plan): the work first, in the order the day uses it (Sell, Receive,
- * Order, Count, Today), then Items (raw, semi-processed and finished, in one place), then
- * Settings at the bottom. Every part keeps its place: a badge marks where a decision waits, it
- * never moves the part, because hands find buttons by where they are. Each part has one line
- * saying what is going on there. Ctrl K (or "Ask or find") jumps to any part. On a narrow screen
- * the list folds into a drawer. A manager's phone shows Count, Receive and Items.
+ * Today, Cash out), then the Menu and Customers, then Settings at the bottom. Every part keeps
+ * its place: a badge marks where a decision waits, it never moves the part, because hands find
+ * buttons by where they are. Each part has one line saying what is going on there. Ctrl K (or
+ * "Ask or find") jumps to any part. On a narrow screen the list folds into a drawer.
  */
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { modulesFromEvents, type ModuleId } from '../domain/modules.ts';
@@ -24,20 +23,15 @@ export type Section = PartId;
 /** The work, in the order the day uses it; then the things the shop holds; Settings apart, at the bottom. */
 const WORK: { id: Section; label: string }[] = [
   { id: 'sell', label: 'Sell' },
-  { id: 'receive', label: 'Receive' },
-  { id: 'order', label: 'Order' },
-  { id: 'count', label: 'Count' },
   { id: 'owner', label: 'Today' },
-  { id: 'money', label: 'Money out' },
+  { id: 'cashout', label: 'Cash out' },
 ];
 const THINGS: { id: Section; label: string }[] = [
-  { id: 'items', label: 'Items' }, { id: 'flow', label: 'Visual Flow' }, { id: 'vision', label: 'Computer vision' }, { id: 'customers', label: 'Customers' },
+  { id: 'menu', label: 'Menu' }, { id: 'customers', label: 'Customers' },
 ];
 /** Parts that are modules (modules.ts): in the list only while the developers have them on. */
 const MODULE_PARTS: Partial<Record<Section, ModuleId>> = { customers: 'crm' };
 const SETTINGS: { id: Section; label: string } = { id: 'setup', label: 'Settings' };
-/** The manager's phone: what they do away from the counter. */
-const PHONE = new Set<Section>(['count', 'receive', 'items']);
 
 /** Every screen beside the sidebar reads the same history, so its lines are worked out once. */
 let last: { events: readonly SyncEvent[]; lines: Record<Section, PartLine> } | null = null;
@@ -52,14 +46,9 @@ const icon = (d: ReactNode) => (
 /** Simple line icons, so a part is recognised before its name is read. */
 const ICONS: Record<Section, ReactNode> = {
   sell: icon(<><rect x="3" y="5" width="18" height="12" rx="2" /><path d="M7 21h10M12 17v4M7 10h4" /></>),
-  receive: icon(<><path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 17v3h16v-3" /></>),
-  order: icon(<><path d="M5 4h2l2 11h9l2-8H8" /><circle cx="10" cy="19" r="1.5" /><circle cx="17" cy="19" r="1.5" /></>),
-  count: icon(<><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4V3h6v1M9 10l2 2 4-4M9 16h6" /></>),
   owner: icon(<><path d="M4 19V10M10 19V5M16 19v-7M22 19H2" /></>),
-  money: icon(<><rect x="3" y="7" width="18" height="12" rx="2" /><path d="M12 2v9M8.5 7.5L12 11l3.5-3.5" /></>),
-  items: icon(<><path d="M3 8l9-5 9 5v8l-9 5-9-5z" /><path d="M3 8l9 5 9-5M12 13v8" /></>),
-  flow: icon(<><rect x="2" y="4" width="6" height="5" rx="1.5" /><rect x="2" y="15" width="6" height="5" rx="1.5" /><rect x="16" y="9.5" width="6" height="5" rx="1.5" /><path d="M8 6.5c4 0 4 5.5 8 5.5M8 17.5c4 0 4-5.5 8-5.5" /></>),
-  vision: icon(<><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>),
+  cashout: icon(<><rect x="3" y="7" width="18" height="12" rx="2" /><path d="M12 2v9M8.5 7.5L12 11l3.5-3.5" /></>),
+  menu: icon(<><path d="M3 8l9-5 9 5v8l-9 5-9-5z" /><path d="M3 8l9 5 9-5M12 13v8" /></>),
   customers: icon(<><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5M16 4.8a3.5 3.5 0 0 1 0 6.4M18.5 14.8c1.6.8 2.6 2.6 3 5.2" /></>),
   setup: icon(<><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1" /></>),
 };
@@ -91,7 +80,7 @@ export function OwnerNav({ current, onRegister, drawer: held, onDrawer }: {
 
   const modules = useMemo(() => modulesFromEvents(events ?? []), [events]);
   const shown = (list: { id: Section; label: string }[]) =>
-    list.filter((p) => (!phone || PHONE.has(p.id)) && (MODULE_PARTS[p.id] === undefined || modules[MODULE_PARTS[p.id]!]));
+    list.filter((p) => !phone && (MODULE_PARTS[p.id] === undefined || modules[MODULE_PARTS[p.id]!]));
   const work = shown(WORK);
   const things = shown(THINGS);
   const parts = [...work, ...things, ...(phone ? [] : [SETTINGS])];

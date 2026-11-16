@@ -18,7 +18,7 @@ let clock = 0;
 const asked: { path: string; body: unknown }[] = [];
 const ASKS_MODEL = 'do we have enough chicken';
 let heard = ASKS_MODEL;
-let picked: string | null = 'items';
+let picked: string | null = 'cashout';
 
 beforeEach(() => {
   localStorage.clear();
@@ -54,11 +54,11 @@ const sent = () => asked.filter((a) => a.path.startsWith('/api/'));
 test('hold F9, say it, let go: the page opens; Esc goes back to where it was', async () => {
   render(<Root />);
   await say();
-  expect(location.hash).toBe('#items');
-  expect(screen.getByRole('status', { name: '' }).textContent).toContain(`"${ASKS_MODEL}" → Stock`);
+  expect(location.hash).toBe('#cashout');
+  expect(screen.getByRole('status', { name: '' }).textContent).toContain(`"${ASKS_MODEL}" → Cash out`);
   // The model was offered only pages this person may open, without their hash.
   const offer = asked.find((a) => a.path === '/api/v1/ai/command')!.body as { commands: { id: string; label: string }[] };
-  expect(offer.commands.map((c) => c.id)).toContain('items');
+  expect(offer.commands.map((c) => c.id)).toContain('cashout');
   expect(Object.keys(offer.commands[0])).toEqual(['id', 'label']);
 
   await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
@@ -66,10 +66,10 @@ test('hold F9, say it, let go: the page opens; Esc goes back to where it was', a
 });
 
 test('plain words open their page without asking the model', async () => {
-  heard = 'Open suppliers.';
+  heard = 'Open the menu.';
   render(<Root />);
   await say();
-  expect(location.hash).toBe('#suppliers');
+  expect(location.hash).toBe('#items/finished');
   expect(sent().map((a) => a.path)).toEqual(['/api/v1/ai/transcribe']);
   heard = ASKS_MODEL;
 });
@@ -82,7 +82,7 @@ test('no page for it: it says so and stays where it is', async () => {
   expect(location.hash).toBe('');
   expect(screen.getByText('"give a refund": no page for that')).toBeTruthy();
   heard = ASKS_MODEL;
-  picked = 'items';
+  picked = 'cashout';
 });
 
 test('the microphone is asked for one cleaned-up channel', async () => {
@@ -101,7 +101,7 @@ test('tap F9 and it keeps listening; a second F9 sends', async () => {
   clock += 2000;
   await key('keydown');
   await settle();
-  expect(location.hash).toBe('#items');
+  expect(location.hash).toBe('#cashout');
 });
 
 test('Esc while listening drops it: nothing is sent, nothing is said', async () => {
@@ -131,7 +131,7 @@ test('one request at a time: F9 while the first is being read starts nothing', a
   expect(recorders).toHaveLength(1);
   answer();
   await settle();
-  expect(location.hash).toBe('#items');
+  expect(location.hash).toBe('#cashout');
   expect(sent().filter((a) => a.path === '/api/v1/ai/transcribe')).toHaveLength(1);
 });
 
@@ -196,7 +196,7 @@ test('tapped, it stops by itself a moment after the speaker stops, and sends', a
     expect(sent()).toHaveLength(0); // a pause, not the end
     await pass(400);
     await settle();
-    expect(location.hash).toBe('#items');
+    expect(location.hash).toBe('#cashout');
   } finally { vi.useRealTimers(); }
 });
 
@@ -234,7 +234,7 @@ test('a tap let go before the microphone opens still stops by itself', async () 
     room.level = 0.005;
     await pass(1100);
     await settle();
-    expect(location.hash).toBe('#items');
+    expect(location.hash).toBe('#cashout');
   } finally { vi.useRealTimers(); }
 });
 
@@ -252,6 +252,6 @@ test('held, a pause does not cut the speaker off; letting go sends', async () =>
     expect(sent()).toHaveLength(0);
     await key('keyup');
     await settle();
-    expect(location.hash).toBe('#items');
+    expect(location.hash).toBe('#cashout');
   } finally { vi.useRealTimers(); }
 });
