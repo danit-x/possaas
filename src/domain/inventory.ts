@@ -1,0 +1,656 @@
+import type { BaseUnit, InventoryItem, Supplier } from './inventoryData.ts';
+import type { SyncEvent } from './sync.ts';
+import { SEED_INVENTORY, SEED_SUPPLIERS } from './inventoryData.ts';
+import { answersFromEvents, type Answer, type RecipeEvent } from './costing.ts';
+import { batchUsage, bookGaps, bookUsage, prepUse, wasteUsage, type GapsOf, type RecipeLine, type UsageOf } from './stockUsage.ts';
+import { PREP_STOCK, prepTracker, type PrepStock } from './prep.ts';
+import type { LearnedUnit, Tier } from './counting.ts';
+import { suggestions } from './ordering.ts';
+import { onOrder, purchasesFromEvents } from './purchaseOrders.ts';
+import { stockSettingsFromEvents, type StockSettings } from './stockSettings.ts';
+import { ledgerOf, type Ledger } from './production.ts';
+import type { PrepOrder } from './prep.ts';
+import { placedIn, placement, type Split, type Warehouses } from './warehouses.ts';
+
+const BASE_UNITS: BaseUnit[] = ['g', 'ml', 'pcs', 'sheets'];
+
+export const supplierById = (id: string): Supplier | undefined =>
+  SEED_SUPPLIERS.find((s) => s.id === id);
+
+export const itemById = (id: string): InventoryItem | undefined =>
+  SEED_INVENTORY.find((i) => i.id === id);
+
+export type SeedData = { suppliers: Supplier[]; items: InventoryItem[] };
+
+/** Pure validation for seed or persisted inventory rows. */
+export const validateSeed = (data: SeedData): string[] => {
+  const errors: string[] = [];
+  const supplierIds = new Set<string>();
+  for (const s of data.suppliers) {
+    if (!s.id.trim()) errors.push('supplier missing id');
+    if (!s.name.trim()) errors.push(`supplier ${s.id}: missing name`);
+    if (s.phone !== undefined && (typeof s.phone !== 'string' || !s.phone.trim())) {
+      errors.push(`supplier ${s.id}: invalid phone`);
+    }
+    if (supplierIds.has(s.id)) errors.push(`duplicate supplier id: ${s.id}`);
+    supplierIds.add(s.id);
+  }
+
+  const itemIds = new Set<string>();
+  for (const i of data.items) {
+    if (!i.id.trim()) errors.push('item missing id');
+    if (itemIds.has(i.id)) errors.push(`duplicate item id: ${i.id}`);
+    itemIds.add(i.id);
+    if (!i.name.trim()) errors.push(`${i.id}: missing name`);
+    if (!i.category.trim()) errors.push(`${i.id}: missing category`);
+    if (!BASE_UNITS.includes(i.baseUnit)) errors.push(`${i.id}: invalid baseUnit ${i.baseUnit}`);
+    if (!(i.packQty > 0 && Number.isFinite(i.packQty))) errors.push(`${i.id}: invalid packQty`);
+    if (!Number.isInteger(i.workingPriceCents) || i.workingPriceCents < 0) {
+      errors.push(`${i.id}: workingPriceCents must be a non-negative integer`);
+    }
+    if (!i.supplierIds.length) errors.push(`${i.id}: must have at least one supplier`);
+    if (new Set(i.supplierIds).size !== i.supplierIds.length) {
+      errors.push(`${i.id}: duplicate supplier id`);
+    }
+    for (const supplierId of i.supplierIds) {
+      if (!supplierIds.has(supplierId)) errors.push(`${i.id}: unknown supplier ${supplierId}`);
+    }
+  }
+
+  const normalizedNames = data.suppliers.map((s) => s.name.trim().toLowerCase());
+  if (new Set(normalizedNames).size !== normalizedNames.length) {
+    errors.push('duplicate supplier names (normalized)');
+  }
+
+  return errors;
+};
+
+const readStorageArray = <T>(key: string): T[] => {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+/** First launch returns seed; never overwrites non-empty stored data. */
+export const loadSeed = <T>(
+  key: string,
+  seed: T[],
+  read: (storageKey: string) => T[] = readStorageArray,
+): T[] => {
+  const existing = read(key);
+  return existing.length > 0 ? existing : seed;
+};
+
+/**
+ * A stock row: the price-list item plus what is on the shelf. onHandBaseUnits is
+ * exact (g, ml, pcs, sheets) and can go below zero when more was sold than was
+ * recorded; onHandPacks is the same amount in purchasing packs, never below zero,
+ * for showing (2000 g of a 2 kg block = 1 pack, 1500 g = 0.75).
+ */
+export type InventoryRow = InventoryItem & {
+  onHandPacks: number;
+  onHandBaseUnits: number;
+  archived: boolean;
+  /** Someone has recorded stock for it. A never-counted item is unknown, not empty. */
+  counted: boolean;
+  /** Base units sales took per day, over the last `usageDays` (stockSettings). */
+  usedPerDay: number;
+  /** Days what is left lasts at that rate; null when it is not counted, empty or not used. */
+  lastsDays: number | null;
+  /**
+   * Items sold since its last count that should have taken some of it but could not
+   * (a batch output the owner has not confirmed): the shelf holds less than shown.
+   */
+  missedSales: number;
+  /** Packs to order now (`suggestions`, the one reorder rule); 0: not needed. This is what Low means. */
+  suggestedPacks: number;
+  suggestedSupplierId: string | null;
+  /** When it was last counted (a shelf count or an older audit), or null. */
+  lastCountedAt: number | null;
+  /** Units learned for it ("Tray" = 30 pcs), for counting. */
+  units: LearnedUnit[];
+  /** How often the owner wants it counted; null: chosen automatically (tiersOf). */
+  tier: Tier | null;
+  /** What receiving it is counted in, the owner's choice (SCRUM-96); null: packs. */
+  receiveUnit: string | null;
+  /** "Order when below" this many packs, the owner's choice (SCRUM-135); null: the reorder rule decides. */
+  orderBelowPacks: number | null;
+  /** Spoken for by batches in the kitchen that are made from it (production.ts), in base units. */
+  reservedBaseUnits: number;
+  /** Held batches wait for this much more of it to come in (a delivery), in base units; 0: none. */
+  shortBaseUnits: number;
+};
+
+const DAY = 24 * 60 * 60 * 1000;
+export const isOutOfStock = (row: Pick<InventoryRow, 'onHandBaseUnits'>): boolean => row.onHandBaseUnits <= 0;
+/** Low: the reorder rule says to order it. */
+export const isLowStock = (row: Pick<InventoryRow, 'suggestedPacks'>): boolean => row.suggestedPacks > 0;
+
+/** A typed number of packs ("2", "1.5", "0"), or null. Never negative. */
+export const parsePacks = (raw: string): number | null => {
+  const text = raw.trim();
+  if (!/^\d+(\.\d{1,3})?$/.test(text)) return null;
+  return Number(text);
+};
+
+/**
+ * A count: the manager says how many packs are on the shelf; the app records the
+ * difference from what it expected (exact, in base units, so a later count of
+ * the same shelf records nothing). Positive: more there than expected.
+ */
+export const countDifference = (row: Pick<InventoryRow, 'onHandBaseUnits' | 'packQty'>, countedPacks: number): number =>
+  (Math.round(countedPacks * row.packQty) - row.onHandBaseUnits) / row.packQty;
+
+/**
+ * unknown: nobody has recorded this item yet, so the app cannot say (never shown as out).
+ * unsure: it looks fine, but sales it could not take from have happened since the last
+ * count. Missed sales only ever make the real shelf lower, so out and low stay true.
+ */
+export type StockStatus = 'out' | 'low' | 'unsure' | 'ok' | 'unknown';
+export const stockStatus = (row: InventoryRow): StockStatus => {
+  if (!row.counted) return 'unknown';
+  if (isOutOfStock(row)) return 'out';
+  if (isLowStock(row)) return 'low';
+  if (row.missedSales > 0) return 'unsure';
+  return 'ok';
+};
+
+export const suppliersFromEvents = (
+  suppliers: readonly Supplier[],
+  events: readonly SyncEvent[],
+  includeArchived = false,
+): Supplier[] => {
+  const byId = new Map(suppliers.map((supplier) => [supplier.id, supplier]));
+  const archived = new Set<string>();
+  for (const event of events) {
+    if (event.type === 'stock.supplier_added' && !byId.has(event.supplier.id)) {
+      byId.set(event.supplier.id, event.supplier);
+    } else if (event.type === 'stock.supplier_archived') {
+      archived.add(event.supplierId);
+    } else if (event.type === 'stock.supplier_restored') {
+      archived.delete(event.supplierId);
+    } else if (event.type === 'stock.supplier_edited' && byId.has(event.supplierId)) {
+      byId.set(event.supplierId, { id: event.supplierId, ...event.after });
+    }
+  }
+  return [...byId.values()].filter((supplier) => includeArchived || !archived.has(supplier.id));
+};
+
+const STATUS_ORDER: Record<StockStatus, number> = { out: 0, low: 1, unsure: 2, ok: 3, unknown: 4 };
+
+/** The worst status among a list: out, then low, then ok; unknown only if nothing is known. */
+export const worstStatus = (statuses: StockStatus[]): StockStatus =>
+  statuses.reduce<StockStatus>((worst, s) => (STATUS_ORDER[s] < STATUS_ORDER[worst] ? s : worst), 'unknown');
+
+/** Per supplier: what they supply, and what of it needs ordering (out first, then low). */
+export const summariseSuppliers = (items: InventoryRow[], suppliers: Supplier[]) =>
+  suppliers.map((supplier) => {
+    const suppliedItems = items.filter((i) => !i.archived && i.supplierIds.includes(supplier.id));
+    const statuses = suppliedItems.map(stockStatus);
+    return {
+      supplier,
+      status: worstStatus(statuses),
+      outCount: statuses.filter((s) => s === 'out').length,
+      lowCount: statuses.filter((s) => s === 'low').length,
+      suppliedItems,
+      needItems: suppliedItems
+        .filter((item) => STATUS_ORDER[stockStatus(item)] <= STATUS_ORDER.low)
+        .sort((a, b) => STATUS_ORDER[stockStatus(a)] - STATUS_ORDER[stockStatus(b)]),
+    };
+  });
+
+export type SupplierSummary = ReturnType<typeof summariseSuppliers>[number];
+
+interface Shelf {
+  item: InventoryItem;
+  onHandBaseUnits: number;
+  archived: boolean;
+  counted: boolean;
+  units: LearnedUnit[];
+  tier: Tier | null;
+  receiveUnit: string | null;
+  orderBelowPacks: number | null;
+}
+
+/**
+ * Stock as it stands, built from the price list (in code, like the menu) and
+ * the shop's events, oldest first. Same events, same result on every device and
+ * in the cloud, like the kitchen tickets.
+ *
+ * Sales: a line takes its recipe from stock when it is sent to the kitchen, and
+ * remembers exactly what it took. Undo after Send, a cancelled line or a changed
+ * line gives that back (a changed line then takes its new recipe); a manager's
+ * Undo of that change puts it back as it was. Lines never sent take nothing.
+ * Amounts are not clamped, so every give-back is exact. What a line takes comes
+ * from the owner's recipes (stockUsage.ts) with his answers as they were when it
+ * was sold, so a later answer never rewrites past sales.
+ */
+export const inventoryFromEvents = (
+  items: readonly InventoryItem[],
+  events: readonly SyncEvent[],
+  options: StockOptions = {},
+): InventoryRow[] => stockFromEvents(items, events, options).rows;
+
+export interface StockOptions { usageOf?: UsageOf; gapsOf?: GapsOf; now?: number; settings?: StockSettings }
+
+export interface Stock {
+  rows: InventoryRow[];
+  /** Items sold in the last usageDays whose menu item has no recipe yet: they took nothing. */
+  untrackedSold: number;
+  /** Semi-processed items (SCRUM-136): each one any batch or "make more" amount was recorded for, or used in that window. */
+  preps: PrepStock[];
+  /** What is free, spoken for and short, for every kind of item alike, and what is due to the kitchen (production.ts). */
+  ledger: Ledger;
+  /** Batches in the kitchen or held for their inputs, oldest first. */
+  production: PrepOrder[];
+  /** The warehouses, homes and where each item's stock is, by stock key (warehouses.ts, SCRUM-184). */
+  warehouses: Warehouses;
+  places: Map<string, Split>;
+}
+
+/** inventoryFromEvents, plus what the stock does not know about. */
+export const stockFromEvents = (
+  items: readonly InventoryItem[],
+  events: readonly SyncEvent[],
+  { usageOf = bookUsage, gapsOf = bookGaps, now = Date.now(), settings = stockSettingsFromEvents(events) }: StockOptions = {},
+): Stock => {
+  const shelves = new Map<string, Shelf>(items.map((i) => [i.id, {
+    item: { ...i, supplierIds: [...i.supplierIds] }, onHandBaseUnits: 0, archived: false, counted: false, units: [], tier: null, receiveUnit: null, orderBelowPacks: null,
+  }]));
+  /** Semi-processed items by key: what is on hand, and the batches standing (prep.ts). */
+  const preps = new Map<string, { unit: string; onHand: number; batches: number; makeBelow: number | null; lastMadeAt: number | null; lastCountedAt: number | null }>();
+  /** Prep tickets as batches; its tracked items, with their unit: a sale reaching one takes it instead of its raw items. */
+  const batches = prepTracker();
+  const tracked = batches.tracked;
+  /** Which warehouse each item's stock is in: what comes in goes where it says, what goes out is taken in order. */
+  const place = placement();
+  const take = (usage: readonly RecipeLine[], sign: 1 | -1) => {
+    for (const { inventoryId, qtyBaseUnits } of usage) {
+      if (inventoryId.startsWith(PREP_STOCK)) {
+        const key = inventoryId.slice(PREP_STOCK.length);
+        const prep = preps.get(key);
+        if (!prep) continue;
+        prep.onHand -= sign * qtyBaseUnits;
+        if (sign === 1) place.take(`semi:${key}`, qtyBaseUnits, usage); else place.giveBack(`semi:${key}`, qtyBaseUnits, usage);
+        continue;
+      }
+      const shelf = shelves.get(inventoryId);
+      if (!shelf) continue;
+      shelf.onHandBaseUnits -= sign * qtyBaseUnits;
+      if (sign === 1) place.take(`stock:${inventoryId}`, qtyBaseUnits, usage); else place.giveBack(`stock:${inventoryId}`, qtyBaseUnits, usage);
+    }
+  };
+  /** What each batch (prep ticket Done) took, by ticket, for its Undo. */
+  const made = new Map<string, RecipeLine[]>();
+  /** How much of each semi-processed item each standing sent line used, by line id (daily use). */
+  const prepTaken = new Map<string, Map<string, number>>();
+  /** What each GRN put on the shelves, for its Undo. */
+  const grnMoved = new Map<string, { itemId: string; qty: number }[]>();
+  /** What each sent line took from stock, by line id. */
+  const taken = new Map<string, RecipeLine[]>();
+  /** When each line was sent, for the daily rate. */
+  const sentAt = new Map<string, number>();
+  let answers = new Map<string, Answer>();
+  const recipeEvents: RecipeEvent[] = [];
+  const ticketLines = new Map<string, string[]>();
+  /** What each standing sent line could not take (UsageGaps), by line id. */
+  const gaps = new Map<string, { untracked: boolean; items: string[]; qty: number }>();
+  /** When each item was last counted (an audit): missed sales before it are already corrected. */
+  const countedAt = new Map<string, number>();
+  /** Each shelf count's correction, for its Undo: the amount and the count time it replaced. */
+  const counts = new Map<string, { itemId: string; delta: number; previous: number | undefined }>();
+  /** For a manager's Undo: what the line had taken before the change (null: nothing). */
+  const beforeChange = new Map<string, { lineId: string; usage: RecipeLine[] | null; preps: Map<string, number> | null; gaps: { untracked: boolean; items: string[]; qty: number } | null; kept: boolean }>();
+  /** What each waste took, for its Undo. */
+  const wasted = new Map<string, RecipeLine[]>();
+  const setLine = (lineId: string, usage: RecipeLine[] | null, used: Map<string, number> | null = null) => {
+    const had = taken.get(lineId);
+    if (had) take(had, -1);
+    if (usage) { take(usage, 1); taken.set(lineId, usage); } else taken.delete(lineId);
+    if (used) prepTaken.set(lineId, used); else prepTaken.delete(lineId);
+  };
+
+  /** A record that arrives twice (a sync retry, two routes) counts once. */
+  const seen = new Set<string>();
+  for (const e of events) {
+    if (seen.has(e.id)) continue;
+    seen.add(e.id);
+    place.step(e);
+    // A prep ticket marked Done is a batch made: its raw items come off, the item goes up (SCRUM-136).
+    const batch = batches.step(e);
+    if (batch) {
+      const { order: o } = batch;
+      const prep = preps.get(o.prepId) ?? { unit: o.unit, onHand: 0, batches: 0, makeBelow: null, lastMadeAt: null, lastCountedAt: null };
+      preps.set(o.prepId, prep);
+      if (batch.kind === 'made') {
+        // His answers as they are now; tracked items inside it (dough in a dough ball) come off themselves.
+        const usage = batchUsage(o.prepId, o.qty, o.unit, answers, tracked);
+        take(usage, 1);
+        made.set(o.ticketId, usage);
+        if (prep.batches === 0) { prep.unit = o.unit; prep.onHand = 0; place.clear(`semi:${o.prepId}`); }
+        prep.onHand += o.qty;
+        place.put(`semi:${o.prepId}`, o.qty, null, `batch:${o.ticketId}`); // into its home
+        prep.batches += 1;
+        prep.lastMadeAt = o.at;
+      } else {
+        take(made.get(o.ticketId) ?? [], -1);
+        made.delete(o.ticketId);
+        prep.onHand -= o.qty;
+        place.undo(`batch:${o.ticketId}`);
+        prep.batches -= 1;
+        // No batch standing: sales go back to the raw items, as before its first batch.
+        if (prep.batches === 0) { prep.onHand = 0; place.clear(`semi:${o.prepId}`); }
+      }
+    }
+    switch (e.type) {
+      case 'stock.item_added':
+        if (!shelves.has(e.item.id)) {
+          shelves.set(e.item.id, {
+            item: { ...e.item, supplierIds: [...e.item.supplierIds] }, onHandBaseUnits: 0, archived: false, counted: false, units: [], tier: null, receiveUnit: null, orderBelowPacks: null,
+          });
+        }
+        break;
+      case 'stock.item_archived':
+      case 'stock.item_restored': {
+        const shelf = shelves.get(e.itemId);
+        if (shelf) shelf.archived = e.type === 'stock.item_archived';
+        break;
+      }
+      case 'stock.supplier_added':
+        for (const itemId of e.linkedItemIds) {
+          const shelf = shelves.get(itemId);
+          if (shelf && !shelf.item.supplierIds.includes(e.supplier.id)) shelf.item.supplierIds.push(e.supplier.id);
+        }
+        break;
+      case 'stock.supplier_edited':
+        for (const itemId of e.linked) {
+          const shelf = shelves.get(itemId);
+          if (shelf && !shelf.item.supplierIds.includes(e.supplierId)) shelf.item.supplierIds.push(e.supplierId);
+        }
+        for (const itemId of e.unlinked) {
+          const shelf = shelves.get(itemId);
+          if (shelf) shelf.item.supplierIds = shelf.item.supplierIds.filter((id) => id !== e.supplierId);
+        }
+        break;
+      case 'stock.adjusted': {
+        const shelf = shelves.get(e.itemId);
+        if (!shelf) break; // an item no longer on the price list
+        shelf.counted = true;
+        if (e.reason === 'audit') countedAt.set(e.itemId, e.at);
+        shelf.onHandBaseUnits += e.deltaPacks * shelf.item.packQty;
+        place.put(`stock:${e.itemId}`, e.deltaPacks * shelf.item.packQty, null);
+        break;
+      }
+      case 'stock.grn': {
+        // A GRN is its own stock movement: what it accepted goes in, in one record, so the
+        // note and its stock can never disagree. Older notes (no accepted) used separate movements.
+        // It does not make an item counted: a delivery says what came, not what was already
+        // on the shelf, so a never-counted item stays unknown until its first count.
+        const moved: { itemId: string; qty: number }[] = [];
+        for (const l of e.lines) {
+          const shelf = shelves.get(l.itemId);
+          if (!shelf || l.accepted === undefined || !(l.accepted > 0)) continue;
+          const qty = l.accepted * shelf.item.packQty;
+          shelf.onHandBaseUnits += qty;
+          place.put(`stock:${l.itemId}`, qty, l.warehouseId, e.id); // where the GRN line says, else its home
+          moved.push({ itemId: l.itemId, qty });
+        }
+        grnMoved.set(e.id, moved);
+        break;
+      }
+      case 'stock.grn_undone': {
+        for (const m of grnMoved.get(e.grnId) ?? []) {
+          const shelf = shelves.get(m.itemId);
+          if (shelf) shelf.onHandBaseUnits -= m.qty; // GRN_UNDO: exactly what that GRN added
+        }
+        grnMoved.delete(e.grnId);
+        place.undo(e.grnId);
+        break;
+      }
+      case 'stock.movement': {
+        const shelf = shelves.get(e.itemId);
+        if (!shelf) break;
+        if (e.kind === 'COUNT_ADJUST') shelf.counted = true; // a delivery (GRN) is not a count, as above
+        shelf.onHandBaseUnits += e.qtyBase;
+        place.put(`stock:${e.itemId}`, e.qtyBase, null);
+        if (e.kind === 'COUNT_ADJUST') countedAt.set(e.itemId, e.at);
+        break;
+      }
+      case 'stock.counted': {
+        // A semi-processed item's count (SCRUM-228, itemId prep:<key>): in its own unit, once it is made.
+        if (e.itemId.startsWith(PREP_STOCK)) {
+          const key = e.itemId.slice(PREP_STOCK.length);
+          const prep = preps.get(key);
+          if (!prep || !tracked.has(key)) break;
+          const delta = e.counted - e.expected;
+          counts.set(e.id, { itemId: e.itemId, delta, previous: prep.lastCountedAt ?? undefined });
+          prep.onHand += delta;
+          place.put(`semi:${key}`, delta, e.warehouseId, e.id);
+          prep.lastCountedAt = e.at;
+          break;
+        }
+        const shelf = shelves.get(e.itemId);
+        if (!shelf) break;
+        // A count from before test data was cleared (freshStart.ts): the shelf holds exactly what was counted.
+        const expected = !e.absolute ? e.expected
+          : e.warehouseId ? placedIn(place.warehouses, place.places, `stock:${e.itemId}`, shelf.onHandBaseUnits, e.warehouseId)
+          : shelf.onHandBaseUnits;
+        const delta = e.counted - expected;
+        counts.set(e.id, { itemId: e.itemId, delta, previous: countedAt.get(e.itemId) });
+        shelf.counted = true;
+        shelf.onHandBaseUnits += delta;
+        // A count of one warehouse corrects that one; a whole count adds to its home or takes in order.
+        place.put(`stock:${e.itemId}`, delta, e.warehouseId, e.id);
+        countedAt.set(e.itemId, e.at);
+        break;
+      }
+      case 'stock.count_undone': {
+        const c = counts.get(e.countId);
+        if (c?.itemId.startsWith(PREP_STOCK)) {
+          const prep = preps.get(c.itemId.slice(PREP_STOCK.length));
+          counts.delete(e.countId);
+          if (!prep) break;
+          prep.onHand -= c.delta;
+          place.undo(e.countId);
+          prep.lastCountedAt = c.previous ?? null;
+          break;
+        }
+        const shelf = c && shelves.get(c.itemId);
+        if (!c || !shelf) break;
+        counts.delete(e.countId);
+        shelf.onHandBaseUnits -= c.delta;
+        place.undo(e.countId);
+        if (c.previous === undefined) countedAt.delete(c.itemId); else countedAt.set(c.itemId, c.previous);
+        break;
+      }
+      case 'stock.unit_set': {
+        const shelf = shelves.get(e.itemId);
+        if (!shelf) break;
+        shelf.units = shelf.units.filter((u) => u.name.toLowerCase() !== e.name.toLowerCase());
+        if (e.base > 0) shelf.units.push({ name: e.name, base: e.base });
+        break;
+      }
+      case 'stock.receive_unit_set': {
+        const shelf = shelves.get(e.itemId);
+        if (shelf) shelf.receiveUnit = e.unit === 'pack' ? null : e.unit;
+        break;
+      }
+      case 'stock.limit_set': {
+        const shelf = shelves.get(e.itemId);
+        if (shelf) shelf.orderBelowPacks = e.packs;
+        break;
+      }
+      case 'stock.tier_set': {
+        const shelf = shelves.get(e.itemId);
+        if (shelf) shelf.tier = e.tier;
+        break;
+      }
+      case 'stock.price_set': {
+        const shelf = shelves.get(e.itemId);
+        if (shelf) shelf.item.workingPriceCents = e.after;
+        break;
+      }
+      case 'recipe.answer_set':
+        recipeEvents.push(e);
+        answers = answersFromEvents(recipeEvents);
+        break;
+      case 'order.sent':
+        ticketLines.set(e.ticketId, e.lines.map((l) => l.id));
+        for (const line of e.lines) {
+          setLine(line.id, usageOf(line, answers, tracked), prepUse(line, answers));
+          gaps.set(line.id, { ...gapsOf(line, answers, tracked), qty: lineQty(line.qty) });
+          sentAt.set(line.id, e.at);
+        }
+        break;
+      case 'order.send_undone':
+        for (const lineId of ticketLines.get(e.ticketId) ?? []) { setLine(lineId, null); gaps.delete(lineId); }
+        ticketLines.delete(e.ticketId);
+        break;
+      case 'order.item_cancelled':
+      case 'order.item_changed': {
+        const had = taken.get(e.lineId);
+        const hadGaps = gaps.get(e.lineId);
+        if (!had && !hadGaps) break; // never sent: it took nothing
+        beforeChange.set(e.id, { lineId: e.lineId, usage: had ?? null, preps: prepTaken.get(e.lineId) ?? null, gaps: hadGaps ?? null, kept: Boolean(e.made && had) });
+        // Already made: what it used is gone (thrown away), so it stays taken; only the new version takes more.
+        if (e.made && had) taken.delete(e.lineId);
+        if (e.type === 'order.item_changed') setLine(e.lineId, usageOf(e.after, answers, tracked), prepUse(e.after, answers));
+        else setLine(e.lineId, null);
+        if (e.type === 'order.item_changed') gaps.set(e.lineId, { ...gapsOf(e.after, answers, tracked), qty: lineQty(e.after.qty) });
+        else gaps.delete(e.lineId);
+        break;
+      }
+      case 'order.change_undone': {
+        const was = beforeChange.get(e.undoneEventId);
+        if (was) {
+          // Its Undo: the made food was never given back, so give it back once before the line takes it again.
+          if (was.kept && was.usage) take(was.usage, -1);
+          setLine(was.lineId, was.usage, was.preps);
+          if (was.gaps) gaps.set(was.lineId, was.gaps); else gaps.delete(was.lineId);
+        }
+        break;
+      }
+      case 'stock.wasted': {
+        // His answers as they were then, like a sale.
+        const usage = wasteUsage(e.what, e.qty, answers, tracked);
+        take(usage, 1);
+        wasted.set(e.id, usage);
+        break;
+      }
+      case 'stock.waste_undone': {
+        const usage = wasted.get(e.wasteId);
+        if (usage) { take(usage, -1); wasted.delete(e.wasteId); }
+        break;
+      }
+      case 'prep.limit_set': {
+        const prep = preps.get(e.prepId) ?? { unit: '', onHand: 0, batches: 0, makeBelow: null, lastMadeAt: null, lastCountedAt: null };
+        prep.makeBelow = e.after;
+        preps.set(e.prepId, prep);
+        break;
+      }
+      default: break; // payments, discounts and the kitchen do not move stock
+    }
+  }
+
+  // The daily rate: what lines sent in the window still take, over the days the shop has sold in it.
+  const used = new Map<string, number>();
+  for (const [lineId, usage] of taken) {
+    const at = sentAt.get(lineId) ?? 0;
+    if (at < now - settings.usageDays * DAY || at > now) continue;
+    for (const { inventoryId, qtyBaseUnits } of usage) used.set(inventoryId, (used.get(inventoryId) ?? 0) + qtyBaseUnits);
+  }
+  /** Daily use = what sales took over the window ÷ the window's days, as the owner set it. */
+  const days = settings.usageDays;
+
+  // What the stock does not know: sales since each item's last count, and lines with no recipe this week.
+  const missed = new Map<string, number>();
+  let untrackedSold = 0;
+  for (const [lineId, gap] of gaps) {
+    const at = sentAt.get(lineId) ?? 0;
+    if (at > now) continue;
+    if (gap.untracked && at >= now - settings.usageDays * DAY) untrackedSold += gap.qty;
+    for (const id of gap.items) {
+      if (at > (countedAt.get(id) ?? -Infinity)) missed.set(id, (missed.get(id) ?? 0) + gap.qty);
+    }
+  }
+
+  const rows = [...shelves.values()].map(({ item, onHandBaseUnits, archived, counted, units, tier, receiveUnit, orderBelowPacks }) => {
+    const usedPerDay = (used.get(item.id) ?? 0) / days;
+    return {
+      ...item,
+      onHandBaseUnits,
+      onHandPacks: item.packQty > 0 ? Math.max(0, onHandBaseUnits) / item.packQty : 0,
+      archived,
+      counted,
+      usedPerDay,
+      lastsDays: counted && onHandBaseUnits > 0 && usedPerDay > 0 ? onHandBaseUnits / usedPerDay : null,
+      missedSales: missed.get(item.id) ?? 0,
+      lastCountedAt: countedAt.get(item.id) ?? null,
+      units,
+      tier,
+      receiveUnit,
+      orderBelowPacks,
+      reservedBaseUnits: 0,
+      shortBaseUnits: 0,
+      suggestedPacks: 0,
+      suggestedSupplierId: null as string | null,
+    };
+  });
+
+  // What to order now: one rule, so Low, the badge, the cards and the owner's feed all agree.
+  const purchases = purchasesFromEvents(events, settings);
+  const active = new Set(suppliersFromEvents(SEED_SUPPLIERS, events).map((x) => x.id));
+  for (const s of suggestions(rows, active, onOrder(purchases.open), purchases.leadDays, purchases.lastSupplier, settings)) {
+    const row = rows.find((r) => r.id === s.itemId);
+    if (row) { row.suggestedPacks = s.packs; row.suggestedSupplierId = s.supplierId; }
+  }
+  // Semi-processed items: their use a day comes from what sales used of them, tracked or not.
+  const prepUsed = new Map<string, number>();
+  for (const [lineId, use] of prepTaken) {
+    const at = sentAt.get(lineId) ?? 0;
+    if (at < now - settings.usageDays * DAY || at > now) continue;
+    for (const [key, qty] of use) prepUsed.set(key, (prepUsed.get(key) ?? 0) + qty);
+  }
+  const open = batches.open(now);
+  const waiting = batches.waiting();
+  const inKitchen = new Map<string, number>();
+  for (const o of open) inKitchen.set(o.prepId, (inKitchen.get(o.prepId) ?? 0) + o.qty);
+  const held = new Map<string, { qty: number; names: Set<string> }>();
+  for (const o of waiting) {
+    const h = held.get(o.prepId) ?? { qty: 0, names: new Set<string>() };
+    h.qty += o.qty;
+    o.waitFor.forEach((n) => h.names.add(n));
+    held.set(o.prepId, h);
+  }
+
+  // One ledger for all three kinds: what is counted (raw) or made (semi-processed) is known.
+  const onHand = new Map<string, number>();
+  for (const r of rows) if (r.counted) onHand.set(`stock:${r.id}`, r.onHandBaseUnits);
+  for (const [key, p] of preps) if (tracked.has(key)) onHand.set(`semi:${key}`, p.onHand);
+  const ledger = ledgerOf({ answers, tracked, onHand, open, waiting });
+  for (const r of rows) {
+    r.reservedBaseUnits = ledger.reserved.get(`stock:${r.id}`) ?? 0;
+    r.shortBaseUnits = ledger.short.get(`stock:${r.id}`) ?? 0;
+  }
+  const reservedSemi = [...ledger.reserved.keys()].filter((id) => id.startsWith('semi:')).map((id) => id.slice('semi:'.length));
+  const prepRows: PrepStock[] = [...new Set([...preps.keys(), ...prepUsed.keys(), ...inKitchen.keys(), ...held.keys(), ...reservedSemi])].map((key) => {
+    const p = preps.get(key);
+    return {
+      key, unit: p?.unit ?? '', tracked: tracked.has(key), onHand: p?.onHand ?? 0, usedPerDay: (prepUsed.get(key) ?? 0) / days,
+      makeBelow: p?.makeBelow ?? null, lastMadeAt: p?.lastMadeAt ?? null, lastCountedAt: p?.lastCountedAt ?? null, inKitchen: inKitchen.get(key) ?? 0,
+      reserved: ledger.reserved.get(`semi:${key}`) ?? 0, waiting: held.get(key)?.qty ?? 0, waitingFor: [...(held.get(key)?.names ?? [])],
+    };
+  });
+  return {
+    rows, untrackedSold, preps: prepRows, ledger, production: [...open, ...waiting].sort((a, b) => a.at - b.at),
+    warehouses: place.warehouses, places: place.places,
+  };
+};
+
+const lineQty = (qty: number) => (Number.isFinite(qty) && qty > 0 ? qty : 1);

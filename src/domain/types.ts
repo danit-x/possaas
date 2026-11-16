@@ -1,35 +1,38 @@
+import type { PlatformId, PlatformMark } from './platforms.ts';
+import type { PaymentPart } from './split.ts';
 /** Money is always integer LKR cents (1 LKR = 100). Never floats. */
 export type Cents = number;
 
-/** A size's id within its section: 'S' | 'M' | 'L' on the sample menu, a slug of its label on a shop's own ("regular"). */
-export type SizeId = string;
-/** A menu section's id: 'pizza' | 'burger' | 'pasta' on the sample menu, "sec-…" on a shop's own. */
-export type Category = string;
-/** Which of a shop's two kitchens makes a section's food: where it physically is, seen from the counter. */
-export type Station = 'left' | 'right';
+/** The owner's own sections' sizes (sections.ts), named by him ("Full", "Normal"). */
+export type CustomSizeId = 'x1' | 'x2' | 'x3';
+export type SizeId = 'S' | 'M' | 'L' | CustomSizeId;
+/** The printed menu's sections, and the owner's own (`sec-kottu`, sections.ts SCRUM-241). */
+export type Category = 'pizza' | 'burger' | 'pasta' | `sec-${string}`;
+/** Small labels on cheesybeez.com's cards. Each must come from the owner: never inferred. */
+export type MenuTag = 'popular' | 'veg';
 
 /**
- * A menu section: what its items share. Its sizes (none = one price), its extras, and how long
- * the kitchen takes, which sets a ticket's urgency colour.
+ * A combo pack (combos.ts): one price for a box of dishes. Each slot is one dish, or a choice
+ * the customer can make, with the usual pick that one tap on the Register gives.
  */
-export interface Section {
-  id: Category;
-  name: string;
-  cookMinutes: number;
-  sizes: { id: SizeId; label: string; hint?: string }[];
-  adds: Option[];
-  /** A shop with two kitchens: which one makes it. Absent = the only (or the left) kitchen. */
-  station?: Station;
-  /** Sold only at these times of day (breakfast, night...). Absent = all day. */
-  hours?: SectionHours;
+export interface ComboSlot {
+  /** How many of this slot's dish (1-6). */
+  qty: number;
+  /** The size every pick comes in (sized dishes only). */
+  size?: SizeId;
+  /** Menu item id → what that pick costs on top of the box price (0 = in the price). One entry: always this dish. */
+  options: Record<string, Cents>;
+  /** The pick one tap gives; always in the price. */
+  usual: string;
 }
-/**
- * Minutes after midnight, shop time: from 6:00 to 11:00 is { from: 360, to: 660 }. A `to` at or
- * before `from` runs past midnight (18:00 to 5:00 is "tonight").
- */
-export interface SectionHours { from: number; to: number }
-/** Small labels on the ordering page's cards. Each must come from the owner: never inferred. */
-export type MenuTag = 'popular' | 'veg';
+
+export interface Combo {
+  name: { en: string; si?: string; ta?: string };
+  price: Cents;
+  slots: ComboSlot[];
+  /** Taken off the Register; kept so old orders still read. */
+  hidden?: boolean;
+}
 
 export interface Variant {
   id: SizeId;
@@ -65,8 +68,6 @@ export interface MenuItem {
   leaveOut: Option[];
   /** The owner took it off the menu (src/domain/menuEdits.ts): kept for old orders, not offered. */
   hidden?: boolean;
-  /** Its section is not sold at this time of day (Section.hours): not offered now, back by itself. */
-  offHours?: boolean;
   /** Sold out for today: shown greyed, cannot be ordered. */
   soldOut?: boolean;
   /** The owner changed it from the printed menu. */
@@ -95,6 +96,28 @@ export interface OrderLine {
    * change never alters an order already sent, its receipt, or past sales.
    */
   unit?: Cents;
+  /** A dish in a combo box (combos.ts): always qty 1; its share of the box price replaces its menu price. */
+  box?: BoxMark;
+}
+
+/**
+ * Which box a dish belongs to (combos.ts). Each dish in a box is an ordinary line, so the kitchen,
+ * stock and waste see dishes; the box's shares add up to the combo's price exactly.
+ */
+export interface BoxMark {
+  /** This box in this order (two Family Boxes are two ids). */
+  id: string;
+  comboId: string;
+  /** The combo's name when it was sold, for the kitchen and the receipt. */
+  name: string;
+  /** Which slot of the combo this dish fills. */
+  slot: number;
+  /** This dish's share of the combo price. */
+  share: Cents;
+  /** What this pick costs on top of the box price (0: in the price). */
+  extra: Cents;
+  /** Its own menu price, so the order and the receipt can say what the box saved. */
+  alone: Cents;
 }
 
 export type LineSpec = Omit<OrderLine, 'id'>;
@@ -113,8 +136,11 @@ export interface OrderInterpreter {
   interpret(input: string): OrderDraft | Promise<OrderDraft>;
 }
 
-/** 'comp' = the order was made free by a manager; nothing is collected. */
-export type Tender = 'cash' | 'transfer' | 'card' | 'qr' | 'comp';
+/**
+ * 'comp' = the order was made free by a manager; nothing is collected. A delivery app's id
+ * (platforms.ts) = the app pays the shop later, nothing is collected at the counter.
+ */
+export type Tender = 'cash' | 'transfer' | 'card' | 'qr' | 'comp' | PlatformId;
 
 /** Manager discount on the whole order. Percentages round once, at the order level. */
 export type Discount = { kind: 'percent'; pct: number } | { kind: 'comp' };
@@ -133,12 +159,42 @@ export interface Order {
   adjust?: Adjustments;
   /** Latest manager change, shown on the order as "Edited by <name>, <time>". */
   edited?: { by: string; at: number };
-  /** Ordered online: the customer collects it, by the time the counter promised. */
+  /** Came from cheesybeez.com: the customer collects it, or the rider takes it, by the time the counter promised. */
   online?: OnlineMark;
+  /** Came from a delivery app (SCRUM-195): its code there; the app's rider collects it, the app pays. */
+  platform?: PlatformMark;
+  /**
+   * The customer (CRM) the cashier put on the order: the shop server's opaque id and the name to
+   * greet them by. Kept on this screen only; no synced event carries the name, and the payment
+   * names the customer by id alone (`order.paid.customerId`).
+   */
+  customer?: OrderCustomer;
+  /**
+   * Paid before it went to the kitchen (SCRUM-239): the id of its held ticket. Send releases it;
+   * until then the order stays on the Register's list, "Not sent".
+   */
+  held?: string;
+  /** Items added after paying while the order still waits for Send (SCRUM-253): their tickets, released with it. */
+  heldMore?: string[];
+  /** The customer has the food (SCRUM-240). An order leaves the Register's list once paid and given. */
+  givenAt?: number;
+  /**
+   * Split bill: parts already paid, each person their own items (split.ts). Kept on this screen
+   * until the last part, whose payment (`order.paid`) carries them all.
+   */
+  parts?: PaymentPart[];
+  /** Eaten in the shop; absent = take away (the counter's Order type toggle). Kept on this screen's order. */
+  dineIn?: true;
 }
 
-/** An online order's mark, carried by the order, its kitchen ticket and its send event. */
-export interface OnlineMark { pickupBy: number }
+export interface OrderCustomer { id: string; name: string | null }
+
+/**
+ * An online order's mark, carried by the order, its kitchen ticket and its send event.
+ * `pickupBy`: when it is ready (to collect, or for the rider). `delivery`: the rider takes it;
+ * its fee is part of the order's total (totals.ts).
+ */
+export interface OnlineMark { pickupBy: number; delivery?: { fee: Cents } }
 
 export interface PaidOrder extends Order {
   total: Cents;
@@ -146,4 +202,9 @@ export interface PaidOrder extends Order {
   tendered: Cents;
   change: Cents;
   paidAt: number;
+  /**
+   * Changed after it was paid (SCRUM-242): what was settled since, in cents (paid more > 0, given
+   * back < 0). What is still owed either way is `balanceDue` (order.ts).
+   */
+  settled?: Cents;
 }

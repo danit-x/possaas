@@ -74,6 +74,27 @@ test('bad rows are refused whole, and nothing is stored', async () => {
   assert.equal((await (await call('/api/v1/replica', 'server-a')).json()).lastSourceSeq, 0);
 });
 
+test("tables and cameras (SCRUM-172): the shop's copy carries them, and the owner's phone reads them back", async () => {
+  const { call } = await setup();
+  const owner = { id: 'o', name: 'Anton', role: 'owner' };
+  const cameras = { id: 'vision', name: 'Cameras', role: 'vision' };
+  const row = (seq: number, event: object): SyncedEvent =>
+    ({ seq, deviceId: 'dev-server', receivedAt: 1000 + seq, event: { id: `v${seq}`, shopId: SHOP, at: 500 + seq, orderNumber: 0, ...event } as SyncEvent });
+  const rows = [
+    row(1, { type: 'table.layout_set', actor: owner, tables: [{ id: 't1', label: '1', seats: 4 }] }),
+    row(2, { type: 'vision.cameras_set', actor: owner, cameras: [{ id: 'c1', name: 'Front', ip: '192.168.1.21', rtspPath: '/stream1', enabled: true }] }),
+    row(3, { type: 'table.state_changed', actor: cameras, tableId: 't1', from: 'free', to: 'occupied', confidence: 0.9 }),
+    row(4, { type: 'vision.camera_offline', actor: cameras, cameraId: 'c1' }),
+    row(5, { type: 'vision.heartbeat', actor: cameras, cameras: [{ id: 'c1', online: true, fps: 5 }], cpu: 31 }),
+  ];
+  assert.equal((await (await call('/api/v1/replica', 'server-a', { events: rows })).json()).stored, 5);
+  const pulled = await (await call('/api/v1/events?after=0', 'owner-a')).json();
+  assert.deepEqual(pulled.events.map((e: SyncedEvent) => e.event), rows.map((r) => r.event));
+  // The same shape checks as the shop server: a camera event carrying a password is refused whole.
+  const leaky = row(6, { type: 'vision.camera_online', actor: cameras, cameraId: 'c1', password: 'x' });
+  assert.equal((await call('/api/v1/replica', 'server-a', { events: [leaky] })).status, 400);
+});
+
 test('the database itself refuses to change or delete an event', async () => {
   const { call, db } = await setup();
   await call('/api/v1/replica', 'server-a', { events: [synced('a', 1)] });
@@ -99,7 +120,7 @@ test("owners' phones: the shop server adds one, the phone reads, and a lost phon
 
 test('a new shop registers itself with the shop code, and only with it', async () => {
   const { call } = await setup();
-  const enrol = (code: string, shopId = 'shop-new-ab12') => call('/api/v1/enrol', null, { code, shopId, name: 'Bata Kade Galle' });
+  const enrol = (code: string, shopId = 'shop-new-ab12') => call('/api/v1/enrol', null, { code, shopId, name: 'CheesyBeez Thalwila' });
   assert.equal((await enrol('WRONG-CODE')).status, 403);
   assert.equal((await enrol('')).status, 403);
   assert.equal((await enrol('cb-7k3m-q9xz', 'Bad Id!')).status, 400);
@@ -120,19 +141,24 @@ test("the owner's app description carries this phone's key, and nothing else", a
   assert.equal(ownerManifest('"><script>').start_url, '/#owner', 'anything that is not a key is ignored');
   assert.equal(ownerManifest(key).display, 'standalone');
   assert.ok(ownerManifest(key).icons.some((i) => i.purpose === 'maskable'));
-  assert.equal(orderManifest().start_url, '/order');
-  assert.equal(orderManifest().scope, '/order');
-  assert.equal(orderManifest().display, 'standalone');
-  assert.ok(orderManifest().icons.some((i) => i.purpose === 'maskable'));
+  assert.equal(orderManifest(true).start_url, '/');
+  assert.equal(orderManifest(true).scope, '/');
+  assert.equal(orderManifest(false).start_url, '/order');
+  assert.equal(orderManifest(false).scope, '/order');
+  assert.equal(orderManifest(true).display, 'standalone');
+  assert.ok(orderManifest(true).icons.some((i) => i.purpose === 'maskable'));
 });
 
 test('customer and owner apps have separate home-screen scopes', async () => {
   const { default: worker } = await import('./worker.ts');
   const { d1 } = fakeD1();
-  const env = { DB: d1, ORDER_SHOP: 'shop-a', ASSETS: { fetch: async () => new Response('asset') } };
-  const cloud = await worker.fetch(new Request('https://melo.example.workers.dev/order.webmanifest'), env);
-  assert.equal(cloud.status, 200);
-  assert.equal(cloud.headers.get('content-type'), 'application/manifest+json');
+  const env = { DB: d1, ASSETS: { fetch: async () => new Response('asset') } };
+  const customer = await worker.fetch(new Request('https://cheesybeez.com/order.webmanifest'), env);
+  assert.equal(customer.status, 200);
+  assert.equal(customer.headers.get('content-type'), 'application/manifest+json');
+  assert.equal((await customer.json()).start_url, '/');
+
+  const cloud = await worker.fetch(new Request('https://cheesybeez-cloud.workers.dev/order.webmanifest'), env);
   const cloudManifest = await cloud.json();
   assert.equal(cloudManifest.start_url, '/order');
   assert.equal(cloudManifest.scope, '/order', 'the customer app must not replace the owner app at /');
@@ -162,17 +188,15 @@ test('the download page: always the newest installer, and a plain fallback if Gi
   const { downloadPage, latestRelease } = await import('./download.ts');
   const github = (async () => Response.json({ tag_name: 'v1.0.2', assets: [
     { name: 'notes.txt', size: 1, browser_download_url: 'https://x/notes.txt' },
-    // The offline one (with WebView2, ~200 MB) is never the download page's link.
-    { name: 'LumePOS-Offline-Setup-1.0.2.exe', size: 230_000_000, browser_download_url: 'https://x/offline.exe' },
-    { name: 'LumePOS-Setup-1.0.2.exe', size: 25_931_228, browser_download_url: 'https://github.com/gyrika/possaas/releases/download/v1.0.2/LumePOS-Setup-1.0.2.exe' },
+    { name: 'CheesyBeez-Setup-1.0.2.exe', size: 25_931_228, browser_download_url: 'https://github.com/gyrika/ERP/releases/download/v1.0.2/CheesyBeez-Setup-1.0.2.exe' },
   ] })) as unknown as typeof fetch;
   const rel = await latestRelease(github);
-  assert.deepEqual(rel, { version: '1.0.2', url: 'https://github.com/gyrika/possaas/releases/download/v1.0.2/LumePOS-Setup-1.0.2.exe', sizeMb: 25 });
+  assert.deepEqual(rel, { version: '1.0.2', url: 'https://github.com/gyrika/ERP/releases/download/v1.0.2/CheesyBeez-Setup-1.0.2.exe', sizeMb: 25 });
   const page = downloadPage(rel);
-  assert.ok(page.includes('href="https://github.com/gyrika/possaas/releases/download/v1.0.2/LumePOS-Setup-1.0.2.exe"'));
+  assert.ok(page.includes('href="https://github.com/gyrika/ERP/releases/download/v1.0.2/CheesyBeez-Setup-1.0.2.exe"'));
   assert.ok(page.includes('25 MB · version 1.0.2'));
   assert.equal(await latestRelease((async () => new Response('', { status: 503 })) as unknown as typeof fetch), null);
-  assert.ok(downloadPage(null).includes('href="https://github.com/gyrika/possaas/releases/latest"'), 'GitHub away: the releases page');
+  assert.ok(downloadPage(null).includes('href="https://github.com/gyrika/ERP/releases/latest"'), 'GitHub away: the releases page');
 });
 
 test("the shop code only makes new shops: an existing one takes back only its own server", async () => {
@@ -234,16 +258,55 @@ test('the sales ledger: each payment a row with its items, an Undo marks it, eac
   assert.deepEqual(sales().filter((s) => s.tenant_id === SHOP).map((s) => [s.id, s.status]), [['p1', 'undone'], ['p2', 'paid'], ['p3', 'paid']]);
 });
 
-test('a cloud without online ordering or questions has neither page; the owner app is Lume POS', async () => {
-  const { default: worker, ownerManifest } = await import('./worker.ts');
-  const env = { DB: fakeD1().d1, ASSETS: { fetch: async () => new Response('asset') } };
-  for (const path of ['/order', '/order/', '/order.html', '/order.webmanifest', '/questions']) {
-    assert.equal((await worker.fetch(new Request(`https://melo.test${path}`), env)).status, 404, path);
-  }
-  assert.equal(await (await worker.fetch(new Request('https://melo.test/'), env)).text(), 'asset', 'the owner app still opens');
-  assert.equal((await worker.fetch(new Request('https://melo.test/order'), { ...env, ORDER_SHOP: 'shop-a' })).status, 200);
-  assert.equal(ownerManifest(null).name, 'Lume POS Owner');
-  const { downloadPage } = await import('./download.ts');
-  assert.match(downloadPage(null), /<title>Get Lume POS<\/title>/);
-  assert.doesNotMatch(downloadPage(null), /CheesyBeez|install by themselves/);
+test('the sales ledger: a paid order changed afterwards is filed again as it stands, with the difference (SCRUM-242)', async () => {
+  const { call, db } = await setup();
+  const actor = { id: 'n', name: 'Nimal', role: 'cashier' };
+  const medium = { id: 'l1', itemId: 'margherita', qty: 1, size: 'M', adds: [], outs: [], sent: true, unit: 145000 };
+  const large = { ...medium, size: 'L', unit: 199000 };
+  let seq = 0;
+  const row = (e: object): SyncedEvent => {
+    seq++;
+    return { seq, deviceId: 'dev-counter', receivedAt: seq, event: { shopId: SHOP, at: Date.UTC(2026, 10, 16, 8, 0) + seq, actor, orderNumber: 1001, ...e } as SyncEvent };
+  };
+  await call('/api/v1/replica', 'server-a', { events: [
+    row({ id: 's1', type: 'order.sent', ticketId: 't1', lines: [medium], addOn: false }),
+    row({ id: 'p1', type: 'order.paid', total: 145000, tender: 'cash', tendered: 145000 }),
+    row({ id: 'c1', type: 'order.item_changed', lineId: 'l1', before: medium, after: large, reason: 'Before it was made', afterPay: true, totalBefore: 145000, totalAfter: 199000 }),
+    row({ id: 'st1', type: 'order.settled', amount: 54000, tender: 'cash', tendered: 54000 }),
+  ] });
+  assert.deepEqual(db.prepare('SELECT id, total, subtotal, discount, status FROM sales').all().map((r) => ({ ...r })), [
+    { id: 'p1', total: 199000, subtotal: 199000, discount: 0, status: 'paid' },
+  ]);
+  assert.deepEqual(db.prepare('SELECT size, line_total FROM sale_items WHERE sale_id = ?').all('p1').map((r) => ({ ...r })), [{ size: 'Large', line_total: 199000 }]);
+});
+
+test('the sales ledger after test data is cleared: test payments leave it, once; real ones stay; Undo brings them back', async () => {
+  const { call, db } = await setup();
+  const cashier = { id: 'n', name: 'Nimal', role: 'cashier' };
+  const owner = { id: 'o', name: 'Nisal', role: 'owner' };
+  const burger = { id: 'l2', itemId: 'chicken-burger', qty: 1, adds: [], outs: [], sent: true, unit: 45000 };
+  const day = Date.UTC(2026, 10, 3, 3, 0);
+  let seq = 0;
+  const row = (e: object, at: number, actor: object = cashier, orderNumber = 1): SyncedEvent => {
+    seq++;
+    return { seq, deviceId: 'dev-counter', receivedAt: seq, event: { shopId: SHOP, at, actor, orderNumber, ...e } as SyncEvent };
+  };
+  const sale = (n: number, at: number) => [
+    row({ id: `s${n}`, type: 'order.sent', ticketId: `t${n}`, lines: [burger], addOn: false }, at, cashier, n),
+    row({ id: `p${n}`, type: 'order.paid', total: 45000, tender: 'cash', tendered: 50000 }, at + 1, cashier, n),
+  ];
+  const cleared = (id: string, before: number, at: number) => row({ id, type: 'shop.started_fresh', before }, at, owner, 0);
+  const paidIds = () => db.prepare("SELECT id FROM sales WHERE status = 'paid' ORDER BY event_seq").all().map((r) => r.id);
+
+  await call('/api/v1/replica', 'server-a', { events: [...sale(1, day), ...sale(2, day + 60_000)] });
+  assert.deepEqual(paidIds(), ['p1', 'p2']);
+
+  // Cleared before 3:05; a real sale after; a test payment copied late is still left out.
+  await call('/api/v1/replica', 'server-a', { events: [cleared('f1', day + 300_000, day + 400_000), ...sale(3, day + 500_000), ...sale(4, day + 120_000)] });
+  assert.deepEqual(paidIds(), ['p3']);
+  await call('/api/v1/replica', 'server-a');
+  assert.deepEqual(paidIds(), ['p3'], 'rebuilt once, not on every pass');
+
+  await call('/api/v1/replica', 'server-a', { events: [cleared('f2', 0, day + 600_000)] });
+  assert.deepEqual(paidIds(), ['p1', 'p2', 'p3', 'p4'], 'Undo: everything counts again');
 });

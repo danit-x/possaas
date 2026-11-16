@@ -2,18 +2,27 @@ import { createReadStream, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { extname, join, normalize, sep } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { managesRole, mayRecord } from '../src/domain/auth.ts';
+import { isRemake, isStaffRole, managesRole, mayRecord } from '../src/domain/auth.ts';
+import { mayPayOut } from '../src/domain/moneyOut.ts';
 import {
   PULL_LIMIT, type ApiError, type LoginResponse, type PullResponse, type PushResponse, type StreamMessage, type SyncEvent, type SyncedEvent,
 } from '../src/domain/sync.ts';
 import type { UpdateStep } from '../src/domain/updating.ts';
 import { isPin } from './pins.ts';
 import { OnlineError, type Online, type OnlineAnswer } from './online.ts';
+import { MAX_PHOTO_BYTES, isJpeg, type PhotoStore } from './photos.ts';
+import { isPhotoId } from '../src/domain/photos.ts';
+import { MAX_MENU_PHOTO_BYTES, isWebp } from '../src/domain/menuPhotos.ts';
+import type { MenuPhotoStore } from './menuPhotos.ts';
 import type { RawPrinter } from './printer.ts';
 import type { ReplicaStatus } from './replicator.ts';
 import type { Fleet } from './fleet.ts';
-import { SetupError, isLocal, type SetupApi, type ShopInfo } from './setup.ts';
+import { SetupError, isLocal, type SetupApi } from './setup.ts';
 import type { Device, EventStore } from './store.ts';
+import { createNumberer } from './numbering.ts';
+import { CrmError, type CrmApi } from './crm/routes.ts';
+import { createScheduler } from './scheduler.ts';
+import { createStockRules } from './stockRules.ts';
 import { validatePush } from './validate.ts';
 
 /**
@@ -30,35 +39,44 @@ export interface AppOptions {
   printer?: RawPrinter;
   /** New events were stored for this shop (the cloud copy follows; online orders become ready or collected). */
   onStored?: (tenantId: string, events: SyncEvent[]) => void;
-  /** Online orders (the cloud's /order page) (server/online.ts), once the cloud is connected. */
+  /** Online orders from cheesybeez.com (server/online.ts), once the cloud is connected. */
   online?: () => Online | null;
   /** The cloud copy's state, shown by the health check (null: no cloud copy set up). */
   cloudStatus?: () => ReplicaStatus | null;
-  /** The shop's name, town and receipt footer for every screen (null until the wizard names the shop). */
-  shop?: () => ShopInfo | null;
   /** The setup wizard's endpoints (server/setup.ts); answered for this PC only. */
   setup?: SetupApi;
   /** The installed version, shown by the health check (support from afar, Update now). */
   version?: () => string;
   /** An update under way (src/domain/updating.ts), so the counter can say so; null when none. */
   updating?: () => UpdateStep | null;
+  /** Shelf photos (SCRUM-94): a copy on this PC of the ones in the cloud. Omit and photos answer 503. */
+  photos?: PhotoStore;
+  /** Menu photos (server/menuPhotos.ts). Omit and they answer 404. */
+  menuPhotos?: MenuPhotoStore;
+  /** Fetches a shelf photo from the cloud (the manager phones keep them there); null when it has none. */
+  cloudPhoto?: (tenantId: string, id: string) => Promise<Buffer | null>;
   /** The developer's Shops screen (only where CLOUD_ADMIN_KEY is set: the developer's laptop). */
   fleet?: Fleet | null;
-  /** Before a device's first pull: events to add once (the shop's menu, server/firstMenu.ts). */
+  /**
+   * The cloud's language model (SCRUM-144/145): passes a counter's request on with this server's
+   * cloud key and returns the cloud's answer as it is; null when there is no cloud or no answer.
+   */
+  cloudAi?: (tenantId: string, task: 'command' | 'transcribe', body: Buffer, contentType: string) => Promise<{ status: number; body: Buffer } | null>;
+  /** The customer list (CRM, server/crm/routes.ts); answers only while the developers have it on. */
+  crm?: CrmApi;
+  /** Before a device's first pull: events to add once (Bata Kade's menu, server/firstMenu.ts). */
   firstMenu?: (device: Device) => Promise<SyncedEvent[]>;
   now?: () => number;
 }
 
+export type Ingest = (device: Device, events: SyncEvent[]) => Promise<number>;
 
 const MAX_BODY = 1_000_000; // 100 events are far below this
 const MAX_PRINT = 64_000; // a long receipt is ~3 KB of ESC/POS
 
-/**
- * A shift login lasts a working day. Manager mode too: it stays on until Esc (or the screen locks),
- * so a shorter login would refuse a long session's changes.
- */
+/** A shift login lasts a working day; manager mode a few minutes (it ends after 10 s idle anyway). */
 export const SHIFT_MS = 14 * 60 * 60_000;
-export const MANAGER_MS = SHIFT_MS;
+export const MANAGER_MS = 15 * 60_000;
 /** Device clocks drift a little from the server's; on the counter PC they are the same clock. */
 const CLOCK_SLACK_MS = 2 * 60_000;
 /** Wrong PINs: after this many in a row, the device waits before it may try again. */
@@ -80,7 +98,7 @@ const json = (res: ServerResponse, status: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 
-const readBody = (req: IncomingMessage): Promise<unknown> =>
+const readRaw = (req: IncomingMessage): Promise<Buffer> =>
   new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
@@ -89,12 +107,15 @@ const readBody = (req: IncomingMessage): Promise<unknown> =>
       if (size > MAX_BODY) { reject(new HttpError(400, 'invalid_event', 'body too large')); req.destroy(); return; }
       chunks.push(c);
     });
-    req.on('end', () => {
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-      catch { reject(new HttpError(400, 'invalid_event', 'body is not JSON')); }
-    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+
+const readBody = async (req: IncomingMessage): Promise<unknown> => {
+  const raw = await readRaw(req);
+  try { return JSON.parse(raw.toString('utf8')); }
+  catch { throw new HttpError(400, 'invalid_event', 'body is not JSON'); }
+};
 
 const bearer = (req: IncomingMessage, url: URL): string | null => {
   const h = req.headers.authorization;
@@ -121,7 +142,7 @@ interface Stream {
 
 const send = (ws: WebSocket, m: StreamMessage) => ws.send(JSON.stringify(m));
 
-export function createApp({ store, staticDir, printer, onStored, online, cloudStatus, shop, setup, version, updating, fleet, firstMenu, now = Date.now }: AppOptions): Server {
+export function createApp({ store, staticDir, printer, onStored, online, cloudStatus, setup, version, updating, fleet, photos, menuPhotos, cloudPhoto, cloudAi, crm, firstMenu, now = Date.now }: AppOptions): Server & { ingest: Ingest } {
   /** Open streams per shop. A shop's events never go to another shop's devices. */
   const streams = new Map<string, Set<Stream>>();
   /** Wrong PIN guesses per device. 10,000 PINs: without a brake, guessing would take minutes. */
@@ -133,16 +154,36 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
    * may only record kitchen taps. Returns why an event is refused, or null.
    */
   const refusal = (device: Device, e: SyncEvent, sessions: Awaited<ReturnType<EventStore['sessions']>>): string | null => {
-    if (e.type.startsWith('kitchen.')) return device.kind === 'owner' ? 'not from this device' : null;
-    if (device.kind !== 'counter') return 'only the counter records orders';
+    // Display numbers come from this server alone: a device cannot give a document a number.
+    if (e.type === 'stock.numbered') return 'only the shop server numbers documents';
+    // Held batches go to the kitchen when the shop server sees their inputs on hand, never on a device's word.
+    if (e.type === 'prep.released') return 'only the shop server sends held batches to the kitchen';
+    // Clearing test data: the owner's PIN in Settings on the shop PC, never a device's push.
+    if (e.type === 'shop.started_fresh') return "test data is cleared in Settings on the shop PC";
+    // The owner's line on the bill: Settings › Printer on the shop PC, with his PIN.
+    if (e.type === 'shop.bill_line_set') return "the bill's line is set in Settings on the shop PC";
+    // Modules are turned on and off with the developers' password on the shop PC (modules.ts), never by a device.
+    if (e.type === 'shop.module_set') return "modules are changed with the developers' password on the shop PC";
+    // Campaigns are sent by the shop server itself (server/crm/), which records them; never a device.
+    if (e.type.startsWith('crm.')) return 'campaigns are sent from Customers on the shop PC';
+    // What the cameras saw comes from the camera worker on this PC (SCRUM-170), stamped by the server, never from a device.
+    if ('actor' in e && e.actor?.role === 'vision') return 'only the shop server records what the cameras see';
+    if (e.type.startsWith('kitchen.')) return device.kind === 'owner' || device.kind === 'manager' ? 'not from this device' : null;
+    // The manager's phone counts and receives stock (SCRUM-94); orders, menu and recipes stay on the counter.
+    if (device.kind === 'manager' && !e.type.startsWith('stock.')) return 'the manager phone records stock only';
+    if (device.kind !== 'counter' && device.kind !== 'manager') return 'only the counter records orders and stock';
     if (!('actor' in e)) return 'this event does not say who did it';
     const { actor } = e;
     const s = sessions.find((x) => x.staffId === actor.id && x.role === actor.role
       && e.at >= x.startedAt - CLOCK_SLACK_MS && e.at <= x.expiresAt + CLOCK_SLACK_MS);
     if (!s) return 'that person was not logged in on this device then';
-    if (!mayRecord(s.role, e.type)) return `a ${s.role} may not do this`;
+    if (!mayRecord(s.role, e.type, isRemake(e))) return `a ${s.role} may not do this`;
+    if (e.type === 'money.out' && !mayPayOut(s.role, e.what, e.from)) return `a ${s.role} may not record this payment`;
     return null;
   };
+  const numberDocs = createNumberer(store, now);
+  const releaseBatches = createScheduler(store, now);
+  const checkStock = createStockRules(store, now);
   const broadcast = (tenantId: string, events: SyncedEvent[]) => {
     for (const st of streams.get(tenantId) ?? []) {
       if (st.held) st.held.push(...events);
@@ -162,12 +203,6 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
       const cloud = cloudStatus?.() ?? null;
       const update = updating?.() ?? null;
       json(res, 200, { ok: true, serverTime: now(), ...(version ? { version: version() } : {}), ...(cloud ? { cloud } : {}), ...(update ? { update } : {}) });
-      return;
-    }
-    if (url.pathname === '/api/v1/shop-details' && req.method === 'GET') {
-      const info = shop?.() ?? null;
-      if (!info) throw new HttpError(404, 'server', 'the shop is not set up yet');
-      json(res, 200, info);
       return;
     }
     if (url.pathname === '/api/v1/fleet' || url.pathname.startsWith('/api/v1/fleet/')) {
@@ -197,12 +232,25 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
       try {
         if (step === '' && req.method === 'GET') { json(res, 200, await setup.state()); return; }
         if (req.method !== 'POST') throw new HttpError(405, 'server', 'method not allowed');
+        // TEMPORARY: a test video arrives as the body itself, too big for readBody; the PIN in a header.
+        if (step === '/cv/test-video/upload') {
+          const q = url.searchParams;
+          json(res, 200, await setup.cvTestVideoUpload(req, { ownerPin: req.headers['x-owner-pin'], cameraId: q.get('cameraId'), name: q.get('name') }));
+          return;
+        }
         const body = ((await readBody(req)) ?? {}) as Record<string, unknown>;
         const routes: Record<string, (b: Record<string, unknown>) => Promise<unknown>> = {
-          '/shop': setup.nameShop, '/details': setup.shopDetails, '/printer': setup.setPrinter, '/printer/state': setup.printerState, '/printer/usb': setup.addUsbPrinter,
-          '/printer/clear': setup.clearPrinter, '/logo': setup.setLogo, '/paper': setup.setPaper, '/pay-when': setup.setPayWhen, '/staff': setup.addStaff, '/staff/list': setup.staff,
+          '/shop': setup.nameShop, '/printer': setup.setPrinter, '/staff': setup.addStaff, '/staff/list': setup.staff,
           '/staff/remove': setup.removeStaff, '/pair': setup.pair, '/cloud': setup.connectCloud, '/finish': () => setup.finish(),
-          '/support': setup.saveSupport, '/backup/drives': setup.backupDrives, '/backup/usb': setup.backupToUsb, '/update/check': setup.checkUpdate, '/update/install': setup.installUpdate, '/update/status': setup.updateStatus,
+          '/update/check': setup.checkUpdate, '/update/install': setup.installUpdate, '/update/status': setup.updateStatus,
+          '/cv/status': setup.cvStatus, '/cv/activate': setup.cvActivate, '/cv/setup': setup.cvSetup, '/cv/scan': setup.cvScan,
+          '/cv/test': setup.cvTest, '/cv/cameras': setup.cvCameras, '/cv/tables': setup.cvTables, '/cv/zones': setup.cvZones,
+          '/cv/settings': setup.cvSettings, '/cv/ask': setup.cvAsk,
+          '/cv/views/open': setup.cvViewsOpen, '/cv/views/frame': setup.cvViewsFrame, '/cv/views/close': setup.cvViewsClose, '/cv/views/perf': setup.cvViewsPerf,
+          '/cv/test-video/stop': setup.cvTestVideoStop, '/cv/test-video': setup.cvTestVideos,
+          '/fresh-start': setup.startFresh,
+          '/bill-line': setup.billLine,
+          '/modules': () => setup.modules(), '/modules/unlock': setup.unlockModule,
         };
         const route = routes[step];
         if (!route) throw new HttpError(404, 'server', 'no such setup step');
@@ -223,7 +271,8 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
       const purpose = body?.purpose === 'manager' ? 'manager' : 'shift';
       const staff = isPin(body?.pin) ? await store.staffByPin(device.tenantId, body.pin) : null;
       // A cashier's own PIN in the manager box is simply a wrong PIN: it says nothing about who exists.
-      if (!staff || (purpose === 'manager' && !managesRole(staff.role))) {
+      // The same on the manager's phone: it opens for managers and owners only (SCRUM-94).
+      if (!staff || !isStaffRole(staff.role) || ((purpose === 'manager' || device.kind === 'manager') && !managesRole(staff.role))) {
         const count = (w?.count ?? 0) + 1;
         wrong.set(device.id, count >= MAX_WRONG ? { count: 0, until: t + WRONG_WAIT_MS } : { count, until: 0 });
         throw new HttpError(401, 'wrong_pin', 'wrong PIN');
@@ -249,6 +298,99 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
       try { await printer.print(bytes); }
       catch (e) { console.error(e); throw new HttpError(503, 'printer', 'the printer did not take the receipt'); }
       json(res, 200, { ok: true });
+      return;
+    }
+    // Menu photos: anyone on the shop's network may look (they are the menu's public face, named by
+    // an id nobody can guess, and an <img> sends no token); only the counter adds one, and the
+    // menu.photo_set event naming it says who.
+    const menuPhoto = /^\/api\/v1\/menu-photos\/([a-f0-9]{64})\.webp$/.exec(url.pathname);
+    if (menuPhoto && req.method === 'GET') {
+      const bytes = (await menuPhotos?.get(menuPhoto[1])) ?? null;
+      if (!bytes) throw new HttpError(404, 'server', 'no such photo');
+      res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'public, max-age=31536000, immutable' });
+      res.end(bytes);
+      return;
+    }
+    if (url.pathname === '/api/v1/menu-photos' && req.method === 'POST') {
+      const device = await authenticate(req, url);
+      if (device.kind !== 'counter') throw new HttpError(403, 'forbidden', 'only the counter adds photos');
+      if (!menuPhotos) throw new HttpError(503, 'server', 'menu photos are not kept on this server');
+      const body = await readBody(req);
+      const data = typeof body === 'object' && body !== null ? (body as { data?: unknown }).data : undefined;
+      if (typeof data !== 'string') throw new HttpError(400, 'invalid_event', 'body must be { data: base64 }');
+      const bytes = Buffer.from(data, 'base64');
+      if (bytes.length > MAX_MENU_PHOTO_BYTES || !isWebp(bytes)) throw new HttpError(400, 'invalid_event', 'a menu photo is a small WebP picture');
+      json(res, 200, { id: await menuPhotos.put(bytes) });
+      return;
+    }
+    if (url.pathname === '/api/v1/photos' || url.pathname.startsWith('/api/v1/photos/')) {
+      const device = await authenticate(req, url);
+      // Proof of a count, shown at the counter; never on a kitchen tablet.
+      if (device.kind !== 'counter') throw new HttpError(403, 'forbidden', 'only the counter sees photos');
+      if (!photos) throw new HttpError(503, 'server', 'photos are not kept on this server');
+      const id = url.pathname.slice('/api/v1/photos/'.length);
+      if (req.method !== 'GET' || !isPhotoId(id)) throw new HttpError(404, 'server', 'no such photo');
+      // From this PC's copy; the first time, from the cloud (then kept here, for when the internet is down).
+      let jpeg = photos.read(device.tenantId, id);
+      if (!jpeg && cloudPhoto) {
+        const got = await cloudPhoto(device.tenantId, id).catch(() => null);
+        if (got && isJpeg(got) && got.length <= MAX_PHOTO_BYTES) { photos.save(device.tenantId, id, got); jpeg = got; }
+      }
+      if (!jpeg) throw new HttpError(404, 'server', 'no such photo');
+      res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'private, max-age=31536000, immutable' });
+      res.end(jpeg);
+      return;
+    }
+    // Customers (CRM): the counter PC, a manager or the owner signed in on it, while the module is on.
+    if (url.pathname.startsWith('/api/v1/crm/')) {
+      const device = await authenticate(req, url);
+      if (!crm) throw new HttpError(404, 'server', 'no such page');
+      const staffId = req.headers['x-staff-id'];
+      const step = url.pathname.slice('/api/v1/crm'.length);
+      try {
+        if (step === '/count' && req.method === 'GET') { json(res, 200, await crm.count(device, staffId)); return; }
+        if (step === '/customers' && req.method === 'GET') { json(res, 200, await crm.list(device, staffId)); return; }
+        const posts: Record<string, (b: Record<string, unknown>) => Promise<unknown>> = {
+          '/customers/opt-out': (b) => crm.optOut(device, staffId, b),
+          '/customers/add': (b) => crm.add(device, staffId, b),
+          '/customers/remove': (b) => crm.remove(device, staffId, b),
+          '/customers/restore': (b) => crm.restore(device, staffId, b),
+          '/lookup': (b) => crm.lookup(device, staffId, b),
+          '/ensure': (b) => crm.ensure(device, staffId, b),
+          '/campaigns/reach': (b) => crm.reach(device, staffId, b),
+          '/campaigns/send': (b) => crm.send(device, staffId, b),
+          '/campaigns/auto': (b) => crm.setAuto(device, staffId, b),
+          '/campaigns/results': () => crm.results(device, staffId),
+          '/campaigns/receipt': (b) => crm.setReceipt(device, staffId, b),
+        };
+        if (posts[step] && req.method === 'POST') { json(res, 200, await posts[step](((await readBody(req)) ?? {}) as Record<string, unknown>)); return; }
+        if ((step === '/import/preview' || step === '/import/save') && req.method === 'POST') {
+          // The file itself is the body (under the 1 MB every body has: 5,000 customers are ~150 KB).
+          const name = url.searchParams.get('name') ?? '';
+          const rename = url.searchParams.get('rename') === '1';
+          const bytes = await readRaw(req);
+          json(res, 200, step === '/import/save'
+            ? await crm.save(device, staffId, name, bytes, rename)
+            : await crm.preview(device, staffId, name, bytes, rename));
+          return;
+        }
+      } catch (e) {
+        if (e instanceof CrmError) throw new HttpError(e.status, e.code, e.message);
+        throw e;
+      }
+      throw new HttpError(404, 'server', 'no such page');
+    }
+    // Opening a page by voice (SCRUM-145): the words and the page pick come from the cloud's model.
+    if (url.pathname === '/api/v1/ai/command' || url.pathname === '/api/v1/ai/transcribe') {
+      const device = await authenticate(req, url);
+      if (device.kind !== 'counter') throw new HttpError(403, 'forbidden', 'voice is for the counter');
+      if (req.method !== 'POST') throw new HttpError(405, 'server', 'method not allowed');
+      const body = await readRaw(req);
+      const task = url.pathname === '/api/v1/ai/command' ? 'command' : 'transcribe';
+      const answer = cloudAi ? await cloudAi(device.tenantId, task, body, String(req.headers['content-type'] ?? 'application/json')) : null;
+      if (!answer) throw new HttpError(503, 'unavailable', 'voice needs the internet and the cloud connected');
+      res.writeHead(answer.status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(answer.body);
       return;
     }
     if (url.pathname === '/api/v1/online' || url.pathname.startsWith('/api/v1/online/')) {
@@ -293,7 +435,14 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
         if (why) rejected.push({ id: e.id, reason: why });
         return !why;
       });
-      const { accepted, stored } = await store.push(device, allowed, now());
+      // The purchasing rules, against what the shop has stored (so no device is trusted alone).
+      const { result, rejected: refused } = await checkStock(device, allowed, (ok) => store.push(device, ok, now()));
+      rejected.push(...refused);
+      const { accepted, stored: pushed } = result;
+      // New purchase orders and GRNs get their number here, as records after them.
+      const numbered = [...pushed, ...await numberDocs(device, allowed.filter((e) => !refused.some((r) => r.id === e.id)))];
+      // Held batches whose inputs are now on hand go to the kitchen (production scheduling).
+      const stored = [...numbered, ...await releaseBatches(device, numbered.map((s) => s.event))];
       broadcast(device.tenantId, stored);
       if (stored.length) onStored?.(device.tenantId, stored.map((s) => s.event));
       json(res, 200, { accepted, ...(rejected.length ? { rejected } : {}), serverTime: now() } satisfies PushResponse);
@@ -311,10 +460,8 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
       // One extra tells us whether there is more without a second query.
       const rows = await store.pull(device.tenantId, after, limit + 1);
       const events = rows.slice(0, limit);
-      const clockOffMs = cloudStatus?.()?.clockOffMs ?? null;
       json(res, 200, {
         events, lastSeq: events.at(-1)?.seq ?? after, more: rows.length > limit, serverTime: now(),
-        ...(clockOffMs !== null ? { clockOffMs } : {}),
       } satisfies PullResponse);
       return;
     }
@@ -324,7 +471,10 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
   const serveStatic = (res: ServerResponse, url: URL) => {
     if (!staticDir) { json(res, 404, { error: 'server', message: 'not found' } satisfies ApiError); return; }
     const root = normalize(staticDir + sep);
-    let file = normalize(join(root, decodeURIComponent(url.pathname)));
+    // A broken %-escape ("/%zz") is the sender's mistake, never a reason for the server to stop (SA-03).
+    let path: string;
+    try { path = decodeURIComponent(url.pathname); } catch { res.writeHead(400).end(); return; }
+    let file = normalize(join(root, path));
     if (!file.startsWith(root)) { res.writeHead(403).end(); return; } // no ../ out of dist
     let isFile = false;
     try { isFile = statSync(file).isFile(); } catch { /* not there */ }
@@ -338,8 +488,13 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
   };
 
   const server = createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://local');
-    if (!url.pathname.startsWith('/api/')) { serveStatic(res, url); return; }
+    let url: URL;
+    try { url = new URL(req.url ?? '/', 'http://local'); } catch { res.writeHead(400).end(); return; }
+    if (!url.pathname.startsWith('/api/')) {
+      // Whatever goes wrong with one request, the till keeps running for the others.
+      try { serveStatic(res, url); } catch (e) { console.error(e); if (!res.headersSent) res.writeHead(500); res.end(); }
+      return;
+    }
     api(req, res, url).catch((e: unknown) => {
       if (e instanceof HttpError) { json(res, e.status, { error: e.code, message: e.message } satisfies ApiError); return; }
       console.error(e);
@@ -388,6 +543,17 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
     }
   };
 
+  /** Events from elsewhere (the manager phones, through the cloud): stored as from `device`, then streamed as usual. */
+  const ingest: Ingest = async (device, events) => {
+    const { result, rejected } = await checkStock(device, events, (ok) => store.push(device, ok, now()));
+    const { stored: pushed } = result;
+    const numbered = [...pushed, ...await numberDocs(device, events.filter((e) => !rejected.some((r) => r.id === e.id)))];
+    const stored = [...numbered, ...await releaseBatches(device, numbered.map((s) => s.event))];
+    broadcast(device.tenantId, stored);
+    if (stored.length) onStored?.(device.tenantId, stored.map((s) => s.event));
+    return pushed.length;
+  };
+
   // Stopping must not wait for devices to hang up: close their streams first.
   const close = server.close.bind(server);
   server.close = (cb) => {
@@ -396,5 +562,5 @@ export function createApp({ store, staticDir, printer, onStored, online, cloudSt
     server.closeAllConnections();
     return close(cb);
   };
-  return server;
+  return Object.assign(server, { ingest });
 }

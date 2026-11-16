@@ -1,29 +1,80 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { MENU, menuIsEmpty, menuItems, menuSections, menuState, sectionOf, sizeTag, startingItem, startingMenu } from '../domain/menu.ts';
-import { menuFile, readMenuFile } from '../domain/menuFile.ts';
-import {
-  NEW_SECTION_ID, checkNewItem, checkOverride, checkSection, hoursLabel, newItemSizes, nextMorning, slug,
-  type ItemOverride, type NewItem, type SectionDef,
-} from '../domain/menuEdits.ts';
-import { fmt } from '../domain/money.ts';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Actor } from '../domain/auth.ts';
-import type { Category, Cents, MenuItem, Section, SizeId, Station } from '../domain/types.ts';
+import {
+  checkOwnLines, linesCost, marginOf, menuCost, recipeOf, recipeQuestion, sizesOf, waitingOn, type CostContext,
+} from '../domain/costing.ts';
+import { MENU, comboEntries, menuItems, menuSections, menuState, sectionById, startingItem } from '../domain/menu.ts';
+import { sizeShort, type Section } from '../domain/sections.ts';
+import { SectionSheet } from './SectionSheet.tsx';
+import { managesRole } from '../domain/auth.ts';
+import { comboBlocked, separatePrice } from '../domain/combos.ts';
+import { ComboEditor, saveCombo } from './ComboEditor.tsx';
+import { checkNewItem, checkOverride, newItemSizes, nextMorning, type ItemOverride, type NewItem } from '../domain/menuEdits.ts';
+import { fmt } from '../domain/money.ts';
+import type { BookLine } from '../domain/recipeBook.ts';
+import type { Category, Cents, Combo, MenuItem, SizeId } from '../domain/types.ts';
 import { currentCashier } from '../services/auth.ts';
+import { answerQuestion, useCatalog, useCostContext } from '../services/inventoryStore.ts';
 import { appendEvent } from './eventLog.ts';
 import { useMenu } from './menuStore.ts';
+import { ItemsTabs } from './ItemsTabs.tsx';
 import { OwnerNav } from './OwnerNav.tsx';
+import { draftLines, EMPTY_ROW, LinesEditor, readRows, toDraft, useOwner, type Draft } from './RecipeLines.tsx';
+import { NumberInput } from './NumberInput.tsx';
+import { photoChoice, undoChoice } from '../domain/menuPhotos.ts';
+import { photoSrc, photoUrl } from '../services/menuPhotos.ts';
+import { PhotoSlot } from './PhotoSlot.tsx';
 
 /**
- * The owner's menu (#menu). Serves the owner: they know what they sell and want it on the counter
- * now, or one change made, a price, a name, something off for today, without calling anyone. The
- * single next thing: a new shop adds a section, then its items, one after another; later, find the
- * item, change it, save. Managers change the menu too, here or on the Register in manager mode
- * (the same sheets, exported below). Every change is an event (who, when, before/after) with an Undo, and reaches the counter,
- * the kitchen and online ordering at once.
+ * The owner's menu (#menu). Serves the owner: they know their menu and want one change made
+ * now, a price, a name, something off for today, without calling anyone. The single next
+ * thing: find the item, change it, save. Managers see the same list with "Sold out today" only.
+ * Every change is an event (who, when, before/after) with an Undo, and reaches the counter,
+ * the kitchen and cheesybeez.com at once.
  */
-/** The item as it started (the sample menu), or as the owner added it. */
+/** "Add a pizza" for a printed section; "Add to Kottu" for one of his own (SCRUM-241). */
+const addWords = (s: Section) => (s.printed ? `Add a ${s.one.toLowerCase()}` : `Add to ${s.label}`);
+/** The item as printed, or as the owner added it. */
 const startOf = (id: string) => startingItem(id) ?? MENU.find((m) => m.id === id)!;
-const prices = (m: MenuItem) => (m.variants ? m.variants.map((v) => `${sizeTag(v)} ${fmt(v.price)}`).join(' · ') : fmt(m.price ?? 0));
+const prices = (m: MenuItem) => (m.variants ? m.variants.map((v) => `${sizeShort(v)} ${fmt(v.price)}`).join(' · ') : fmt(m.price ?? 0));
+
+/**
+ * "Cost M 412 · 75%  L 690 · 72%", "Cost so far M 38 · L 66 · waiting on Basil price" (what is
+ * missing by name, so a written recipe never looks wrong), or, with
+ * no recipe, what that means for him: its sales take nothing from stock (SCRUM-77, SCRUM-129).
+ */
+function CostLine({ item, ctx, onWrite }: { item: MenuItem; ctx: CostContext; onWrite?: () => void }) {
+  const sizes = sizesOf(item).map((size) => ({
+    size,
+    price: size ? item.variants!.find((v) => v.id === size)!.price : (item.price ?? 0),
+    cost: menuCost(item.id, size, ctx),
+  }));
+  const missing = sizes.flatMap((s) => s.cost.missing);
+  const gaps = new Set(missing).size;
+  if (sizes.every((s) => !s.cost.origin)) {
+    return (
+      <span className="menuv__cost">
+        No recipe yet: its sales don't take stock.
+        {onWrite && <button type="button" className="linkbtn menuv__write" onClick={onWrite}>Write the recipe</button>}
+      </span>
+    );
+  }
+  return (
+    <span className="menuv__cost num">
+      {gaps ? 'Cost so far ' : 'Cost '}
+      {sizes.map(({ size, price, cost }, i) => {
+        const margin = cost.complete ? marginOf(price, cost.cents) : null;
+        return (
+          <span key={size}>
+            {i > 0 && ' · '}{size && `${size} `}{fmt(Math.round(cost.cents / 100) * 100)}
+            {margin !== null && <b>{` ${Math.round(margin * 100)}%`}</b>}
+          </span>
+        );
+      })}
+      {gaps > 0 && ` · ${waitingOn(missing, menuItems())}`}
+    </span>
+  );
+}
 
 /** "1,650" or "1650" → cents, whole rupees only. */
 const toCents = (text: string): Cents | null => {
@@ -31,39 +82,30 @@ const toCents = (text: string): Cents | null => {
   return /^\d{1,6}$/.test(t) ? Number(t) * 100 : null;
 };
 
-/**
- * Who made a change: the person signed in, or the manager who unlocked manager mode on the Register
- * (the cashier stays signed in underneath).
- */
-const record = (itemId: string, after: ItemOverride, actor: Actor = currentCashier()) => {
+const record = (itemId: string, after: ItemOverride) => {
   const before = menuState().overrides[itemId] ?? {};
-  appendEvent({ type: 'menu.item_set', at: Date.now(), orderNumber: 0, actor, itemId, before, after });
+  appendEvent({ type: 'menu.item_set', at: Date.now(), orderNumber: 0, actor: currentCashier(), itemId, before, after });
   return before;
 };
-const setSoldOut = (itemId: string, out: boolean, actor: Actor = currentCashier()) =>
-  appendEvent({ type: 'menu.sold_out', at: Date.now(), orderNumber: 0, actor, itemId, until: out ? nextMorning(Date.now()) : null });
-const addItem = (itemId: string, item: NewItem | null, actor: Actor = currentCashier()) =>
-  appendEvent({ type: 'menu.item_added', at: Date.now(), orderNumber: 0, actor, itemId, item });
-/** Makes, changes or (null) takes off a section; returns what it was, for Undo. */
-const setSection = (sectionId: string, section: SectionDef | null, actor: Actor = currentCashier()): SectionDef | null => {
-  const was = menuState().sections?.[sectionId];
-  appendEvent({ type: 'menu.section_set', at: Date.now(), orderNumber: 0, actor, sectionId, section });
-  if (!was || was.removed) return null;
-  const { removed: _r, ...def } = was;
-  return def;
+const setSoldOut = (itemId: string, out: boolean) =>
+  appendEvent({ type: 'menu.sold_out', at: Date.now(), orderNumber: 0, actor: currentCashier(), itemId, until: out ? nextMorning(Date.now()) : null });
+const addItem = (itemId: string, item: NewItem | null) =>
+  appendEvent({ type: 'menu.item_added', at: Date.now(), orderNumber: 0, actor: currentCashier(), itemId, item });
+/** Gives an item a photo (an id), none (null) or back to never chosen (''); returns what to send for Undo. */
+const setPhoto = (itemId: string, photo: string | null): string | null => {
+  const was = undoChoice(photoChoice(menuState(), itemId));
+  appendEvent({ type: 'menu.photo_set', at: Date.now(), orderNumber: 0, actor: currentCashier(), itemId, photo });
+  return was;
 };
 
-/** A fresh id from a name: never one that was used before, even by something taken off. */
-const freshId = (prefix: string, name: string, taken: Set<string>, fallback: string): string => {
-  const base = `${prefix}${slug(name) || fallback}`;
-  let id = base;
-  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+/** "Chicken Alfredo" → "new-chicken-alfredo", or "new-chicken-alfredo-2" if that was ever used. */
+const newId = (en: string): string => {
+  const slug = en.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'item';
+  const taken = new Set(menuItems().map((m) => m.id));
+  let id = `new-${slug}`;
+  for (let n = 2; taken.has(id); n++) id = `new-${slug}-${n}`;
   return id;
 };
-/** "Chicken Alfredo" → "new-chicken-alfredo", or "new-chicken-alfredo-2" if that was ever used. */
-const newId = (en: string): string => freshId('new-', en, new Set(menuItems().map((m) => m.id)), 'item');
-const newSectionId = (name: string): string =>
-  freshId('sec-', name, new Set([...menuSections().map((x) => x.id), ...Object.keys(menuState().sections ?? {})]), 'section');
 
 /** Typing "pasta" or a name already on the menu must keep finding one item, so names stay unique. */
 const nameTaken = (en: string): MenuItem | undefined => {
@@ -78,334 +120,320 @@ const useEscape = (onClose: () => void) => useEffect(() => {
   return () => window.removeEventListener('keydown', onKey);
 }, [onClose]);
 
-const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}.`;
+/** A size as his recipes name it: '' for a single-price item. */
+const recipeSize = (id: SizeId | 'one') => (id === 'one' ? '' : id);
+const pct = (m: number | null) => (m === null ? '' : `${Math.round(m * 100)}%`);
+const words = (s: string) => s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3);
 
-/** A row the owner types into: an existing size/extra keeps its id, so items keep their prices. `key`: a new row's, for its prices. */
-interface Row { id?: string; key?: number; label: string; price: string }
-/** 390 → "06:30" for a time input, and back. */
-const hhmm = (m: number): string => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-const ofClock = (t: string): number => {
-  const [h, m] = t.split(':').map(Number);
-  return h * 60 + m;
-};
-let rowKey = 0;
-const newRow = (): Row => ({ key: ++rowKey, label: '', price: '' });
-
-/** The section's own items still on offer: what a new size needs a price for. */
-const itemsIn = (sectionId: string): MenuItem[] => menuItems().filter((m) => m.category === sectionId && m.added && !m.removed);
+interface DishSize { id: string; label: string; price: Cents }
 
 /**
- * A section: its name, how long the kitchen takes, its sizes (none = one price) and the extras its
- * items share. Changing a size's name keeps every item's price for it. A new size asks each item's
- * price for it right here (blank = not sold in it), and both are saved together, so the counter
- * never shows a size with no prices, nor loses items while they are being priced.
+ * What goes in a dish, size by size (the owner's, as signed in). It starts from the dish most like
+ * this one (shared words in the name first), so he changes what differs instead of starting
+ * from nothing. Used when adding a dish and by "Write the recipe" on a dish without one.
  */
-export function SectionSheet({ section, actor, onSaved, onClose }: {
-  section: Section | null; actor?: Actor; onSaved: (message: string, undo: () => void, id: string) => void; onClose: () => void;
+function DishRecipe({ category, name, sizes, rows, onRows, owner, ctx }: {
+  category: Category; name: string; sizes: DishSize[]; rows: Record<string, Draft[]>; onRows: (rows: Record<string, Draft[]>) => void;
+  owner: Actor | null; ctx: CostContext;
 }) {
-  const [name, setName] = useState(section?.name ?? '');
-  const [cook, setCook] = useState(String(section?.cookMinutes ?? 10));
-  const [station, setStation] = useState<Station | undefined>(section?.station);
-  /** "HH:MM" from–to, or blank: all day. */
-  const [from, setFrom] = useState(section?.hours ? hhmm(section.hours.from) : '');
-  const [to, setTo] = useState(section?.hours ? hhmm(section.hours.to) : '');
-  const [sizes, setSizes] = useState<Row[]>(section?.sizes.map((z) => ({ id: z.id, label: z.label, price: '' })) ?? []);
-  /** `${item id} ${row key}` → the typed price of an item in a new size. */
-  const [grid, setGrid] = useState<Record<string, string>>({});
-  const items = section ? itemsIn(section.id) : [];
-  const fresh = sizes.filter((r) => !r.id && r.label.trim());
-  /** One price until now: its first size starts at that price, so nothing has to be typed twice. */
-  const cell = (m: MenuItem, r: Row): string =>
-    grid[`${m.id} ${r.key}`] ?? (!section?.sizes.length && r === fresh[0] && m.price ? String(m.price / 100) : '');
-  const [adds, setAdds] = useState<Row[]>(section?.adds.map((a) => ({ id: a.id, label: a.label, price: String(a.price / 100) })) ?? []);
-  const [error, setError] = useState('');
-  useEscape(onClose);
+  const { suppliers } = useCatalog();
+  const [size, setSize] = useState(sizes[0].id);
+  if (!owner) return <p className="dish__hint">Only the owner writes recipes.</p>;
 
-  /** New rows get ids from their names, never one already in the section. */
-  const ids = (rows: Row[]): string[] => {
-    const taken = new Set(rows.flatMap((r) => (r.id ? [r.id] : [])));
-    return rows.map((r) => {
-      if (r.id) return r.id;
-      const id = freshId('', r.label, taken, 'size');
-      taken.add(id);
-      return id === 'one' ? 'one-size' : id;
-    });
-  };
-
-  const save = (e: FormEvent) => {
-    e.preventDefault();
-    const minutes = Number(cook);
-    const keptSizes = sizes.filter((r) => r.label.trim());
-    const keptAdds = adds.filter((r) => r.label.trim());
-    const addPrices = keptAdds.map((r) => toCents(r.price || '0'));
-    if (addPrices.some((c) => c === null)) { setError('Extras cost whole rupees, like 100.'); return; }
-    const sizeIds = ids(keptSizes);
-    const addIds = ids(keptAdds);
-    const def: SectionDef = {
-      name: name.trim(),
-      cookMinutes: Number.isInteger(minutes) ? minutes : 0,
-      sizes: keptSizes.map((r, i) => ({ id: sizeIds[i], label: r.label.trim() })),
-      adds: keptAdds.map((r, i) => ({ id: addIds[i], label: r.label.trim(), price: addPrices[i]! })),
-      ...(station ? { station } : {}),
-      ...(from || to ? { hours: { from: ofClock(from), to: ofClock(to) } } : {}),
-    };
-    if ((from || to) && (!from || !to)) { setError('Give the section a start and a stop time, or clear both for all day.'); return; }
-    const bad = checkSection(def);
-    if (bad) { setError(sentence(bad)); return; }
-    // Each item's prices in the new sizes (ids as the section gets them).
-    const priced: [MenuItem, NonNullable<ItemOverride['prices']>][] = [];
-    for (const m of fresh.length ? items : []) {
-      const p: NonNullable<ItemOverride['prices']> = {};
-      for (const r of fresh) {
-        const typed = cell(m, r).trim();
-        if (!typed) continue;
-        const c = toCents(typed);
-        if (c === null || c === 0) { setError(`Type ${m.name.en}'s ${r.label.trim()} price in whole rupees, like 900.`); return; }
-        p[sizeIds[keptSizes.indexOf(r)]] = c;
-      }
-      // A section that had one price: an item with no size price would leave the counter.
-      if (!section?.sizes.length && !Object.keys(p).length) { setError(`Give ${m.name.en} a price in at least one size.`); return; }
-      if (Object.keys(p).length) priced.push([m, p]);
-    }
-    const id = section?.id ?? newSectionId(def.name);
-    const was = setSection(id, def, actor);
-    const befores = priced.map(([m, p]) => {
-      const now = menuState().overrides[m.id] ?? {};
-      return [m.id, record(m.id, { ...now, prices: { ...now.prices, ...p } }, actor)] as const;
-    });
-    const added = fresh.map((r) => r.label.trim()).join(', ');
-    onSaved(section ? (fresh.length ? `Added ${added} to ${def.name}` : `Saved ${def.name}`) : `Added ${def.name}`, () => {
-      befores.forEach(([itemId, before]) => record(itemId, before, actor));
-      setSection(id, was, actor);
-    }, id);
-  };
-
-  const takeOff = () => {
-    if (!section) return;
-    const was = setSection(section.id, null, actor);
-    onSaved(`${section.name} is off the menu`, () => setSection(section.id, was, actor), section.id);
-  };
-
-  /** Enter in the last row starts the next one (Enter elsewhere does not save the section half-typed). */
-  const nextRow = (list: Row[], set: (r: Row[]) => void, i: number) => (e: ReactKeyboardEvent) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    if (i === list.length - 1 && list[i].label.trim()) set([...list, newRow()]);
-  };
-  const rows = (list: Row[], set: (r: Row[]) => void, what: 'size' | 'extra') => (
-    <div className="menued__rows">
-      {list.map((r, i) => (
-        <div key={i} className="menued__rowin">
-          <input value={r.label} placeholder={what === 'size' ? 'e.g. Full' : 'e.g. Egg'} maxLength={what === 'size' ? 20 : 30}
-            aria-label={`${what === 'size' ? 'Size' : 'Extra'} ${i + 1}`} autoFocus={!r.label && i === list.length - 1}
-            onKeyDown={nextRow(list, set, i)} onChange={(e) => set(list.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} />
-          {what === 'extra' && (
-            <input className="num" inputMode="numeric" value={r.price} placeholder="Rs" aria-label={`Extra ${i + 1} price`}
-              onKeyDown={nextRow(list, set, i)} onChange={(e) => set(list.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} />
-          )}
-          <button type="button" className="linkbtn" aria-label={`Remove ${r.label || `${what} ${i + 1}`}`}
-            onClick={() => set(list.filter((_, j) => j !== i))}>Remove</button>
-        </div>
-      ))}
-      <button type="button" className="chip" onClick={() => set([...list, newRow()])}>+ Add {what === 'size' ? 'a size' : 'an extra'}</button>
-    </div>
-  );
+  const mine = words(name);
+  const likes = menuItems()
+    .filter((m) => m.category === category && !m.removed && !m.hidden && m.name.en !== name && sizes.every((s) => recipeOf(m.id, s.id, ctx.answers)))
+    .map((m) => ({ m, shared: words(m.name.en).filter((w) => mine.includes(w)).length }))
+    .sort((x, y) => y.shared - x.shared || x.m.name.en.localeCompare(y.m.name.en))
+    .slice(0, 8);
+  const here = sizes.find((s) => s.id === size) ?? sizes[0];
+  const draft = draftLines(rows[here.id] ?? []);
+  const cost = draft.length ? linesCost(draft, ctx) : null;
+  const margin = cost?.complete && here.price ? marginOf(here.price, cost.cents) : null;
 
   return (
-    <>
-      <div className="scrim" onClick={onClose} />
-      <form className="sheet menued" role="dialog" aria-modal="true" aria-label={section ? `Change ${section.name}` : 'Add a section'} onSubmit={save}>
-        <div className="sheet__body">
-          <div className="sheet__title">
-            <h1>{section ? section.name : 'Add a section'}</h1>
-            {section && <button type="button" className="linkbtn" onClick={takeOff}>Take off the menu</button>}
-          </div>
-          <section className="group">
-            <div className="menued__grid">
-              <label>Section name<input value={name} onChange={(e) => setName(e.target.value)} maxLength={30} placeholder="e.g. Kottu" required autoFocus={!section} /></label>
-              <label>Ready in (minutes)<input className="num" inputMode="numeric" value={cook} onChange={(e) => setCook(e.target.value.replace(/\D/g, ''))} /></label>
-            </div>
-            <p className="menued__note">The kitchen sees an order turn amber after this long, and red at one and a half times it.</p>
-          </section>
-          <section className="group">
-            <h2>Kitchen</h2>
-            <p className="menued__note">Two kitchens? Pick the one that makes this section. Its orders go to that kitchen's screen and fly off to its side.</p>
-            <div className="menued__stations" role="group" aria-label="Kitchen">
-              {([[undefined, 'One kitchen'], ['left', 'Left kitchen'], ['right', 'Right kitchen']] as const).map(([v, label]) => (
-                <button key={label} type="button" className="pill" aria-pressed={station === v} onClick={() => setStation(v)}>{label}</button>
-              ))}
-            </div>
-          </section>
-          <section className="group">
-            <h2>When it is sold</h2>
-            <p className="menued__note">Only in the morning, or only at night? Give the times; it shows at the counter only then. Leave blank for all day.</p>
-            <div className="menued__grid">
-              <label>From<input type="time" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
-              <label>Until<input type="time" value={to} onChange={(e) => setTo(e.target.value)} /></label>
-            </div>
-          </section>
-          <section className="group">
-            <h2>Sizes</h2>
-            <p className="menued__note">Like Regular and Full. No sizes: each item has one price.</p>
-            {rows(sizes, setSizes, 'size')}
-          </section>
-          {fresh.length > 0 && items.length > 0 && (
-            <section className="group">
-              <h2>{fresh.map((r) => r.label.trim()).join(', ')} prices</h2>
-              <p className="menued__note">Leave one blank if that item is not sold in that size.</p>
-              <div className="menued__grid">
-                {items.flatMap((m) => fresh.map((r) => (
-                  <label key={`${m.id} ${r.key}`}>
-                    {m.name.en}{fresh.length > 1 && ` · ${r.label.trim()}`}
-                    <input className="num" inputMode="numeric" value={cell(m, r)} placeholder="Rs" aria-label={`${m.name.en} ${r.label.trim()} price`}
-                      onChange={(e) => setGrid({ ...grid, [`${m.id} ${r.key}`]: e.target.value })} />
-                  </label>
-                )))}
-              </div>
-            </section>
-          )}
-          <section className="group">
-            <h2>Extras</h2>
-            <p className="menued__note">What a customer can add to any item here, like Egg or Cheese.</p>
-            {rows(adds, setAdds, 'extra')}
-          </section>
-          {error && <p className="reason-msg" role="alert">{error}</p>}
+    <div className="dish__recipe">
+      {likes.length > 0 && (
+        <div className="chips" role="group" aria-label="Start from">
+          <span className="dish__hint">Start from</span>
+          {likes.map(({ m }) => (
+            <button key={m.id} type="button" className="chip" onClick={() =>
+              onRows(Object.fromEntries(sizes.map((s) => [s.id, toDraft(recipeOf(m.id, s.id, ctx.answers)!.lines)])))}>
+              {m.name.en}
+            </button>
+          ))}
         </div>
-        <div className="sheet__foot menued__foot">
-          <button type="button" className="linkbtn" onClick={onClose}>Cancel</button>
-          <button type="submit" className="cta">{section ? 'Save' : 'Add the section'}</button>
-        </div>
-      </form>
-    </>
+      )}
+      {sizes.length > 1 && (
+        <nav className="cats" aria-label="Sizes">
+          {sizes.map((s) => (
+            <button key={s.id} type="button" className="pill" aria-pressed={s.id === here.id} onClick={() => setSize(s.id)}>{s.label}</button>
+          ))}
+        </nav>
+      )}
+      <LinesEditor rows={rows[here.id] ?? [EMPTY_ROW]} onChange={(r) => onRows({ ...rows, [here.id]: r })} ctx={ctx} suppliers={suppliers} />
+      {cost && (
+        <p className="redit__cost num" aria-live="polite">
+          {sizes.length > 1 && `${here.label}: `}
+          {cost.complete
+            ? `costs Rs ${fmt(cost.cents)}${margin === null ? '' : ` · earns ${pct(margin)} of Rs ${fmt(here.price)}`}`
+            : `costs Rs ${fmt(cost.cents)} so far · ${waitingOn(cost.missing, menuItems())}`}
+        </p>
+      )}
+    </div>
   );
 }
 
+/** Every size written properly: the lines per size, or what to fix. */
+const readDish = (sizes: DishSize[], rows: Record<string, Draft[]>): Record<string, BookLine[]> | string => {
+  const out: Record<string, BookLine[]> = {};
+  for (const s of sizes) {
+    const lines = readRows(rows[s.id] ?? []);
+    if (typeof lines === 'string') return lines;
+    if (!lines.length) return sizes.length > 1 ? `Write what goes in the ${s.label} too, or start from a dish above.` : 'Write what goes in it.';
+    const wrong = checkOwnLines(lines);
+    if (wrong) return sizes.length > 1 ? `${s.label}: ${wrong}` : wrong;
+    out[s.id] = lines;
+  }
+  return out;
+};
+
+/** Saves his recipe for each size (as the owner who opened them); returns one Undo for all. */
+const saveRecipes = (itemId: string, lines: Record<string, BookLine[]>, owner: Actor, ctx: CostContext): (() => void) => {
+  const undos = Object.entries(lines).map(([size, l]) => {
+    const q = recipeQuestion(itemId, size);
+    return answerQuestion(q, { kind: 'own', lines: l }, ctx.answers.get(q) ?? null, owner);
+  });
+  return () => { for (const undo of undos.reverse()) undo(); };
+};
+
+/** "M earns 75% · L earns 72%", from lines just written (before the events fold in). */
+const earnings = (sizes: DishSize[], lines: Record<string, BookLine[]>, ctx: CostContext): string =>
+  sizes.map((s) => {
+    const c = linesCost(lines[s.id], ctx);
+    const m = c.complete ? marginOf(s.price, c.cents) : null;
+    return `${sizes.length > 1 ? `${s.id} ` : ''}${m === null ? `costs Rs ${fmt(c.cents)} so far` : `earns ${pct(m)}`}`;
+  }).join(' · ');
+
+const STEPS = ['Name', 'What goes in it', 'Price'] as const;
+type Step = 0 | 1 | 2;
+
 /**
- * New items in one section, one after another: name, a price per size (blank = not sold in that
- * size), Enter, and the sheet is ready for the next. Its section's extras come with it; the
- * number, leave-outs and Sinhala/Tamil names are under More.
+ * Add a dish (SCRUM-129). Serves the owner, who thinks of a dish as one thing: what it is,
+ * what goes in it, what he charges, in that order, so he sets the price knowing its cost.
+ * The recipe is behind his PIN (the shop's secret) and can wait ("Later"); nothing is saved
+ * until the last step, then the item and its recipes go in at once with one Undo.
  */
-export function AddItems({ section, actor, onClose }: { section: Section; actor?: Actor; onClose: () => void }) {
-  const sizes = newItemSizes(section);
+function AddDish({ section, ctx, onSaved, onClose }: {
+  section: Section; ctx: CostContext; onSaved: (message: string, undo: () => void) => void; onClose: () => void;
+}) {
+  const shape = newItemSizes(section.id, MENU, menuState().sections);
+  const [step, setStep] = useState<Step>(0);
   const [en, setEn] = useState('');
-  const [price, setPrice] = useState<Record<string, string>>({});
-  const [number, setNumber] = useState('');
-  const [outs, setOuts] = useState('');
   const [si, setSi] = useState('');
   const [ta, setTa] = useState('');
   const [desc, setDesc] = useState('');
+  const [price, setPrice] = useState<Record<string, string>>({});
+  const [rows, setRows] = useState<Record<string, Draft[]>>({});
+  const owner = useOwner();
+  /** The recipes as written, and the owner who wrote them; null: "Later". */
+  const recipe = useRef<{ lines: Record<string, BookLine[]>; by: Actor } | null>(null);
   const [error, setError] = useState('');
-  const [added, setAdded] = useState<{ id: string; name: string } | null>(null);
-  const nameRef = useRef<HTMLInputElement>(null);
+  /** A photo chosen before Add: it goes with the item. */
+  const [photo, setPhotoId] = useState<string | null>(null);
   useEscape(onClose);
 
-  const save = (e: FormEvent) => {
+  const sizes: DishSize[] = shape.map((s) => ({ id: recipeSize(s.id), label: s.label === 'Price' ? 'Price' : s.label, price: toCents(price[s.id] ?? '') ?? 0 }));
+  const go = (next: Step) => { setError(''); setStep(next); };
+
+  const submit = (e: FormEvent) => {
     e.preventDefault();
-    setError('');
-    const same = nameTaken(en);
-    if (same) { setError(`${same.name.en} is already on the menu. Give this one another name.`); return; }
-    const prices: NewItem['prices'] = {};
-    for (const z of sizes) {
-      const typed = (price[z.id] ?? '').trim();
-      if (!typed) continue;
-      const c = toCents(typed);
-      if (c === null || c === 0) { setError(`Type the ${z.id === 'one' ? 'price' : `${z.label} price`} in whole rupees, like 900.`); return; }
-      prices[z.id] = c;
+    if (step === 0) {
+      const same = nameTaken(en);
+      if (same) return setError(`${same.name.en} is already on the menu. Give this one another name.`);
+      const bad = en.trim() ? null : 'Type its name in English.';
+      return bad ? setError(bad) : go(1);
     }
-    if (!Object.keys(prices).length) { setError(sizes.length > 1 ? 'Type a price for at least one size.' : 'Type its price, like 900.'); return; }
-    const leaveOut = outs.split(',').map((o) => o.trim()).filter(Boolean).map((o) => (/^(no|less|without)\b/i.test(o) ? o : `No ${o}`));
+    if (step === 1) {
+      if (!owner) return setError('Only the owner writes recipes. Choose Later.');
+      const lines = readDish(sizes, rows);
+      if (typeof lines === 'string') return setError(lines);
+      recipe.current = { lines, by: owner };
+      return go(2);
+    }
+    const prices: NewItem['prices'] = {};
+    for (const s of shape) {
+      const c = toCents(price[s.id] ?? '');
+      if (c === null || c === 0) return setError(`Type a price for ${s.id === 'one' ? 'it' : s.label}, in whole rupees, like 1650.`);
+      prices[s.id] = c;
+    }
     const item: NewItem = {
       category: section.id,
       name: { en: en.trim(), ...(si.trim() ? { si: si.trim() } : {}), ...(ta.trim() ? { ta: ta.trim() } : {}) },
       description: desc.trim(),
       prices,
-      ...(number.trim() ? { number: Number(number) } : {}),
-      ...(leaveOut.length ? { leaveOut } : {}),
     };
-    const bad = checkNewItem(item, menuSections());
-    if (bad) { setError(sentence(bad)); return; }
+    const bad = checkNewItem(item, MENU, menuState().sections);
+    if (bad) return setError(`${bad[0].toUpperCase()}${bad.slice(1)}.`);
     const id = newId(item.name.en);
-    addItem(id, item, actor);
-    setAdded({ id, name: item.name.en });
-    setEn(''); setPrice({}); setNumber(''); setOuts(''); setSi(''); setTa(''); setDesc('');
-    nameRef.current?.focus();
+    addItem(id, item);
+    if (photo) setPhoto(id, photo);
+    const written = recipe.current;
+    const undoRecipes = written ? saveRecipes(id, written.lines, written.by, ctx) : () => {};
+    onSaved(
+      `${item.name.en} is on the counter · ${written ? earnings(sizes, written.lines, ctx) : 'no recipe yet, so its sales don\'t take stock'}`,
+      () => { undoRecipes(); if (photo) setPhoto(id, ''); addItem(id, null); },
+    );
   };
+
+  const later = () => { recipe.current = null; go(2); };
+  const written = recipe.current;
 
   return (
     <>
       <div className="scrim" onClick={onClose} />
-      <form className="sheet menued" role="dialog" aria-modal="true" aria-label={`Add to ${section.name}`} onSubmit={save}>
+      <form className="sheet menued" role="dialog" aria-modal="true" aria-label={addWords(section)} onSubmit={submit}>
         <div className="sheet__body">
-          <div className="sheet__title"><h1>Add to {section.name}</h1></div>
-          <section className="group">
-            <div className="menued__grid">
-              <label className="menued__wide">Name<input ref={nameRef} value={en} onChange={(e) => setEn(e.target.value)} maxLength={40} required autoFocus placeholder="e.g. Chicken Kottu" /></label>
-              {sizes.map((z) => (
-                <label key={z.id}>
-                  {z.id === 'one' ? 'Price' : z.label}
-                  <input className="num" inputMode="numeric" value={price[z.id] ?? ''} onChange={(e) => setPrice({ ...price, [z.id]: e.target.value })}
-                    aria-label={z.id === 'one' ? 'Price' : `${z.label} price`} placeholder="Rs" />
-                </label>
-              ))}
-            </div>
-            {sizes.length > 1 && <p className="menued__note">Leave a size blank if this item is not sold in it.</p>}
-          </section>
-          <details className="group menued__more">
-            <summary>More: number, leave-outs, Sinhala and Tamil names</summary>
-            <div className="menued__grid">
-              <label>Number<input className="num" inputMode="numeric" value={number} onChange={(e) => setNumber(e.target.value.replace(/\D/g, '').slice(0, 3))} placeholder="e.g. 5" /></label>
-              <label className="menued__wide">Can be left out<input value={outs} onChange={(e) => setOuts(e.target.value)} placeholder="e.g. onion, chilli" /></label>
-              <label>Sinhala<input value={si} onChange={(e) => setSi(e.target.value)} maxLength={60} lang="si" /></label>
-              <label>Tamil<input value={ta} onChange={(e) => setTa(e.target.value)} maxLength={60} lang="ta" /></label>
-              <label className="menued__wide">Description<input value={desc} onChange={(e) => setDesc(e.target.value)} maxLength={160} /></label>
-            </div>
-          </details>
-          {error && <p className="reason-msg" role="alert">{error}</p>}
-          {added && !error && (
-            <p className="menued__added" role="status">
-              Added {added.name}.
-              <button type="button" className="linkbtn" onClick={() => { addItem(added.id, null, actor); setAdded(null); }}>Undo</button>
-            </p>
+          <div className="sheet__title"><h1>{step === 0 || !en.trim() ? addWords(section) : en.trim()}</h1></div>
+          <ol className="dish__steps" aria-label="Steps">
+            {STEPS.map((label, i) => (
+              <li key={label} aria-current={i === step ? 'step' : undefined} className={i < step ? 'dish__done' : undefined}>{label}</li>
+            ))}
+          </ol>
+
+          {step === 0 && (
+            <section className="group">
+              <div className="menued__grid">
+                <label>English<input value={en} onChange={(e) => { setEn(e.target.value); setError(''); }} maxLength={40} autoFocus /></label>
+                <label>Sinhala<input value={si} onChange={(e) => setSi(e.target.value)} maxLength={60} lang="si" /></label>
+                <label>Tamil<input value={ta} onChange={(e) => setTa(e.target.value)} maxLength={60} lang="ta" /></label>
+                <label className="menued__wide">Description<input value={desc} onChange={(e) => setDesc(e.target.value)} maxLength={160} /></label>
+              </div>
+            </section>
           )}
+          {step === 0 && (
+            <PhotoSlot name={en.trim() || 'the new item'} url={photo ? photoSrc(photo) : null} onPhoto={setPhotoId}
+              onRemove={() => setPhotoId(null)} />
+          )}
+
+          {step === 1 && (
+            <section className="group">
+              <p className="dish__hint">One {section.printed ? section.one.toLowerCase() : 'dish'}: what goes in, and how much. Each sale then takes it from your stock.</p>
+              <DishRecipe
+                category={section.id} name={en.trim()} sizes={sizes} rows={rows} onRows={(r) => { setRows(r); setError(''); }}
+                owner={owner} ctx={ctx}
+              />
+            </section>
+          )}
+
+          {step === 2 && (
+            <section className="group">
+              <div className="menued__grid">
+                {shape.map((s, i) => {
+                  const c = toCents(price[s.id] ?? '');
+                  const cost = written ? linesCost(written.lines[sizes[i].id], ctx) : null;
+                  const margin = cost?.complete && c ? marginOf(c, cost.cents) : null;
+                  return (
+                    <label key={s.id}>
+                      {s.hint ? `${s.label} ${s.hint}` : s.label}
+                      <NumberInput decimals={0} value={price[s.id] ?? ''} autoFocus={i === 0}
+                        onText={(text) => { setPrice({ ...price, [s.id]: text }); setError(''); }}
+                        aria-label={s.id === 'one' ? 'Price' : `${s.label} price`} />
+                      {cost && (
+                        <span className="menued__was num">
+                          {cost.complete ? `Costs Rs ${fmt(cost.cents)}` : `Costs Rs ${fmt(cost.cents)} so far`}
+                          {margin !== null && <b>{` · earns ${pct(margin)}`}</b>}
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="menued__note">
+                {written
+                  ? (section.printed ? `Extras are the same as on the other ${section.label.toLowerCase()}.` : `Dishes of ${section.label} have no extras.`)
+                  : 'No recipe yet: until you write it, its sales don\'t take stock. Write it any time from the Menu.'}
+              </p>
+            </section>
+          )}
+          {error && <p className="reason-msg" role="alert">{error}</p>}
         </div>
         <div className="sheet__foot menued__foot">
-          <button type="button" className="linkbtn" onClick={onClose}>Done</button>
-          <button type="submit" className="cta">Add <kbd>Enter</kbd></button>
+          <button type="button" className="linkbtn" onClick={step === 0 ? onClose : () => go((step - 1) as Step)}>{step === 0 ? 'Cancel' : 'Back'}</button>
+          {step === 1 && <button type="button" className="linkbtn" onClick={later}>Later</button>}
+          <button type="submit" className="cta">{step === 2 ? 'Add to the menu' : 'Next'}</button>
         </div>
       </form>
     </>
   );
 }
 
-/** One item: names, a price per size, extras' prices, hidden, and sold out for today. */
-export function Editor({ item, actor, onSaved, onClose }: {
-  item: MenuItem; actor?: Actor; onSaved: (message: string, undo: () => void) => void; onClose: () => void;
+/** "Write the recipe" for a dish already on the menu that has none (the owner's). */
+function WriteRecipe({ item, ctx, onSaved, onClose }: {
+  item: MenuItem; ctx: CostContext; onSaved: (message: string, undo: () => void) => void; onClose: () => void;
 }) {
+  const sizes: DishSize[] = sizesOf(item).map((size) => {
+    const v = item.variants?.find((x) => x.id === size);
+    return { id: size, label: v?.label ?? 'Price', price: v?.price ?? item.price ?? 0 };
+  });
+  const [rows, setRows] = useState<Record<string, Draft[]>>({});
+  const owner = useOwner();
+  const [error, setError] = useState('');
+  useEscape(onClose);
+
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    if (!owner) return setError('Only the owner writes recipes.');
+    const lines = readDish(sizes, rows);
+    if (typeof lines === 'string') return setError(lines);
+    onSaved(`${item.name.en}: recipe saved · ${earnings(sizes, lines, ctx)}`, saveRecipes(item.id, lines, owner, ctx));
+  };
+
+  return (
+    <>
+      <div className="scrim" onClick={onClose} />
+      <form className="sheet menued" role="dialog" aria-modal="true" aria-label={`${item.name.en}: recipe`} onSubmit={save}>
+        <div className="sheet__body">
+          <div className="sheet__title"><h1>{item.name.en}</h1></div>
+          <section className="group">
+            <p className="dish__hint">What goes in one, and how much. Each sale then takes it from your stock.</p>
+            <DishRecipe
+              category={item.category} name={item.name.en} sizes={sizes} rows={rows} onRows={(r) => { setRows(r); setError(''); }}
+              owner={owner} ctx={ctx}
+            />
+          </section>
+          {error && <p className="reason-msg" role="alert">{error}</p>}
+        </div>
+        <div className="sheet__foot menued__foot">
+          <button type="button" className="linkbtn" onClick={onClose}>Cancel</button>
+          <button type="submit" className="cta">Save recipe</button>
+        </div>
+      </form>
+    </>
+  );
+}
+
+function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message: string, undo: () => void) => void; onClose: () => void }) {
   const base = startOf(item.id);
   const startName = base.added ? 'how you added it' : 'the printed menu';
   const [en, setEn] = useState(item.name.en);
   const [si, setSi] = useState(item.name.si ?? '');
   const [ta, setTa] = useState(item.name.ta ?? '');
   const [desc, setDesc] = useState(item.description);
-  // A sized item may be sold in any size of its section (Full for an item that started with Normal only).
-  const section = sectionOf(item.category);
-  const own = item.variants && section?.sizes.length
-    ? [...section.sizes, ...item.variants.filter((v) => !section.sizes.some((z) => z.id === v.id))] : null;
-  const sizes: (SizeId | 'one')[] = own?.map((z) => z.id) ?? item.variants?.map((v) => v.id) ?? ['one'];
-  const label = (id: string) => {
-    const z = own?.find((x) => x.id === id) ?? item.variants?.find((x) => x.id === id);
-    return z ? `${z.label}${z.hint ? ` ${z.hint}` : ''}` : 'Price';
-  };
+  const sizes = item.variants?.map((v) => v.id) ?? ['one' as const];
   const [price, setPrice] = useState<Record<string, string>>(() =>
     Object.fromEntries(item.variants ? item.variants.map((v) => [v.id, String(v.price / 100)]) : [['one', String((item.price ?? 0) / 100)]]));
   const [adds, setAdds] = useState<Record<string, string>>(() => Object.fromEntries(item.adds.map((a) => [a.id, String(a.price / 100)])));
   const [hidden, setHidden] = useState(Boolean(item.hidden));
   const [error, setError] = useState('');
+  /** A photo change is made at once (not on Save), with its own Undo. */
+  const [photoNote, setPhotoNote] = useState<{ message: string; undo: string | null } | null>(null);
+  useMenu();
 
   useEscape(onClose);
+  const changePhoto = (photo: string | null, message: string) => setPhotoNote({ message, undo: setPhoto(item.id, photo) });
 
-  /** The price it started with; undefined for a size it was not sold in. */
-  const basePrice = (id: string): Cents | undefined => (id === 'one' ? base.price ?? 0 : base.variants?.find((v) => v.id === id)?.price);
+  const basePrice = (id: string) => (id === 'one' ? base.price ?? 0 : base.variants!.find((v) => v.id === id)!.price);
 
   /** Only what differs from the printed menu is kept, so "same as printed" is simply nothing. */
   const build = (): ItemOverride | string => {
@@ -418,12 +446,9 @@ export function Editor({ item, actor, onSaved, onClose }: {
     if (desc.trim() !== base.description) o.description = desc.trim();
     const p: NonNullable<ItemOverride['prices']> = {};
     for (const id of sizes) {
-      const typed = (price[id] ?? '').trim();
-      // Blank: not sold in a size it never had (one it started with keeps a price).
-      if (!typed && basePrice(id) === undefined) continue;
-      const c = toCents(typed);
-      if (c === null || c === 0) return `Type the ${id === 'one' ? 'price' : `${label(id)} price`} in whole rupees, like 1650.`;
-      if (c !== basePrice(id)) p[id] = c;
+      const c = toCents(price[id] ?? '');
+      if (c === null) return 'Prices are whole rupees, like 1650.';
+      if (c !== basePrice(id)) p[id as SizeId | 'one'] = c;
     }
     if (Object.keys(p).length) o.prices = p;
     const a: Record<string, Cents> = {};
@@ -434,16 +459,15 @@ export function Editor({ item, actor, onSaved, onClose }: {
     }
     if (Object.keys(a).length) o.adds = a;
     if (hidden) o.hidden = true;
-    const bad = checkOverride(base, o, own?.map((z) => z.id));
-    return bad ? sentence(bad) : o;
+    return checkOverride(base, o) ?? o;
   };
 
   const save = (e: FormEvent) => {
     e.preventDefault();
     const o = build();
     if (typeof o === 'string') { setError(o); return; }
-    const before = record(item.id, o, actor);
-    onSaved(`Saved ${en.trim() || base.name.en}`, () => record(item.id, before, actor));
+    const before = record(item.id, o);
+    onSaved(`Saved ${en.trim() || base.name.en}`, () => record(item.id, before));
   };
 
   return (
@@ -455,17 +479,28 @@ export function Editor({ item, actor, onSaved, onClose }: {
             <h1>{item.name.en}</h1>
             {item.edited && (
               <button type="button" className="linkbtn" onClick={() => {
-                const before = record(item.id, {}, actor);
-                onSaved(`${base.name.en}: back to ${startName}`, () => record(item.id, before, actor));
+                const before = record(item.id, {});
+                onSaved(`${base.name.en}: back to ${startName}`, () => record(item.id, before));
               }}>Back to {startName}</button>
             )}
-            {!item.hidden && (
-              <button type="button" className="chip" aria-pressed={Boolean(item.soldOut)} onClick={() => {
-                setSoldOut(item.id, !item.soldOut, actor);
-                onSaved(item.soldOut ? `${item.name.en} is back` : `${item.name.en}: sold out until morning`, () => setSoldOut(item.id, Boolean(item.soldOut), actor));
-              }}>Sold out today</button>
+            {base.added && (
+              <button type="button" className="linkbtn" onClick={() => {
+                // Only his own dishes go for good; printed ones are hidden instead.
+                const { removed: _, ...was } = menuState().added[item.id];
+                addItem(item.id, null);
+                onSaved(`Deleted ${item.name.en}`, () => addItem(item.id, was));
+              }}>Delete</button>
             )}
           </div>
+
+          <PhotoSlot name={item.name.en} url={photoUrl(item.id)}
+            onPhoto={(id) => changePhoto(id, 'Photo changed.')} onRemove={() => changePhoto(null, 'Photo removed.')} />
+          {photoNote && (
+            <p className="menued__added" role="status">
+              {photoNote.message}
+              <button type="button" className="linkbtn" onClick={() => { setPhoto(item.id, photoNote.undo); setPhotoNote(null); }}>Undo</button>
+            </p>
+          )}
 
           <section className="group">
             <h2>Name</h2>
@@ -481,18 +516,17 @@ export function Editor({ item, actor, onSaved, onClose }: {
             <h2>Price</h2>
             <div className="menued__grid">
               {sizes.map((id) => {
+                const v = item.variants?.find((x) => x.id === id);
                 const was = basePrice(id);
-                const name = id === 'one' ? 'Price' : `${(own?.find((x) => x.id === id) ?? item.variants?.find((x) => x.id === id))?.label} price`;
                 return (
                   <label key={id}>
-                    {label(id)}
-                    <input className="num" inputMode="numeric" value={price[id] ?? ''} placeholder="Rs" onChange={(e) => setPrice({ ...price, [id]: e.target.value })} aria-label={name} />
-                    {was !== undefined && toCents(price[id] ?? '') !== was && <span className="menued__was num">{base.added ? 'Was' : 'Printed'} {fmt(was)}</span>}
+                    {v ? `${v.label}${v.hint ? ` ${v.hint}` : ''}` : 'Price'}
+                    <NumberInput decimals={0} value={price[id]} onText={(text) => setPrice({ ...price, [id]: text })} aria-label={v ? `${v.label} price` : 'Price'} />
+                    {toCents(price[id]) !== was && <span className="menued__was num">{base.added ? 'Was' : 'Printed'} {fmt(was)}</span>}
                   </label>
                 );
               })}
             </div>
-            {own && sizes.length > item.variants!.length && <p className="menued__note">Leave a new size blank if this item is not sold in it.</p>}
           </section>
 
           {base.adds.length > 0 && (
@@ -502,7 +536,7 @@ export function Editor({ item, actor, onSaved, onClose }: {
                 {base.adds.map((opt) => (
                   <label key={opt.id}>
                     {opt.label}
-                    <input className="num" inputMode="numeric" value={adds[opt.id]} onChange={(e) => setAdds({ ...adds, [opt.id]: e.target.value })} aria-label={`${opt.label} price`} />
+                    <NumberInput decimals={0} value={adds[opt.id]} onText={(text) => setAdds({ ...adds, [opt.id]: text })} aria-label={`${opt.label} price`} />
                   </label>
                 ))}
               </div>
@@ -512,7 +546,7 @@ export function Editor({ item, actor, onSaved, onClose }: {
           <section className="group">
             <label className="menued__check">
               <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} />
-              Hide from the menu <span>(the counter and online ordering stop offering it; old orders keep it)</span>
+              Hide from the menu <span>(the counter and cheesybeez.com stop offering it; old orders keep it)</span>
             </label>
           </section>
           {error && <p className="reason-msg" role="alert">{error}</p>}
@@ -526,193 +560,148 @@ export function Editor({ item, actor, onSaved, onClose }: {
   );
 }
 
-/**
- * A whole menu as text, to move it to another Lume POS (the demo's menu to a real shop): "Copy menu"
- * shows it ready to copy; on an empty menu, "Load a menu" takes it pasted and adds every section and
- * item at once, as if typed (src/domain/menuFile.ts). Undo takes them all back.
- */
-function MenuText({ mode, onLoaded, onClose }: {
-  mode: 'copy' | 'load'; onLoaded: (message: string, undo: () => void) => void; onClose: () => void;
-}) {
-  const text = useState(() => (mode === 'copy' ? JSON.stringify(menuFile(startingMenu(), menuState())) : ''))[0];
-  const [pasted, setPasted] = useState('');
-  const [note, setNote] = useState('');
-  const [error, setError] = useState('');
-  const box = useRef<HTMLTextAreaElement>(null);
-  useEscape(onClose);
-  useEffect(() => { if (mode === 'copy') box.current?.select(); }, [mode]);
-
-  const copy = () => {
-    box.current?.select();
-    // The clipboard can be refused (some browsers, the demo page): the text stays selected for Ctrl+C.
-    navigator.clipboard?.writeText(text).then(() => setNote('Copied. Paste it on the new shop: Menu → Load a menu.'),
-      () => setNote('Press Ctrl+C to copy it.')) ?? setNote('Press Ctrl+C to copy it.');
-  };
-  const load = (e: FormEvent) => {
-    e.preventDefault();
-    const got = readMenuFile(pasted, {
-      sections: [...menuSections().map((x) => x.id), ...Object.keys(menuState().sections ?? {})],
-      items: menuItems().map((m) => m.id),
-    });
-    if (typeof got === 'string') { setError(got); return; }
-    got.sections.forEach(([id, def]) => setSection(id, def));
-    got.items.forEach(([id, item]) => addItem(id, item));
-    onLoaded(`Loaded ${got.sections.length} sections and ${got.items.length} items`, () => {
-      got.items.forEach(([id]) => addItem(id, null));
-      got.sections.forEach(([id]) => setSection(id, null));
-    });
-  };
-
-  return (
-    <>
-      <div className="scrim" onClick={onClose} />
-      <form className="sheet menued" role="dialog" aria-modal="true" aria-label={mode === 'copy' ? 'Copy menu' : 'Load a menu'} onSubmit={load}>
-        <div className="sheet__body">
-          <div className="sheet__title"><h1>{mode === 'copy' ? 'Copy menu' : 'Load a menu'}</h1></div>
-          <p className="menued__note">
-            {mode === 'copy'
-              ? 'This is your whole menu: sections, sizes, prices, kitchens and hours. Copy it, then on the other Lume POS open Menu → Load a menu and paste it.'
-              : 'Paste a menu copied from another Lume POS (Menu → Copy menu). Every section and item is added at once.'}
-          </p>
-          <textarea
-            ref={box} className="menued__text" id={mode === 'copy' ? 'menu-copy' : 'menu-load'} aria-label={mode === 'copy' ? 'Your menu as text' : 'Paste the menu here'}
-            readOnly={mode === 'copy'} value={mode === 'copy' ? text : pasted} autoFocus={mode === 'load'} spellCheck={false}
-            onChange={(e) => { setPasted(e.target.value); setError(''); }} onFocus={(e) => mode === 'copy' && e.target.select()}
-          />
-          {note && <p className="menued__note" role="status">{note}</p>}
-          {error && <p className="reason-msg" role="alert">{error}</p>}
-        </div>
-        <div className="sheet__foot menued__foot">
-          <button type="button" className="linkbtn" onClick={onClose}>{mode === 'copy' ? 'Done' : 'Cancel'}</button>
-          {mode === 'copy'
-            ? <button type="button" className="cta" onClick={copy}>Copy</button>
-            : <button type="submit" className="cta" disabled={!pasted.trim()}>Load</button>}
-        </div>
-      </form>
-    </>
-  );
-}
-
-export function MenuView({ onBack }: { onBack: () => void }) {
+export function MenuView({ owner, onBack }: { owner: boolean; onBack: () => void }) {
   useMenu();
-  const sections = menuSections();
-  const [picked, setPicked] = useState<Category | null>(null);
-  const section = sections.find((x) => x.id === picked) ?? sections[0] ?? null;
+  const [section, setSection] = useState<Category | 'combos'>(() => menuSections()[0]?.id ?? 'pizza');
+  /** His own sections (SCRUM-241): new (null) or one to change. */
+  const [sectionEdit, setSectionEdit] = useState<{ section: Section | null } | null>(null);
+  // Managers see the sections on offer; the owner sees his hidden ones too, to bring them back.
+  const sections = menuSections().filter((s) => owner || !s.hidden);
+  /** Combo packs (SCRUM-231): managers and the owner make them. */
+  const mayCombos = owner || managesRole(currentCashier().role);
+  const [comboEdit, setComboEdit] = useState<{ id: string | null; combo: Combo | null } | null>(null);
   const [editing, setEditing] = useState<MenuItem | null>(null);
   const [adding, setAdding] = useState(false);
-  const [sectionSheet, setSectionSheet] = useState<'new' | Section | null>(null);
-  const [textSheet, setTextSheet] = useState<'copy' | 'load' | null>(null);
   const [toast, setToast] = useState<{ id: number; message: string; undo: () => void } | null>(null);
-  const items = section ? menuItems().filter((m) => m.category === section.id && !m.removed && !(m.added && sectionOf(m.category)?.removed)) : [];
-  const empty = menuIsEmpty();
-  /** "Added" means something only next to a starting menu (the sample); in a shop's own menu everything is. */
-  const fromStart = menuItems().some((m) => !m.added);
-  const open = Boolean(editing || adding || sectionSheet || textSheet);
+  const items = menuItems().filter((m) => m.category === section && !m.removed);
+  const here = sectionById(section) ?? sections[0];
+  const costs = useCostContext();
+  const [writing, setWriting] = useState<MenuItem | null>(null);
 
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 6000);
     return () => clearTimeout(t);
   }, [toast]);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (!open) onBack();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onBack]);
+  // Esc goes back one step like on every place (nav.ts); its sheets close themselves first.
 
   const said = (message: string, undo: () => void) => setToast({ id: Date.now(), message, undo });
 
   return (
     <div className="owner">
-      <OwnerNav current="menu" onRegister={onBack} />
+      <OwnerNav current="items" onRegister={onBack} />
       <main className="owner__main menuv" aria-label="Menu">
-        <h1 className="menuv__title">{empty ? 'Add your menu' : 'Menu'}</h1>
+        <ItemsTabs current={location.hash === '#menu' ? 'menu' : 'finished'} />
+        <h1 className="menuv__title">Menu</h1>
         <p className="menuv__lead">
-          {!sections.length ? 'Start with a section, like Kottu, Rice & curry or Drinks. Then add its items, one after another.'
-            : empty ? `Now add what you sell in ${section!.name}.`
-              : 'Change a price, a name or what is on offer, or add something new. It reaches the counter, the kitchen and online ordering at once.'}
+          {owner ? 'Change a price, a name or what is on offer, or add something new. It reaches the counter, the kitchen and cheesybeez.com at once.'
+            : 'Mark something sold out for today. Prices and names are changed by the owner.'}
         </p>
         <nav className="cats" aria-label="Menu sections">
-          {sections.map((x) => (
-            <button key={x.id} type="button" className="pill" aria-pressed={section?.id === x.id} onClick={() => setPicked(x.id)}>
-              {x.name}{x.hours && <small className="menuv__hours"> · {hoursLabel(x.hours)}</small>}
+          {sections.map((s) => (
+            <button key={s.id} type="button" className={`pill${s.hidden ? ' pill--hidden' : ''}`} aria-pressed={section === s.id} onClick={() => setSection(s.id)}>
+              {s.label}{s.hidden ? ' (hidden)' : ''}
             </button>
           ))}
-          <button type="button" className={sections.length ? 'pill' : 'cta'} onClick={() => setSectionSheet('new')}>+ Add a section</button>
+          <button type="button" className="pill" aria-pressed={section === 'combos'} onClick={() => setSection('combos')}>Combos</button>
+          {owner && <button type="button" className="chip" onClick={() => setSectionEdit({ section: null })}>+ Section</button>}
         </nav>
-        {section && (
-          <p className="menuv__section">
-            <span>
-              {section.hours && `${hoursLabel(section.hours)} · `}Ready in {section.cookMinutes} min
-              {section.station && ` · ${section.station === 'left' ? 'Left' : 'Right'} kitchen`}
-              {section.sizes.length > 0 && ` · ${section.sizes.map((z) => z.label).join(', ')}`}
-              {section.adds.length > 0 && ` · extras: ${section.adds.map((a) => a.label).join(', ')}`}
-            </span>
-            {NEW_SECTION_ID.test(section.id) && (
-              <button type="button" className="linkbtn" onClick={() => setSectionSheet(section)}>Change section</button>
-            )}
-          </p>
+        {section === 'combos' && (
+          <>
+            <ul className="menuv__list">
+              {comboEntries().length === 0 && <li className="menuv__row"><span className="menuv__name"><span>No combos yet. A combo is a box of dishes at one price; one tap sells it on the Register.</span></span></li>}
+              {comboEntries().map(({ id, combo }) => {
+                const blocked = comboBlocked(combo, menuItems());
+                const alone = separatePrice(combo, menuItems());
+                return (
+                  <li key={id} className={`menuv__row${combo.hidden ? ' menuv__row--hidden' : ''}`}>
+                    <div className="menuv__name">
+                      <b>{combo.name.en}</b>
+                      <span className="num">{fmt(combo.price)}{alone > combo.price ? ` · saves ${fmt(alone - combo.price)} on the usual box` : ''}</span>
+                      <span>{combo.slots.length} {combo.slots.length === 1 ? 'slot' : 'slots'}</span>
+                    </div>
+                    <div className="menuv__tags">
+                      {combo.hidden ? <span className="status status--unpaid">Off the Register</span>
+                        : blocked && <span className="menuv__out">{blocked}</span>}
+                    </div>
+                    {mayCombos && (
+                      <>
+                        <button type="button" className="chip" onClick={() => {
+                          const { hidden: _was, ...shown } = combo;
+                          const after: Combo = combo.hidden ? shown : { ...combo, hidden: true };
+                          saveCombo(id, combo, after);
+                          said(after.hidden ? `${combo.name.en} is off the Register` : `${combo.name.en} is back on the Register`, () => saveCombo(id, after, combo));
+                        }}>{combo.hidden ? 'Put back' : 'Take off'}</button>
+                        <button type="button" className="chip chip--solid" onClick={() => setComboEdit({ id, combo })} aria-label={`Change ${combo.name.en}`}>Change</button>
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            {mayCombos
+              ? <button type="button" className="chip menuv__add" onClick={() => setComboEdit({ id: null, combo: null })}>+ Add a combo</button>
+              : <p className="menuv__lead">Combos are made by a manager or the owner.</p>}
+          </>
         )}
-        <ul className="menuv__list">
+        {section !== 'combos' && <ul className="menuv__list">
           {items.map((m) => (
-            <li key={m.id} className={`menuv__row${m.hidden ? ' menuv__row--hidden' : ''}`}>
+            <li key={m.id} className={`menuv__row${m.hidden ? ' menuv__row--hidden' : ''}${m.soldOut ? ' menuv__row--out' : ''}`}>
               <div className="menuv__name">
-                <b>{m.number !== undefined && <span className="card__no num">{m.number}</span>}{m.name.en}</b>
+                <b>{m.name.en}</b>
                 {(m.name.si || m.name.ta) && <span>{[m.name.si, m.name.ta].filter(Boolean).join(' · ')}</span>}
                 <span className="num">{prices(m)}</span>
+                <CostLine item={m} ctx={costs} onWrite={owner && !m.hidden ? () => setWriting(m) : undefined} />
               </div>
               <div className="menuv__tags">
-                {m.added && fromStart && <span className="status status--paid">Added</span>}
+                {m.added && <span className="status status--paid">Added</span>}
                 {m.edited && <span className="status status--paid">Changed</span>}
                 {m.hidden && <span className="status status--unpaid">Hidden</span>}
+                {m.soldOut && !m.hidden && <span className="menuv__out">Sold out</span>}
               </div>
               {!m.hidden && (
+                // One switch, on = can be sold. Its colour and its word say which, so nobody has to
+                // work out whether a button shows the state or the action.
                 <button
-                  type="button" className="chip menuv__sold" aria-pressed={Boolean(m.soldOut)}
+                  type="button" role="switch" className={`avail${m.soldOut ? ' avail--out' : ''}`} aria-checked={!m.soldOut}
+                  aria-label={`Available today: ${m.name.en}`}
                   onClick={() => {
                     setSoldOut(m.id, !m.soldOut);
                     said(m.soldOut ? `${m.name.en} is back` : `${m.name.en}: sold out until morning`, () => setSoldOut(m.id, Boolean(m.soldOut)));
                   }}
                 >
-                  {m.soldOut ? 'Sold out today' : 'Available'}
+                  <span className="avail__track" aria-hidden="true"><span className="avail__knob" /></span>
+                  <span className="avail__text">{m.soldOut ? 'Sold out today' : 'Available'}</span>
                 </button>
               )}
-              <button type="button" className="chip chip--solid" onClick={() => setEditing(m)} aria-label={`Change ${m.name.en}`}>Change</button>
+              {/* The recipe lives with the dish (owner's PIN), not on a page of its own. */}
+              {owner && !m.hidden && <a className="chip menuv__recipe" href={`#items/recipe/${m.id}`} aria-label={`Recipe of ${m.name.en}`}>Recipe</a>}
+              {owner && <button type="button" className="chip chip--solid" onClick={() => setEditing(m)} aria-label={`Change ${m.name.en}`}>Change</button>}
             </li>
           ))}
-        </ul>
-        {section && (
-          <button type="button" className={items.length ? 'chip menuv__add' : 'cta menuv__add'} onClick={() => setAdding(true)}>+ Add to {section.name}</button>
+        </ul>}
+        {section !== 'combos' && items.length === 0 && (
+          <p className="menuv__lead">Nothing in {here.label} yet.{owner ? ' Add its first dish.' : ''}</p>
         )}
-        <p className="menuv__later">
-          {empty && <button type="button" className="linkbtn" onClick={onBack}>Do it later</button>}
-          {empty
-            ? <button type="button" className="linkbtn" onClick={() => setTextSheet('load')}>Load a menu</button>
-            : <button type="button" className="linkbtn" onClick={() => setTextSheet('copy')}>Copy menu</button>}
-        </p>
+        {owner && section !== 'combos' && (
+          <div className="menuv__actions">
+            <button type="button" className="chip menuv__add" onClick={() => setAdding(true)}>+ {addWords(here)}</button>
+            <button type="button" className="chip menuv__add" onClick={() => setSectionEdit({ section: here })} aria-label={`Change the ${here.label} section`}>Change section</button>
+          </div>
+        )}
       </main>
-      {sectionSheet && (
-        <SectionSheet
-          section={sectionSheet === 'new' ? null : sectionSheet}
-          onClose={() => setSectionSheet(null)}
-          onSaved={(msg, undo, id) => {
-            const made = sectionSheet === 'new';
-            setSectionSheet(null);
-            setPicked(id);
-            said(msg, undo);
-            if (made) setAdding(true); // a new section: straight on to its items
-          }}
-        />
-      )}
-      {textSheet && (
-        <MenuText mode={textSheet} onClose={() => setTextSheet(null)} onLoaded={(msg, undo) => { setTextSheet(null); setPicked(null); said(msg, undo); }} />
-      )}
-      {adding && section && <AddItems section={section} onClose={() => setAdding(false)} />}
+      {adding && <AddDish section={here} ctx={costs} onClose={() => setAdding(false)} onSaved={(msg, undo) => { setAdding(false); said(msg, undo); }} />}
+      {writing && <WriteRecipe item={writing} ctx={costs} onClose={() => setWriting(null)} onSaved={(msg, undo) => { setWriting(null); said(msg, undo); }} />}
       {editing && <Editor item={editing} onClose={() => setEditing(null)} onSaved={(msg, undo) => { setEditing(null); said(msg, undo); }} />}
-      {toast && !open && (
+      {comboEdit && (
+        <ComboEditor comboId={comboEdit.id} combo={comboEdit.combo} ctx={costs}
+          onClose={() => setComboEdit(null)} onSaved={(msg, undo) => { setComboEdit(null); said(msg, undo); }} />
+      )}
+      {sectionEdit && (
+        <SectionSheet section={sectionEdit.section} onClose={() => setSectionEdit(null)}
+          onSaved={(msg, undo, select) => { setSectionEdit(null); if (select) setSection(select as Category); said(msg, undo); }} />
+      )}
+      {toast && !editing && !adding && !writing && !comboEdit && !sectionEdit && (
         <div className="toast" role="status" key={toast.id}>
           <span>{toast.message}</span>
           <button type="button" onClick={() => { toast.undo(); setToast(null); }}>Undo</button>

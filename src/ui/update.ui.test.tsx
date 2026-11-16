@@ -63,3 +63,20 @@ test('a server that is simply down shows nothing here', async () => {
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(screen.queryByRole('status')).toBeNull();
 });
+
+test('a window brought back from minimised looks at once, not at its next slowed-down timer', async () => {
+  const reload = vi.fn();
+  health = { ok: true, version: '1.0.9' };
+  show({ reload, idleMs: 60_000 });
+  await answer({ ok: true, version: '1.0.10' });
+  expect(reload).not.toHaveBeenCalled();
+  await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await new Promise((r) => setTimeout(r, 20)); });
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
+test('with no update under way, the counter asks the server once and then waits (no loop of health checks)', async () => {
+  health = { ok: true, version: '1.0.9' };
+  render(<UpdateScreen />); // the app's own defaults: its reload, a look every 10 s
+  await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});

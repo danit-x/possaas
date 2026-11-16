@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { printReceipt } from '../services/printer.ts';
+import { heldList } from './testHeld.ts';
 import { App } from './App.tsx';
+import { setKitchenScreen } from './kitchenScreen.ts';
 
 // A paired counter: printing goes through the (mocked) server.
 vi.mock('../services/printer.ts', () => ({ canPrint: () => true, printReceipt: vi.fn() }));
@@ -14,10 +16,10 @@ afterEach(cleanup);
 const panel = () => within(screen.getByRole('complementary', { name: 'Current order' }));
 
 const sellOne = async (user: ReturnType<typeof userEvent.setup>, how: RegExp | string) => {
-  await user.click(screen.getAllByRole('button', { name: 'L 2500' })[0]);
-  await user.click(panel().getByRole('button', { name: 'Send to kitchen' }));
-  await user.click(panel().getByRole('button', { name: /^1001/ }));
-  await user.click(panel().getByRole('button', { name: 'Charge' }));
+  await user.click(screen.getAllByRole('button', { name: 'L 2,500' })[0]);
+  await user.click(screen.getByRole('button', { name: 'Send to kitchen' }));
+  await user.click(heldList().getByRole('button', { name: /^1001/ }));
+  await user.click(screen.getByRole('button', { name: 'Pay' }));
   await user.click(screen.getByRole('button', { name: how }));
 };
 
@@ -47,3 +49,6 @@ test('a failed print says so quietly, and Print again retries', async () => {
   expect(print).toHaveBeenCalledTimes(2);
   await vi.waitFor(() => expect(panel().queryByText('Receipt not printed')).toBeNull());
 });
+
+// These tests send to the kitchen first: the Kitchen view on (it is off on a new counter).
+beforeEach(() => setKitchenScreen(true));

@@ -1,7 +1,9 @@
-import { drawerOnly, escpos, opensDrawer, receipt, type ReceiptLine } from '../domain/receipt.ts';
+import { changeBlocks, changedBill, escpos, partSlip, opensDrawer, receipt, type ReceiptLine } from '../domain/receipt.ts';
 import type { PaidOrder } from '../domain/types.ts';
+import { receiptOfferFromEvents, type ReceiptOffer } from '../domain/campaigns.ts';
+import { madeInMinutes } from '../domain/billExtras.ts';
+import { modulesHere, readAll } from '../ui/eventLog.ts';
 import { syncToken } from './pairing.ts';
-import { receiptWidth, shopHeader } from './shop.ts';
 
 /**
  * Prints the customer receipt through the server on the counter PC, which
@@ -26,14 +28,19 @@ const base64 = (bytes: Uint8Array): string => {
  * never opens the drawer and is marked COPY.
  */
 export async function printReceipt(paid: PaidOrder, cashier: string, { reprint = false } = {}): Promise<PrintResult> {
-  return send(escpos(receipt(paid, { shop: shopHeader(), cashier, copy: reprint, width: receiptWidth() }), { openDrawer: !reprint && opensDrawer(paid) }));
+  // Changed after paying (SCRUM-255): the bill as it stands now, a COPY of the changed bill.
+  if (paid.settled !== undefined) return printChangedBill(paid, cashier, { reprint });
+  const events = readAll();
+  // How fast the kitchen made it, when it has (SCRUM-256). Bata Kade prints no owner's line.
+  const extras = { madeIn: madeInMinutes(events, paid.number, Date.now()) };
+  return send(escpos(receipt(paid, { cashier, copy: reprint, offers: receiptOffers(), ...extras }), { openDrawer: !reprint && opensDrawer(paid) }));
 }
 
-/** Any lines on the receipt printer (the day's close), without opening the drawer. */
-export const printLines = (lines: ReceiptLine[]): Promise<PrintResult> => send(escpos(lines));
+/** While the CRM is on, the receipt carries the offers QR code under the owner's words (receipt.ts). */
+export const receiptOffers = (): ReceiptOffer | null => (modulesHere().crm ? receiptOfferFromEvents(readAll()) : null);
 
-/** Shop setup → Printer: opens the cash drawer (plugged into the printer) without printing anything. */
-export const openDrawer = (): Promise<PrintResult> => send(drawerOnly());
+/** The delivery bill for the customer's bag (SCRUM-193). Nothing is paid yet, so the drawer stays shut. */
+export const printDeliveryBill = (lines: ReceiptLine[]): Promise<PrintResult> => send(escpos(lines));
 
 async function send(bytes: Uint8Array): Promise<PrintResult> {
   const token = syncToken();
@@ -50,3 +57,16 @@ async function send(bytes: Uint8Array): Promise<PrintResult> {
     return 'failed';
   }
 }
+
+/**
+ * A paid order's difference settled (SCRUM-242/255): the CHANGED BILL, the whole bill again with
+ * what changed and what was paid now. The drawer opens for cash (money in or out); a reprint never.
+ */
+export const printChangedBill = (paid: PaidOrder, cashier: string, { reprint = false } = {}): Promise<PrintResult> => {
+  const blocks = changeBlocks(readAll(), paid);
+  return send(escpos(changedBill(paid, blocks, { cashier, copy: reprint }), { openDrawer: !reprint && blocks.at(-1)?.tender === 'cash' }));
+};
+
+/** One part of a split bill: that person's slip, and the drawer opens for cash. */
+export const printPartSlip = (o: Parameters<typeof partSlip>[0], cashier: string): Promise<PrintResult> =>
+  send(escpos(partSlip(o, { at: Date.now(), cashier }), { openDrawer: o.tender === 'cash' }));

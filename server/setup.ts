@@ -1,16 +1,31 @@
+import { isStaffRole, managesRole, mayRecord } from '../src/domain/auth.ts';
+import { checkBillLine } from '../src/domain/billExtras.ts';
+import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
-import { randomBytes } from 'node:crypto';
-import { networkInterfaces } from 'node:os';
-import type { Role } from '../src/domain/auth.ts';
-import { DEFAULT_FOOTER } from '../src/domain/brand.ts';
-import type { PaperWidth } from '../src/domain/receipt.ts';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { extname, join } from 'node:path';
+import { lanAddress } from './lan.ts';
+import type { Actor, Role } from '../src/domain/auth.ts';
+import { PULL_LIMIT, type SyncEvent } from '../src/domain/sync.ts';
+import type { CameraSpec } from '../src/domain/tables.ts';
+import { CAUSE_TEXT, hostPort } from '../src/domain/cameraSetup.ts';
+import { discover as scanLan, snapshot as takeSnapshot, type FoundCamera } from './cvCameras.ts';
+import { liveViews, type LiveViews, type ViewMode } from './cvLive.ts';
+import { askCamera as askOnvif } from './onvif.ts';
+import type { CvSecrets } from './cvSecrets.ts';
+import { validatePush } from './validate.ts';
+import { DEVELOPERS, isModuleId, lastChange, MODULES, modulesFromEvents } from '../src/domain/modules.ts';
+import { modulePasswordMatches, type PasswordHash } from './modules.ts';
 import { isPin } from './pins.ts';
-import { dryRunPrinter, listPrinters, networkAddress, printerFor, type RawPrinter } from './printer.ts';
-import { printerQueue, type PrinterQueue } from './printerStatus.ts';
-import type { UsbBackup } from './usbBackup.ts';
+import { dryRunPrinter, listPrinters, systemPrinter, type RawPrinter } from './printer.ts';
 import type { Settings } from './settings.ts';
-import { PinTaken, type EventStore, type StaffMember } from './store.ts';
+import { PinTaken, type Device, type EventStore, type StaffMember } from './store.ts';
 import type { UpdatesApi } from './updates.ts';
+import type { CvPackApi } from './cvPack.ts';
+import type { Perf, Seen } from './cv/messages.ts';
 
 /**
  * The setup wizard's side of the server: the shop, the printer, the staff and
@@ -21,8 +36,6 @@ import type { UpdatesApi } from './updates.ts';
  */
 export interface SetupContext {
   store: EventStore;
-  /** The logo a shop shows until the owner picks another (possaas: Bata Kade's, server/shopLogo.ts). */
-  defaultLogo?: string;
   settings: Settings;
   usePrinter: (p: RawPrinter) => void;
   printsDir: string;
@@ -33,33 +46,49 @@ export interface SetupContext {
   cloudUrl: string;
   /** The wizard connected the cloud: start copying, no restart. */
   onCloudConnected?: () => void;
-  /** The Station's versions ("Update now"). */
+  /** CheesyBeez Station's versions ("Update now"). */
   updates?: UpdatesApi;
-  /** Windows' view of the printer, for "Did it print? No" (tests pass their own). */
-  queue?: PrinterQueue;
-  /** Shop setup → Backup: a copy of the sales on a USB stick (server/usbBackup.ts). */
-  usb?: UsbBackup;
-  /** Shop setup → Help: the support file on the desktop (server/supportFile.ts). */
-  support?: () => Promise<{ path: string; name: string }>;
+  /** The CV pack (server/cvPack.ts), off until the owner activates it on #vision. */
+  cv?: CvPackApi;
+  /** The cameras' logins (server/cvSecrets.ts), in the data folder. */
+  secrets?: CvSecrets;
+  /** The developers' module password hash (server/modules.ts); tests give their own. */
+  modulePassword?: PasswordHash;
+  /** Stores events and streams them to the shop's devices, as a push would (app.ts `ingest`). */
+  ingest?: (device: Device, events: SyncEvent[]) => Promise<number>;
+  /** Scan and Test (server/cvCameras.ts); tests give fakes. */
+  discover?: () => Promise<FoundCamera[]>;
+  snapshot?: typeof takeSnapshot;
+  /** Ask the camera (server/onvif.ts) and the camera views (server/cvLive.ts); tests give fakes. */
+  askCamera?: typeof askOnvif;
+  views?: (source: Parameters<typeof liveViews>[0]['source'], ffmpeg: () => string | null) => LiveViews;
+  /**
+   * What the camera worker's detection sees (SCRUM-175, server/cvWorker.ts): the large view watches
+   * one camera (null: none) and its answer carries the latest people boxes. Memory only.
+   */
+  detections?: { watch: (cameraId: string | null) => void; seen: (cameraId: string) => Seen | null; perf?: () => ({ at: number } & Perf) | null };
+  /**
+   * Development cameras (CV_DEV_CAMERAS): camera id -> a looping file the views show instead of the
+   * stream. A test video (below) changes it while the server runs; the worker reads the same map.
+   */
+  dev?: Map<string, string>;
+  /**
+   * TEMPORARY (owner, 2026-10-27): a test video in place of a camera's stream, from #vision's camera
+   * panel. Uploads are kept in `dir` until Stop or the next start; `onChange` tells the worker.
+   */
+  testVideos?: { dir: string; onChange: () => void };
   fetch?: typeof fetch;
   now?: () => number;
 }
 
-/** What every screen and the receipt show (GET /api/v1/shop-details): the shop's own name, never the product's. */
-export interface ShopInfo { name: string; place: string; footer: string; paper: PaperWidth; payFirst: boolean; logo?: string }
-
-/** The logo the counter has already made small (256 px): a PNG, JPEG or WebP data: URL. */
-export const MAX_LOGO = 200_000;
-const LOGO = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/;
-
 export interface SetupState {
   done: boolean;
-  shop: ({ id: string } & ShopInfo) | null;
+  shop: { id: string; name: string; place: string } | null;
   printer: string | null;
   printers: string[];
-  /** USB printer ports with no printer on them: a receipt printer plugged in without its driver. */
-  usbPorts: string[];
   cloud: boolean;
+  /** Computer vision's pack (idle until the owner activates it): #vision shows Activate, its progress, then the switch. */
+  cv: ReturnType<CvPackApi['status']> | null;
   /** Only while the shop is new; afterwards the staff list needs the owner's PIN. */
   staff?: StaffMember[];
 }
@@ -74,31 +103,21 @@ export class SetupError extends Error {
   }
 }
 
-const ROLES: Role[] = ['cashier', 'manager', 'owner', 'kitchen'];
 const LOCAL = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 export const isLocal = (req: IncomingMessage): boolean => LOCAL.has(req.socket.remoteAddress ?? '');
 
-/** "Bata Kade", "Galle" -> "bata-kade-galle". */
+/** "CheesyBeez", "Thalwila" -> "cheesybeez-thalwila". */
 export const shopIdFor = (name: string, place: string): string =>
   `${name} ${place}`.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48) || 'shop';
-
-/** The address a tablet on the shop's Wi-Fi uses to reach this PC. */
-const lanAddress = (): string | null =>
-  Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal)?.address ?? null;
 
 export function setupApi(ctx: SetupContext) {
   const now = ctx.now ?? Date.now;
   const http = ctx.fetch ?? fetch;
   const wrong = { count: 0, until: 0 };
-  const queue = ctx.queue ?? printerQueue();
 
   const shop = () => {
     const s = ctx.settings.get();
-    const logo = s.logo ?? ctx.defaultLogo;
-    return s.shopId
-      ? { id: s.shopId, name: s.shopName ?? s.shopId, place: s.place ?? '', footer: s.receiptFooter ?? DEFAULT_FOOTER, paper: s.paperWidth ?? 80,
-        payFirst: s.payFirst !== false, ...(logo ? { logo } : {}) }
-      : null;
+    return s.shopId ? { id: s.shopId, name: s.shopName ?? s.shopId, place: s.place ?? '' } : null;
   };
   const requireShop = () => {
     const s = shop();
@@ -107,8 +126,8 @@ export function setupApi(ctx: SetupContext) {
   };
 
   /** Before setup is done, the PC itself is enough; after, the owner's PIN too. */
-  const authorise = async (ownerPin: unknown): Promise<void> => {
-    if (!ctx.settings.get().setupDone) return;
+  const authorise = async (ownerPin: unknown): Promise<StaffMember | null> => {
+    if (!ctx.settings.get().setupDone) return null;
     if (wrong.until > now()) throw new SetupError(429, 'too_many', 'too many wrong PINs: wait a moment');
     const s = shop();
     const who = s && isPin(ownerPin) ? await ctx.store.staffByPin(s.id, ownerPin) : null;
@@ -118,21 +137,124 @@ export function setupApi(ctx: SetupContext) {
       throw new SetupError(401, 'wrong_pin', "that is not the owner's PIN");
     }
     wrong.count = 0;
+    return who;
   };
 
+  // ----- #cameras: cameras, tables, zones and the vision settings (SCRUM-171) -----
+
+  /** The owner, by PIN: the actor on every camera-setup event. */
+  const owner = async (ownerPin: unknown): Promise<Actor> => {
+    const who = await authorise(ownerPin);
+    if (!who) throw new SetupError(409, 'not_ready', 'finish the shop setup first');
+    return { id: who.id, name: who.name, role: who.role };
+  };
+  /** The local device the owner's camera setup is filed under: made the first time. */
+  const setupDevice = async (shopId: string): Promise<Device> => {
+    const id = ctx.settings.get().cvSetupDevice;
+    if (id) return { id, tenantId: shopId, kind: 'owner' };
+    const { device } = await ctx.store.addDevice(shopId, 'Cameras setup', 'owner');
+    ctx.settings.set({ cvSetupDevice: device.id });
+    return device;
+  };
+  /** One owner event, checked as a push would be, then stored and streamed. Returned for the screen. */
+  const record = async (actor: Actor, fields: Record<string, unknown> & { type: string }): Promise<SyncEvent[]> => {
+    if (!ctx.ingest) throw new SetupError(409, 'not_ready', 'no event store here');
+    const s = requireShop();
+    const event = { id: randomUUID(), shopId: s.id, at: now(), actor, orderNumber: 0, ...fields } as unknown as SyncEvent;
+    const checked = validatePush({ events: [event] }, s.id);
+    if ('reason' in checked) throw new SetupError(400, 'invalid', checked.reason);
+    if (!mayRecord(actor.role, event.type)) throw new SetupError(403, 'forbidden', 'only the owner may do this');
+    await ctx.ingest(await setupDevice(s.id), [event]);
+    return [event];
+  };
+
+  /** The shop's whole history, in pages (module codes: which are on, which codes were used). */
+  const everything = async (shopId: string): Promise<SyncEvent[]> => {
+    const out: SyncEvent[] = [];
+    for (let after = 0;;) {
+      const rows = await ctx.store.pull(shopId, after, PULL_LIMIT);
+      out.push(...rows.map((r) => r.event));
+      if (rows.length < PULL_LIMIT) return out;
+      after = rows[rows.length - 1].seq;
+    }
+  };
+
+  /** Wrong developer passwords on #unlock: 5 wrong → 30 s, like PINs. */
+  const moduleWrong = { count: 0, until: 0 };
+
+  // ----- #vision's Camera views (SCRUM-180) -----
+
+  /** The camera list as the shop's events say, read once and then only what is new. */
+  const known = { after: 0, cameras: [] as CameraSpec[] };
+  const camerasNow = async (): Promise<CameraSpec[]> => {
+    const s = requireShop();
+    for (;;) {
+      const rows = await ctx.store.pull(s.id, known.after, PULL_LIMIT);
+      for (const r of rows) if (r.event.type === 'vision.cameras_set') known.cameras = r.event.cameras;
+      if (rows.length) known.after = rows[rows.length - 1].seq;
+      if (rows.length < PULL_LIMIT) return known.cameras;
+    }
+  };
+  const packFfmpeg = () => { const pack = ctx.cv?.packDir(); return pack ? join(pack, 'ffmpeg.exe') : null; };
+  const viewSource = async (id: string) => {
+    const cam = (await camerasNow()).find((c) => c.id === id);
+    if (!cam) return null;
+    const login = ctx.secrets?.get(id);
+    return { ip: cam.ip, rtspPath: cam.rtspPath, user: login?.user, password: login?.password, ...(ctx.dev?.has(id) ? { file: ctx.dev.get(id) } : {}) };
+  };
+  const views = (ctx.views ?? ((source, ffmpeg) => liveViews({ source, ffmpeg })))(viewSource, packFfmpeg);
+  /** Who may watch: a random key the owner's PIN opened, alive while it is used. Never the PIN in every poll. */
+  const VIEW_KEY_MS = 10 * 60_000;
+  const viewKeys = new Map<string, number>();
+  const watching = (key: unknown) => {
+    const t = now();
+    for (const [k, until] of viewKeys) if (until < t) viewKeys.delete(k);
+    if (typeof key !== 'string' || !viewKeys.has(key)) throw new SetupError(401, 'wrong_pin', "the owner's PIN is needed again");
+    viewKeys.set(key, t + VIEW_KEY_MS);
+  };
+  /** Where Scan found each camera's ONVIF service, for Ask the camera. */
+  const onvifAt = new Map<string, string>();
+  const text = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  /** Where a camera is: never its login, which stays in `secrets`. */
+  const cameraOf = (c: Record<string, unknown>) => ({
+    id: text(c.id, 64), name: text(c.name, 60), ip: text(c.ip, 253), rtspPath: text(c.rtspPath, 200), enabled: c.enabled === true,
+  });
+
+  // ----- TEMPORARY: a test video in place of a camera's stream (owner, 2026-10-27) -----
+
+  /** What CV_DEV_CAMERAS set, put back when a test stops. */
+  const fromEnv = new Map(ctx.dev ?? []);
+  /** Camera id -> the video's name, for the screen. */
+  const testing = new Map<string, string>();
+  // A test ends with the server: the last run's uploads go.
+  if (ctx.testVideos) { try { rmSync(ctx.testVideos.dir, { recursive: true, force: true }); } catch { /* a stray ffmpeg still holds one: it goes next time */ } }
+  const testState = () => ({ testVideos: Object.fromEntries(testing) });
+  const testCamera = async (cameraId: unknown): Promise<string> => {
+    if (!ctx.testVideos || !ctx.dev) throw new SetupError(409, 'not_ready', 'test videos are not on here');
+    const id = typeof cameraId === 'string' ? cameraId : '';
+    if (!(await camerasNow()).some((c) => c.id === id)) throw new SetupError(404, 'invalid', 'save the camera first');
+    return id;
+  };
+  // A new name each time: the video before may still be open in ffmpeg, and Windows will not replace an open file.
+  const fileFor = (id: string, ext: string) => join(ctx.testVideos!.dir, `${id.replace(/[^\w-]/g, '_')}-${randomBytes(3).toString('hex')}${ext}`);
+  const stopTest = (id: string) => {
+    const file = ctx.dev!.get(id);
+    // ffmpeg lets go once testChanged() has stopped it; a file still held then goes with the next start.
+    if (testing.has(id) && file) void rm(file, { force: true, maxRetries: 20, retryDelay: 500 }).catch(() => {});
+    testing.delete(id);
+    if (fromEnv.has(id)) ctx.dev!.set(id, fromEnv.get(id)!); else ctx.dev!.delete(id);
+  };
+  const testChanged = () => { views.stop(); ctx.testVideos!.onChange(); };
+
   const choosePrinter = (name: string | null) => {
-    ctx.usePrinter(name ? printerFor(name) : dryRunPrinter(ctx.printsDir));
+    ctx.usePrinter(name ? systemPrinter(name) : dryRunPrinter(ctx.printsDir));
     ctx.settings.set({ printer: name ?? undefined });
   };
 
   return {
     choosePrinter,
-
-    /** For every screen on the shop's network (no PIN: it is printed on every receipt anyway). */
-    publicShop(): ShopInfo | null {
-      const s = shop();
-      return s ? { name: s.name, place: s.place, footer: s.footer, paper: s.paper, payFirst: s.payFirst, ...(s.logo ? { logo: s.logo } : {}) } : null;
-    },
+    /** The server stops: no ffmpeg is left watching a camera. */
+    stopViews: () => views.stop(),
 
     async state(): Promise<SetupState> {
       const s = ctx.settings.get();
@@ -142,8 +264,8 @@ export function setupApi(ctx: SetupContext) {
         shop: current,
         printer: s.printer ?? null,
         printers: await listPrinters(),
-        usbPorts: await queue.freeUsbPorts(),
         cloud: ctx.cloud() !== null,
+        cv: ctx.cv?.status() ?? null,
         ...(!s.setupDone && current ? { staff: await ctx.store.listStaff(current.id) } : {}),
       };
     },
@@ -163,76 +285,10 @@ export function setupApi(ctx: SetupContext) {
       return { shopId: id, counterToken: token };
     },
 
-    /** Shop setup → Printer: the name, town and footer the receipt (and the screens) show. The shop's id never changes. */
-    async shopDetails(body: { name?: unknown; place?: unknown; footer?: unknown; ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      requireShop();
-      const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
-      if (!name) throw new SetupError(400, 'invalid', 'the shop needs a name');
-      const place = typeof body.place === 'string' ? body.place.trim().slice(0, 80) : '';
-      const footer = typeof body.footer === 'string' ? body.footer.trim().slice(0, 120) : DEFAULT_FOOTER;
-      ctx.settings.set({ shopName: name, place, receiptFooter: footer });
-      return { shop: shop() };
-    },
-
-    /** Shop setup → Printer: the logo beside the shop's name on every screen; null takes it away. */
-    async setLogo(body: { logo?: unknown; ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      requireShop();
-      if (body.logo === null) { ctx.settings.set({ logo: '' }); return { logo: null }; } // '': none, not the shop's own
-      if (typeof body.logo !== 'string' || body.logo.length > MAX_LOGO || !LOGO.test(body.logo)) {
-        throw new SetupError(400, 'invalid', 'the logo is a PNG, JPEG or WebP picture under 200 KB');
-      }
-      ctx.settings.set({ logo: body.logo });
-      return { logo: body.logo };
-    },
-
-    /** Shop setup → Printer: 80 mm or 58 mm paper; the receipt is laid out for it. */
-    async setPaper(body: { width?: unknown; ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      if (body.width !== 58 && body.width !== 80) throw new SetupError(400, 'invalid', 'the paper is 58 or 80 mm');
-      ctx.settings.set({ paperWidth: body.width });
-      return { paper: body.width };
-    },
-
-    /** Shop setup → Shop: customers pay before the order goes to the kitchen, or eat first and pay after. */
-    async setPayWhen(body: { payFirst?: unknown; ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      requireShop();
-      if (typeof body.payFirst !== 'boolean') throw new SetupError(400, 'invalid', 'say whether customers pay first');
-      ctx.settings.set({ payFirst: body.payFirst });
-      return { payFirst: body.payFirst };
-    },
-
-    /** "Did it print? No": what Windows knows about the chosen printer. */
-    async printerState(body: { ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      const name = ctx.settings.get().printer;
-      if (!name) throw new SetupError(409, 'not_ready', 'choose a printer first');
-      return { state: await queue.state(name) };
-    },
-
-    /** A USB receipt printer without its maker's driver: set up with Windows' own, and chosen. */
-    async addUsbPrinter(body: { port?: unknown; ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      if (typeof body.port !== 'string' || !(await queue.freeUsbPorts()).includes(body.port)) throw new SetupError(400, 'invalid', 'no receipt printer waiting on that USB port');
-      const name = await queue.addUsbPrinter(body.port);
-      choosePrinter(name);
-      return { printer: name };
-    },
-
-    /** Clears receipts stuck in the chosen printer's queue. */
-    async clearPrinter(body: { ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      const name = ctx.settings.get().printer;
-      if (!name) throw new SetupError(409, 'not_ready', 'choose a printer first');
-      return { cleared: await queue.clear(name) };
-    },
-
     async setPrinter(body: { name?: unknown; ownerPin?: unknown }) {
       await authorise(body.ownerPin);
       const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : null;
-      if (name && !networkAddress(name) && !(await listPrinters()).includes(name)) throw new SetupError(400, 'invalid', `no printer called ${name}`);
+      if (name && !(await listPrinters()).includes(name)) throw new SetupError(400, 'invalid', `no printer called ${name}`);
       choosePrinter(name);
       return { printer: name };
     },
@@ -247,7 +303,7 @@ export function setupApi(ctx: SetupContext) {
       const s = requireShop();
       const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
       if (!name) throw new SetupError(400, 'invalid', 'a name is needed');
-      if (!ROLES.includes(body.role as Role)) throw new SetupError(400, 'invalid', 'pick a role');
+      if (!isStaffRole(body.role)) throw new SetupError(400, 'invalid', 'pick a role');
       if (!isPin(body.pin)) throw new SetupError(400, 'invalid', 'the PIN must be 4 digits');
       try {
         await ctx.store.addStaff(s.id, name, body.role as Role, body.pin);
@@ -272,11 +328,11 @@ export function setupApi(ctx: SetupContext) {
     },
 
     /**
-     * A QR code's link. kitchen: a tablet on the shop Wi-Fi becomes the Kitchen screen (with
-     * `station`, the left or right one of a shop with two kitchens).
+     * A QR code's link. kitchen: a tablet on the shop Wi-Fi becomes the Kitchen screen.
      * owner: a phone gets the Owner view from the cloud. counter: another screen on this PC.
+     * manager: a manager's phone app from the cloud, made for one person (SCRUM-94).
      */
-    async pair(body: { kind?: unknown; ownerPin?: unknown; station?: unknown }) {
+    async pair(body: { kind?: unknown; ownerPin?: unknown; staffId?: unknown }) {
       await authorise(body.ownerPin);
       const s = requireShop();
       if (body.kind === 'owner') {
@@ -290,20 +346,31 @@ export function setupApi(ctx: SetupContext) {
         const { token } = (await r.json()) as { token: string };
         return { link: `${cloud.url}/?owner=${token}#owner` };
       }
+      if (body.kind === 'manager') {
+        const cloud = ctx.cloud();
+        if (!cloud) throw new SetupError(409, 'not_ready', 'connect the cloud copy first');
+        const person = (await ctx.store.listStaff(s.id)).find((m) => m.id === body.staffId && m.active);
+        if (!person || !managesRole(person.role)) throw new SetupError(400, 'invalid', 'pick a manager or an owner');
+        const r = await http(`${cloud.url}/api/v1/devices`, {
+          method: 'POST', headers: { authorization: `Bearer ${cloud.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ kind: 'manager', actor: { id: person.id, name: person.name, role: person.role } }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!r.ok) throw new SetupError(502, 'not_ready', 'the cloud did not answer: is the internet up?');
+        const { token } = (await r.json()) as { token: string };
+        return { link: `${cloud.url}/?manager=${token}#manager` };
+      }
       if (body.kind === 'kitchen') {
-        if (body.station !== undefined && body.station !== 'left' && body.station !== 'right') {
-          throw new SetupError(400, 'invalid', 'station must be left or right');
-        }
         const host = lanAddress();
         if (!host) throw new SetupError(409, 'not_ready', 'this PC is not on a network: connect it to the shop Wi-Fi');
         const { token } = await ctx.store.addDevice(s.id, s.name, 'kitchen');
-        return { link: `http://${host}:${ctx.port}/?pair=${token}&shop=${encodeURIComponent(s.id)}&as=kitchen${body.station ? `&station=${body.station}` : ''}#kitchen` };
+        return { link: `http://${host}:${ctx.port}/?pair=${token}&shop=${encodeURIComponent(s.id)}&as=kitchen#kitchen` };
       }
       if (body.kind === 'counter') {
         const { token } = await ctx.store.addDevice(s.id, s.name, 'counter');
         return { counterToken: token, shopId: s.id };
       }
-      throw new SetupError(400, 'invalid', 'kind must be kitchen, owner or counter');
+      throw new SetupError(400, 'invalid', 'kind must be kitchen, manager, owner or counter');
     },
 
     /**
@@ -335,29 +402,7 @@ export function setupApi(ctx: SetupContext) {
       return { cloud: true };
     },
 
-    /** Shop setup → Backup: the USB sticks plugged in now. */
-    async backupDrives(body: { ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      return { drives: ctx.usb ? await ctx.usb.drives() : [] };
-    },
-
-    /** Copies the sales onto the chosen USB stick. */
-    async backupToUsb(body: { drive?: unknown; ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      if (!ctx.usb || typeof body.drive !== 'string') throw new SetupError(400, 'invalid', 'choose a USB stick');
-      try { return await ctx.usb.save(body.drive); }
-      catch (e) { throw new SetupError(409, 'not_ready', e instanceof Error ? e.message : String(e)); }
-    },
-
-    /** Shop setup → Help: saves the support file on this PC's desktop and says where. */
-    async saveSupport(body: { ownerPin?: unknown }) {
-      await authorise(body.ownerPin);
-      if (!ctx.support) throw new SetupError(409, 'not_ready', 'no support file here');
-      const { name, path } = await ctx.support();
-      return { name, path };
-    },
-
-    /** Shop setup → Updates: the installed version and GitHub's latest. */
+    /** Shop setup â†’ Updates: the installed version and GitHub's latest. */
     async checkUpdate(body: { ownerPin?: unknown }) {
       await authorise(body.ownerPin);
       if (!ctx.updates) throw new SetupError(409, 'not_ready', 'no updates here');
@@ -379,6 +424,243 @@ export function setupApi(ctx: SetupContext) {
       return { started: true, from: ctx.updates.current() };
     },
 
+    /** #cameras: where the CV pack is (idle, downloading, verifying, ready, failed). */
+    async cvStatus(body: { ownerPin?: unknown }) {
+      await authorise(body.ownerPin);
+      if (!ctx.cv) throw new SetupError(409, 'not_ready', 'no CV here');
+      return ctx.cv.status();
+    },
+
+    /** "Activate CV", and Retry: the pack downloads in the background; the screen asks cvStatus as it goes. */
+    async cvActivate(body: { ownerPin?: unknown }) {
+      await authorise(body.ownerPin);
+      if (!ctx.cv) throw new SetupError(409, 'not_ready', 'no CV here');
+      return ctx.cv.activate();
+    },
+
+    /** #cameras opens: which cameras have a login kept (never the password), and whether Test can run. */
+    async cvSetup(body: { ownerPin?: unknown }) {
+      await owner(body.ownerPin);
+      return { logins: ctx.secrets?.summary() ?? {}, packReady: Boolean(ctx.cv?.packDir()) };
+    },
+
+    /** Scan: the ONVIF cameras on the shop's network. */
+    async cvScan(body: { ownerPin?: unknown }) {
+      await owner(body.ownerPin);
+      const found = await (ctx.discover ?? scanLan)();
+      for (const f of found) if (f.xaddr) onvifAt.set(f.ip, f.xaddr);
+      return { found: found.map(({ ip, name }) => ({ ip, name })) };
+    },
+
+    /**
+     * Ask the camera (ONVIF): one stream path per lens, from the camera itself. Takes the login
+     * typed now, or else the one kept for this camera; the password never leaves this server.
+     */
+    async cvAsk(body: { ownerPin?: unknown; cameraId?: unknown; ip?: unknown; user?: unknown; password?: unknown }) {
+      await owner(body.ownerPin);
+      // ONVIF answers on the camera's own address; a port typed for the stream (":8080") is not its.
+      const ip = hostPort(text(body.ip, 253)).host;
+      if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) throw new SetupError(400, 'invalid', 'type the camera’s IP address');
+      const kept = typeof body.cameraId === 'string' ? ctx.secrets?.get(body.cameraId) : null;
+      const user = typeof body.user === 'string' && body.user ? body.user.slice(0, 80) : kept?.user ?? '';
+      const password = typeof body.password === 'string' && body.password ? body.password.slice(0, 200) : kept?.password ?? '';
+      return (ctx.askCamera ?? askOnvif)({ ip, login: { user, password }, xaddr: onvifAt.get(ip), fetch: ctx.fetch });
+    },
+
+    /** Camera views: the owner's PIN opens a key the screen polls with; nothing runs yet. */
+    async cvViewsOpen(body: { ownerPin?: unknown }) {
+      await owner(body.ownerPin);
+      const key = randomBytes(24).toString('hex');
+      viewKeys.set(key, now() + VIEW_KEY_MS);
+      return { key, packReady: Boolean(packFfmpeg()) };
+    },
+
+    /** One view's latest frame (base64 JPEG, from memory) or why there is none. Starts its ffmpeg if needed. */
+    async cvViewsFrame(body: { key?: unknown; cameraId?: unknown; mode?: unknown; after?: unknown; use?: unknown }) {
+      watching(body.key);
+      if (typeof body.cameraId !== 'string') throw new SetupError(400, 'invalid', 'which camera?');
+      const mode: ViewMode = body.mode === 'live' ? 'live' : 'tile';
+      const after = typeof body.after === 'number' && Number.isSafeInteger(body.after) ? body.after : 0;
+      // The large view also shows what detection sees there (SCRUM-175); tiles stop it.
+      ctx.detections?.watch(mode === 'live' ? body.cameraId : null);
+      const f = await views.frame(body.cameraId, { mode, after, use: body.use === true });
+      if (f.state !== 'frame') return f;
+      const seen = mode === 'live' ? ctx.detections?.seen(body.cameraId) ?? null : null;
+      return { state: 'frame', seq: f.seq, at: f.at, jpeg: f.jpeg.toString('base64'), ...(seen ? { seen } : {}) };
+    },
+
+    /**
+     * #vision's Performance, every couple of seconds while the owner watches: the camera worker's
+     * numbers now (null while it does not run) and the views' ffmpegs. Memory only, never stored.
+     */
+    async cvViewsPerf(body: { key?: unknown }) {
+      watching(body.key);
+      return { perf: ctx.detections?.perf?.() ?? null, views: views.running().length };
+    },
+
+    /** The page was left: every view stops now. */
+    async cvViewsClose(body: { key?: unknown }) {
+      if (typeof body.key === 'string') viewKeys.delete(body.key);
+      if (!viewKeys.size) { views.stop(); ctx.detections?.watch(null); }
+      return { closed: true };
+    },
+
+    /**
+     * Test: one frame from the camera, as a JPEG shown on screen and never saved. Takes the
+     * password typed now, or else the one kept for this camera.
+     */
+    async cvTest(body: { ownerPin?: unknown; cameraId?: unknown; ip?: unknown; rtspPath?: unknown; user?: unknown; password?: unknown }) {
+      await owner(body.ownerPin);
+      const cam = cameraOf({ ...body, id: 'test', name: 'test' });
+      const probe = { id: 't', type: 'vision.cameras_set', shopId: 's', at: 0, orderNumber: 0, actor: { id: 'o', name: 'o', role: 'owner' }, cameras: [cam] };
+      if ('reason' in validatePush({ events: [probe] }, 's')) throw new SetupError(400, 'invalid', 'type the cameraâ€™s IP address and stream path');
+      const pack = ctx.cv?.packDir();
+      if (!pack) return { ok: false, cause: 'pack', message: CAUSE_TEXT.pack };
+      const kept = typeof body.cameraId === 'string' ? ctx.secrets?.get(body.cameraId) : null;
+      const user = typeof body.user === 'string' && body.user ? body.user : kept?.user;
+      const password = typeof body.password === 'string' && body.password ? body.password : kept?.password;
+      const r = await (ctx.snapshot ?? takeSnapshot)({ ffmpeg: join(pack, 'ffmpeg.exe'), camera: { ip: cam.ip, rtspPath: cam.rtspPath, user, password } });
+      return r.ok ? { ok: true, jpeg: r.jpeg.toString('base64') } : r;
+    },
+
+    /**
+     * TEMPORARY: a video file, streamed from the request to the data folder (never all in memory),
+     * plays in place of this camera's stream for the views and the worker until Stop.
+     */
+    async cvTestVideoUpload(req: IncomingMessage, q: { ownerPin?: unknown; cameraId?: unknown; name?: unknown }) {
+      await owner(q.ownerPin);
+      const id = await testCamera(q.cameraId);
+      const name = text(q.name, 120);
+      const ext = extname(name).toLowerCase();
+      if (!TEST_VIDEO_TYPES.includes(ext)) throw new SetupError(400, 'invalid', `pick a video (${TEST_VIDEO_TYPES.join(' ')})`);
+      const tooBig = () => new SetupError(413, 'invalid', `the video is over ${TEST_VIDEO_MAX_BYTES / 1024 / 1024} MB: pick a shorter one`);
+      if (Number(req.headers['content-length'] ?? 0) > TEST_VIDEO_MAX_BYTES) throw tooBig();
+      stopTest(id);
+      mkdirSync(ctx.testVideos!.dir, { recursive: true });
+      const file = fileFor(id, ext);
+      let size = 0;
+      const count = new Transform({
+        transform(chunk: Buffer, _enc, done) {
+          size += chunk.length;
+          done(size > TEST_VIDEO_MAX_BYTES ? tooBig() : null, chunk);
+        },
+      });
+      try { await pipeline(req, count, createWriteStream(file)); } catch (e) {
+        rmSync(file, { force: true });
+        throw e instanceof SetupError ? e : new SetupError(400, 'invalid', 'the video did not arrive whole: try again');
+      }
+      if (!size) { rmSync(file, { force: true }); throw new SetupError(400, 'invalid', 'the video is empty'); }
+      ctx.dev!.set(id, file);
+      testing.set(id, name);
+      testChanged();
+      return testState();
+    },
+
+    /** TEMPORARY: the camera goes back to its own stream. */
+    async cvTestVideoStop(body: { ownerPin?: unknown; cameraId?: unknown }) {
+      await owner(body.ownerPin);
+      stopTest(await testCamera(body.cameraId));
+      testChanged();
+      return testState();
+    },
+
+    /** TEMPORARY: which cameras play a test video now. */
+    async cvTestVideos(body: { ownerPin?: unknown }) {
+      await owner(body.ownerPin);
+      return testState();
+    },
+
+    /** The camera list: where each one is (an event) and its login (kept here, encrypted). */
+    async cvCameras(body: { ownerPin?: unknown; cameras?: unknown }) {
+      const actor = await owner(body.ownerPin);
+      if (!Array.isArray(body.cameras)) throw new SetupError(400, 'invalid', 'no cameras');
+      const list = body.cameras.filter((c): c is Record<string, unknown> => typeof c === 'object' && c !== null);
+      const events = await record(actor, { type: 'vision.cameras_set', cameras: list.map(cameraOf) });
+      if (ctx.secrets) {
+        for (const c of list) {
+          const user = text(c.user, 80);
+          const password = typeof c.password === 'string' && c.password ? c.password.slice(0, 200) : undefined;
+          // A second lens of a dual-lens camera shares the first one's login (SCRUM-180).
+          const twin = typeof c.loginFrom === 'string' && !password ? ctx.secrets.get(text(c.loginFrom, 64)) : null;
+          if (twin && (!user || user === twin.user)) ctx.secrets.set(text(c.id, 64), twin);
+          else if (user || password) ctx.secrets.set(text(c.id, 64), { user, password });
+        }
+        ctx.secrets.keepOnly(list.map((c) => text(c.id, 64)));
+      }
+      views.stop(); // where a view points, or its login, may have changed
+      return { events, logins: ctx.secrets?.summary() ?? {} };
+    },
+
+    async cvTables(body: { ownerPin?: unknown; tables?: unknown }) {
+      const actor = await owner(body.ownerPin);
+      return { events: await record(actor, { type: 'table.layout_set', tables: body.tables }) };
+    },
+
+    async cvZones(body: { ownerPin?: unknown; cameraId?: unknown; zones?: unknown }) {
+      const actor = await owner(body.ownerPin);
+      return { events: await record(actor, { type: 'vision.zones_set', cameraId: body.cameraId, zones: body.zones }) };
+    },
+
+    /** On or off: all the owner sets (the table rules and CPU limit are fixed, tables.ts); `checkTableEvent` checks it. */
+    async cvSettings(body: { ownerPin?: unknown; mode?: unknown }) {
+      const actor = await owner(body.ownerPin);
+      return { events: await record(actor, { type: 'vision.settings_set', mode: body.mode }) };
+    },
+
+    /**
+     * Test data (freshStart.ts): what happened before `before` (ms) was testing and no longer counts;
+     * 0 puts it all back (the Undo). Setup (menu, recipes, suppliers, warehouses, cameras) always stays.
+     */
+    async startFresh(body: { ownerPin?: unknown; before?: unknown }) {
+      const actor = await owner(body.ownerPin);
+      const before = body.before;
+      if (typeof before !== 'number' || !Number.isSafeInteger(before) || before < 0) throw new SetupError(400, 'invalid', 'pick a time');
+      if (before > now()) throw new SetupError(400, 'invalid', 'that time has not come yet');
+      return { events: await record(actor, { type: 'shop.started_fresh', before }) };
+    },
+
+    /** The owner's line on the bill (SCRUM-256, billExtras.ts); '' takes it off. */
+    async billLine(body: { ownerPin?: unknown; text?: unknown }) {
+      const actor = await owner(body.ownerPin);
+      const text = typeof body.text === 'string' ? body.text.trim() : body.text;
+      const why = checkBillLine(text);
+      if (why) throw new SetupError(400, 'invalid', why);
+      return { events: await record(actor, { type: 'shop.bill_line_set', text }) };
+    },
+
+    /** #unlock (modules.ts): which modules are on. The shop PC only (the setup router); it changes nothing. */
+    async modules() {
+      const s = requireShop();
+      const events = await everything(s.id);
+      const state = modulesFromEvents(events);
+      return { shopId: s.id, modules: MODULES.map((id) => ({ id, on: state[id], since: lastChange(events, id)?.at ?? null })) };
+    },
+
+    /**
+     * The developers' password turns a module on or off (no owner's PIN: the password is the authority).
+     * Wrong tries are slowed down like PINs. Recorded as the developers, past mayRecord (no person may).
+     */
+    async unlockModule(body: { password?: unknown; module?: unknown; on?: unknown }) {
+      const s = requireShop();
+      if (!ctx.ingest) throw new SetupError(409, 'not_ready', 'no event store here');
+      if (!isModuleId(body.module) || typeof body.on !== 'boolean') throw new SetupError(400, 'invalid', 'which module, on or off?');
+      if (moduleWrong.until > now()) throw new SetupError(429, 'too_many', 'too many wrong passwords: wait a moment');
+      if (!(await modulePasswordMatches(body.password, ctx.modulePassword))) {
+        moduleWrong.count += 1;
+        if (moduleWrong.count >= 5) { moduleWrong.count = 0; moduleWrong.until = now() + 30_000; }
+        throw new SetupError(401, 'wrong_pin', "that is not the developers' password");
+      }
+      moduleWrong.count = 0;
+      const event = {
+        id: randomUUID(), shopId: s.id, at: now(), actor: DEVELOPERS, orderNumber: 0,
+        type: 'shop.module_set', module: body.module, on: body.on, codeId: randomBytes(8).toString('hex'),
+      } as unknown as SyncEvent;
+      const checked = validatePush({ events: [event] }, s.id);
+      if ('reason' in checked) throw new SetupError(400, 'invalid', checked.reason);
+      await ctx.ingest(await setupDevice(s.id), [event]);
+      return { events: [event], module: body.module, on: body.on };
+    },
+
     /** Last step: there must be an owner, or nobody could ever change the shop again. */
     async finish() {
       const s = requireShop();
@@ -391,3 +673,7 @@ export function setupApi(ctx: SetupContext) {
   };
 }
 export type SetupApi = ReturnType<typeof setupApi>;
+
+/** TEMPORARY test videos: what may be picked, and how big. */
+export const TEST_VIDEO_TYPES = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm'];
+export const TEST_VIDEO_MAX_BYTES = 200 * 1024 * 1024;

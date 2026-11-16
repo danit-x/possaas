@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { isCloudSite, ownerToken } from './pairing.ts';
+import { isCloudSite, managerToken, ownerToken } from './pairing.ts';
 
 /**
  * The owner's phone app (cloud site only): its install description, carrying this
@@ -10,15 +10,18 @@ export const setUpOwnerApp = (): void => {
   if (!isCloudSite()) return;
   const link = document.createElement('link');
   link.rel = 'manifest';
+  // A manager's phone installs the Manager app (SCRUM-94); otherwise the Owner app.
+  const manager = managerToken();
   const key = ownerToken();
-  link.href = key ? `/owner.webmanifest?k=${encodeURIComponent(key)}` : '/owner.webmanifest';
+  link.href = manager ? `/manager.webmanifest?k=${encodeURIComponent(manager)}`
+    : key ? `/owner.webmanifest?k=${encodeURIComponent(key)}` : '/owner.webmanifest';
   document.head.appendChild(link);
   if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js').catch(() => {});
 };
 
 interface InstallPrompt extends Event { prompt(): Promise<void> }
 
-const standalone = () =>
+export const standalone = () =>
   window.matchMedia?.('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
 export const isAppleInstallDevice = (userAgent: string, platform: string, maxTouchPoints: number): boolean =>
   /iPhone|iPad|iPod/.test(userAgent) || (platform === 'MacIntel' && maxTouchPoints > 1);

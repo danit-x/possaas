@@ -1,6 +1,8 @@
-import { SAMPLE_SECTIONS, itemById, menuSections, sectionOf } from './menu.ts';
+import { cookMinutesOf, itemById } from './menu.ts';
+import { PRINTED_COOK_MINUTES } from './sections.ts';
+import type { PlatformMark } from './platforms.ts';
 import type { SyncEvent } from './sync.ts';
-import type { Category, OnlineMark, OrderLine, Station } from './types.ts';
+import type { Category, OnlineMark, OrderLine } from './types.ts';
 import { leaveOutsOf, lineItemName, secondHalf } from './halves.ts';
 
 /**
@@ -14,8 +16,10 @@ export interface KitchenLine extends OrderLine {
   /** What this line was before the latest manager change. */
   was?: OrderLine;
   cancelled?: boolean;
-  /** Portions handed over at a pay-first counter (the serving list); absent = none. */
-  served?: number;
+  /** Thrown away and being made again (the kitchen's Remake, SCRUM-177): how many times. */
+  remade?: number;
+  /** The customer changed it and the kitchen throws this one away: the new one is on its own ticket (SCRUM-242). */
+  binned?: true;
 }
 
 /**
@@ -33,34 +37,64 @@ export interface KitchenTicket {
   addOn?: boolean;
   /** An online order: the customer comes to collect it by `pickupBy`. */
   online?: OnlineMark;
-  /** A shop with two kitchens: the one that makes it. Absent = the only kitchen. */
-  station?: Station;
+  /** A delivery app's order (SCRUM-195): its rider collects it; the code to match him by. */
+  platform?: PlatformMark;
   /** A manager changed or cancelled something on it. */
   changed?: boolean;
+  /** Made again because the customer changed their mind (SCRUM-242): the old one is struck on its own ticket. */
+  remake?: true;
   /** Last arrival or change. The ticket flashes until `seenAt` catches up. */
   alertAt: number;
   seenAt?: number;
+  /** The cook tapped Start: from here to `doneAt` is the cooking time. */
+  startedAt?: number;
   doneAt?: number;
+  /**
+   * A prep ticket (SCRUM-136): a semi-processed item to make, sent from low stock, not a
+   * customer's order (number 0, no lines). Done is the batch made (inventory.ts).
+   */
+  prep?: { prepId: string; name: string; qty: number; unit: string };
 }
 
-export type NewTicket = Pick<KitchenTicket, 'id' | 'shopId' | 'number' | 'lines' | 'firedAt' | 'addOn' | 'online' | 'station'>;
+export type NewTicket = Pick<KitchenTicket, 'id' | 'shopId' | 'number' | 'lines' | 'firedAt' | 'addOn' | 'online' | 'platform' | 'prep' | 'remake'>;
 
 export type Urgency = 'ok' | 'warn' | 'bad';
 
-/** The sample menu's cook times (the sample pizza shop's owner, 2026-10-12). A shop sets its own per section. */
-export const COOK_MINUTES: Record<Category, number> = Object.fromEntries(SAMPLE_SECTIONS.map((x) => [x.id, x.cookMinutes]));
-/** An item whose section is unknown (should not happen): a pizza's time. */
-const DEFAULT_COOK_MINUTES = 10;
-const cookMinutesOf = (itemId: string): number => sectionOf(itemById(itemId).category)?.cookMinutes ?? DEFAULT_COOK_MINUTES;
+/** How long each kind of item takes, from order to ready (the owner, 2026-10-12). His own sections carry theirs (cookMinutesOf). */
+export const COOK_MINUTES: Readonly<Record<string, number>> = PRINTED_COOK_MINUTES;
 /** Late = past the cook time; very late = past one and a half times it. */
 export const VERY_LATE = 1.5;
+/**
+ * Food waiting to be collected (SCRUM-240): amber once it has waited this long (going cold),
+ * red at READY_BAD_MS (nobody came for it).
+ */
+export const READY_WARN_MS = 10 * 60_000;
+export const READY_BAD_MS = 20 * 60_000;
+
+/**
+ * When the kitchen finished an order: its last Done, once nothing of it is still open. null while
+ * something is still to make, or when its tickets are already pruned (made over an hour ago).
+ */
+export const readySince = (tickets: KitchenTicket[], number: number): number | null => {
+  const mine = tickets.filter((t) => t.number === number && !t.prep);
+  if (!mine.length || mine.some((t) => t.doneAt === undefined)) return null;
+  return Math.max(...mine.map((t) => t.doneAt as number));
+};
+
+/** How a ready order's wait looks; an order whose Done is too old to know waited long. */
+export const readyUrgency = (since: number | null, now: number): Urgency => {
+  if (since === null) return 'bad';
+  const waited = now - since;
+  return waited >= READY_BAD_MS ? 'bad' : waited >= READY_WARN_MS ? 'warn' : 'ok';
+};
+
 /** Done tickets are kept this long so a mistaken "Done" can be undone, then dropped. */
 export const KEEP_DONE_MS = 60 * 60_000;
 
 /** A ticket should be ready after its slowest item (a cancelled line no longer counts). */
 export const cookTimeMs = (t: Pick<KitchenTicket, 'lines'>): number => {
   const live = t.lines.filter((l) => !l.cancelled);
-  return Math.max(0, ...live.map((l) => cookMinutesOf(l.itemId))) * 60_000 || DEFAULT_COOK_MINUTES * 60_000;
+  return Math.max(0, ...live.map((l) => cookMinutesOf(itemById(l.itemId).category) ?? 0)) * 60_000 || COOK_MINUTES.pizza * 60_000;
 };
 
 /** Amber once a ticket passes its cook time, red at one and a half times it. */
@@ -72,29 +106,6 @@ export const elapsedLabel = (elapsedMs: number): string => {
   const s = Math.max(0, Math.floor(elapsedMs / 1000));
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 };
-
-/** The kitchen that makes an item: its section's. Absent = the only kitchen. */
-export const stationOf = (itemId: string): Station | undefined => sectionOf(itemById(itemId).category)?.station;
-
-/**
- * A shop with two kitchens sends each kitchen its own ticket, so each one's Done is its own.
- * Lines whose section names no kitchen go to the left one (the shop's first). A shop with one
- * kitchen gets one group with no station, exactly as before.
- */
-export const splitByStation = <L extends Pick<OrderLine, 'itemId'>>(lines: readonly L[]): { station?: Station; lines: L[] }[] => {
-  const of = lines.map((l) => stationOf(l.itemId));
-  if (!of.some(Boolean)) return lines.length ? [{ lines: [...lines] }] : [];
-  return (['left', 'right'] as const)
-    .map((station) => ({ station, lines: lines.filter((_, i) => (of[i] ?? 'left') === station) }))
-    .filter((g) => g.lines.length > 0);
-};
-
-/** The shop has a right kitchen as well as the left one: a section of its menu is made there. */
-export const twoKitchens = (): boolean => menuSections().some((x) => x.station === 'right');
-
-/** A kitchen screen set to one kitchen shows that kitchen's tickets; unset, it shows them all. */
-export const forStation = (tickets: KitchenTicket[], station: Station | null): KitchenTicket[] =>
-  station ? tickets.filter((t) => (t.station ?? 'left') === station) : tickets;
 
 /** Adds a ticket, alerting the kitchen. Re-firing the same id replaces it (idempotent). */
 export const fire = (tickets: KitchenTicket[], ticket: NewTicket): KitchenTicket[] => [
@@ -150,6 +161,17 @@ export const ack = (tickets: KitchenTicket[], id: string, at: number): KitchenTi
 
 export const needsAttention = (t: KitchenTicket): boolean => t.seenAt === undefined || t.seenAt < t.alertAt;
 
+/** Start also counts as seen. Starting twice keeps the first time. */
+export const start = (tickets: KitchenTicket[], id: string, at: number): KitchenTicket[] =>
+  tickets.map((t) => (t.id === id && t.startedAt === undefined ? { ...t, startedAt: at, seenAt: Math.max(at, t.alertAt) } : t));
+
+export const unstart = (tickets: KitchenTicket[], id: string): KitchenTicket[] =>
+  tickets.map((t) => {
+    if (t.id !== id) return t;
+    const { startedAt: _started, ...waiting } = t;
+    return waiting;
+  });
+
 /** Done also counts as seen. */
 export const bump = (tickets: KitchenTicket[], id: string, at: number): KitchenTicket[] =>
   tickets.map((t) => (t.id === id && t.doneAt === undefined ? { ...t, doneAt: at, seenAt: Math.max(at, t.alertAt) } : t));
@@ -161,43 +183,34 @@ export const unbump = (tickets: KitchenTicket[], id: string): KitchenTicket[] =>
     return open;
   });
 
-/** Portions of a line still to hand over; a cancelled line has none. */
-export const toServe = (l: KitchenLine): number => (l.cancelled ? 0 : Math.max(0, l.qty - (l.served ?? 0)));
-
-/**
- * A pay-first counter hands food over one portion at a time. The ticket is
- * done once nothing is left to serve (Done also counts as seen); taking a
- * portion back reopens it.
- */
-export const serve = (tickets: KitchenTicket[], id: string, lineId: string, at: number): KitchenTicket[] =>
-  tickets.map((t) => {
-    if (t.id !== id || !t.lines.some((l) => l.id === lineId && toServe(l) > 0)) return t;
-    const lines = t.lines.map((l) => (l.id === lineId ? { ...l, served: (l.served ?? 0) + 1 } : l));
-    const next = { ...t, lines };
-    return lines.some((l) => toServe(l) > 0) || t.doneAt !== undefined ? next : { ...next, doneAt: at, seenAt: Math.max(at, t.alertAt) };
-  });
-
-export const unserve = (tickets: KitchenTicket[], id: string, lineId: string): KitchenTicket[] =>
-  tickets.map((t) => {
-    if (t.id !== id || !t.lines.some((l) => l.id === lineId && (l.served ?? 0) > 0)) return t;
-    const { doneAt: _done, ...open } = t;
-    return { ...open, lines: t.lines.map((l) => (l.id === lineId ? { ...l, served: (l.served ?? 0) - 1 } : l)) };
-  });
-
-/** What to make next: open tickets, oldest first. */
+/** What to make next: open tickets, oldest first; customers' orders before prep. */
 export const queue = (tickets: KitchenTicket[]): KitchenTicket[] =>
   tickets
     .filter((t) => t.doneAt === undefined)
-    .sort((a, b) => a.firedAt - b.firedAt || a.number - b.number);
+    .sort((a, b) => Number(Boolean(a.prep)) - Number(Boolean(b.prep)) || a.firedAt - b.firedAt || a.number - b.number);
 
 /**
- * Kitchen state of a sent order, for the register: cooking while any of its
- * tickets is still on the kitchen screen, done once all are bumped. (Done
- * tickets are pruned after an hour, so "no open ticket" also means done.)
+ * Kitchen state of a sent order, for the register: waiting until the cook taps
+ * Start, cooking once any of its open tickets is started, done once all are
+ * bumped. (Done tickets are pruned after an hour, so "no open ticket" also means done.)
  */
-export type CookState = 'cooking' | 'done';
-export const cookState = (tickets: KitchenTicket[], number: number): CookState =>
-  tickets.some((t) => t.number === number && t.doneAt === undefined) ? 'cooking' : 'done';
+export type CookState = 'waiting' | 'cooking' | 'done';
+export const cookState = (tickets: KitchenTicket[], number: number): CookState => {
+  const open = tickets.filter((t) => t.number === number && t.doneAt === undefined);
+  if (open.length === 0) return 'done';
+  return open.some((t) => t.startedAt !== undefined) ? 'cooking' : 'waiting';
+};
+
+/**
+ * One sent line, for the counter changing it: cooking once its ticket is started, done once it is
+ * bumped. Either way the food is made (or being made): changing it now wastes what it used.
+ * A line on no live ticket (pruned after an hour) counts as done.
+ */
+export const lineCookState = (tickets: KitchenTicket[], lineId: string): CookState => {
+  const t = tickets.find((x) => x.lines.some((l) => l.id === lineId));
+  if (!t || t.doneAt !== undefined) return 'done';
+  return t.startedAt !== undefined ? 'cooking' : 'waiting';
+};
 
 export const prune = (tickets: KitchenTicket[], now: number): KitchenTicket[] =>
   tickets.filter((t) => t.doneAt === undefined || now - t.doneAt < KEEP_DONE_MS);
@@ -215,8 +228,14 @@ export interface LineView {
 export interface TicketLine extends LineView {
   key: string;
   status: 'ok' | 'changed' | 'cancelled';
+  /** Cancelled because it is thrown away and made again on a new ticket (SCRUM-242). */
+  binned?: true;
   /** For a changed line: the old version, shown struck through beside the new one. */
   was?: LineView;
+  /** Remade this many times (SCRUM-177). */
+  remade?: number;
+  /** A dish in a combo box (SCRUM-231): the box, so the screen can bracket what goes out in one bag. */
+  box?: { id: string; name: string; first: boolean };
 }
 
 const view = (l: OrderLine): LineView => {
@@ -235,62 +254,15 @@ const view = (l: OrderLine): LineView => {
 };
 
 export const ticketLines = (t: KitchenTicket): TicketLine[] =>
-  t.lines.map((l) => ({
+  t.lines.map((l, i) => ({
     key: l.id,
+    ...(l.box ? { box: { id: l.box.id, name: l.box.name, first: t.lines.findIndex((x) => x.box?.id === l.box!.id) === i } } : {}),
     ...view(l),
     status: l.cancelled ? 'cancelled' : l.was ? 'changed' : 'ok',
+    ...(l.binned && l.cancelled ? { binned: true as const } : {}),
     ...(l.was && !l.cancelled ? { was: view(l.was) } : {}),
+    ...(l.remade ? { remade: l.remade } : {}),
   }));
-
-/**
- * The serving list of a pay-first counter: everything paid for and not yet
- * handed over, grouped by what goes on the plate ("Large chicken rice x 8"),
- * longest wait first. Serving staff never give more of a meal than was paid.
- */
-export interface ServingRow extends Omit<LineView, 'qty'> {
-  key: string;
-  /** Portions still to hand over. */
-  count: number;
-  oldestAt: number;
-  /** The slowest cook time among them, for the urgency colour. */
-  cookMs: number;
-  /** The portion one tap serves: the oldest one. */
-  next: { ticketId: string; lineId: string; number: number };
-  /** Every ticket waiting on this row (an arrival or change flashes the row). */
-  ticketIds: string[];
-}
-
-export const servingRows = (tickets: KitchenTicket[]): ServingRow[] => {
-  const rows = new Map<string, ServingRow>();
-  for (const t of queue(tickets)) {
-    for (const l of t.lines) {
-      const left = toServe(l);
-      if (left === 0) continue;
-      const { qty: _qty, ...v } = view(l);
-      const key = [v.name, v.detail, v.outs.join(','), v.note ?? ''].join('|');
-      const row = rows.get(key);
-      const cookMs = cookTimeMs({ lines: [l] });
-      if (row) {
-        row.count += left;
-        row.cookMs = Math.max(row.cookMs, cookMs);
-        if (!row.ticketIds.includes(t.id)) row.ticketIds.push(t.id);
-      } else {
-        rows.set(key, { ...v, key, count: left, oldestAt: t.firedAt, cookMs, next: { ticketId: t.id, lineId: l.id, number: t.number }, ticketIds: [t.id] });
-      }
-    }
-  }
-  return [...rows.values()];
-};
-
-/** An open ticket with nothing left to hand over. */
-export const nothingToServe = (t: KitchenTicket): boolean => t.lines.every((l) => toServe(l) === 0);
-
-/**
- * A manager cancelled everything left on a paid order: it is no longer on the
- * serving list, but the counter must see that once (a plate may be ready) and
- * tap it away.
- */
-export const cancelledToServe = (tickets: KitchenTicket[]): KitchenTicket[] => queue(tickets).filter(nothingToServe);
 
 /** Events older than this cannot hold a ticket worth showing; skipping them keeps the fold cheap. */
 export const TICKET_HORIZON_MS = 24 * 60 * 60_000;
@@ -301,36 +273,191 @@ export const TICKET_HORIZON_MS = 24 * 60 * 60_000;
  * so nothing ever has to be merged. A manager Undo restores the line exactly
  * as the kitchen had it before the change it undoes.
  */
-export const ticketsFromEvents = (events: readonly SyncEvent[], now: number): KitchenTicket[] => {
+export const ticketsFromEvents = (events: readonly SyncEvent[], now: number): KitchenTicket[] =>
+  prune(foldTickets(events.filter((e) => now - e.at <= TICKET_HORIZON_MS)), now);
+
+/** A dish as the bin and the kitchen count it: item and size. */
+export const dishKey = (itemId: string, size?: string): string => `${itemId}:${size ?? ''}`;
+
+/**
+ * Dishes the kitchen has made since `since` (SCRUM-183): lines on customers' tickets it
+ * started or finished, cancelled lines left out. Pizzas are made to order, so only these exist.
+ */
+export const dishesMade = (events: readonly SyncEvent[], since: number): Map<string, number> => {
+  const made = new Map<string, number>();
+  for (const t of foldTickets(events.filter((e) => e.at >= since))) {
+    if (t.prep || (t.startedAt === undefined && t.doneAt === undefined)) continue;
+    for (const l of t.lines) if (!l.cancelled) made.set(dishKey(l.itemId, l.size), (made.get(dishKey(l.itemId, l.size)) ?? 0) + l.qty);
+  }
+  return made;
+};
+
+/** Every ticket the events describe, done or not, however old. */
+const foldTickets = (events: readonly SyncEvent[]): KitchenTicket[] => {
   let t: KitchenTicket[] = [];
   const before = new Map<string, KitchenLine>(); // change event id → the kitchen's line before it
+  const recalled = new Set<string>(); // prep tickets taken back
+  const remakes = new Map<string, { ticketId: string; lineId: string }>(); // waste id → the line remade
+  /** A line's remake count, up or down (an Undo). */
+  const remake = (ticketId: string, lineId: string, by: number) => {
+    t = t.map((x) => (x.id !== ticketId ? x : {
+      ...x, lines: x.lines.map((l) => (l.id !== lineId ? l : { ...l, remade: Math.max(0, (l.remade ?? 0) + by) })),
+    }));
+  };
+  const held = new Map<string, Extract<SyncEvent, { type: 'order.sent' }>>(); // paid first: the kitchen waits for Send
+  /** A change to a held line (paid first, not yet sent): the kitchen gets the line as it is now, at Send. */
+  const heldBefore = new Map<string, { ticketId: string; line: OrderLine; index: number }>(); // change event id → the held line before it
+  const amendHeld = (e: { id: string; lineId: string; type: string }, after: OrderLine | null): boolean => {
+    for (const [ticketId, h] of held) {
+      const index = h.lines.findIndex((l) => l.id === e.lineId);
+      if (index < 0) continue;
+      heldBefore.set(e.id, { ticketId, line: h.lines[index], index });
+      const lines = after ? h.lines.map((l, i) => (i === index ? { ...after, id: e.lineId, sent: true } : l)) : h.lines.filter((_, i) => i !== index);
+      held.set(ticketId, { ...h, lines });
+      return true;
+    }
+    return false;
+  };
+  /** Made again on a new ticket (SCRUM-242): what its Undo takes back. */
+  const remadeAs = new Map<string, { ticketId: string; binnedId: string; was: KitchenLine }>(); // change event id → it
+  const ticketOf = (e: Extract<SyncEvent, { type: 'order.sent' }>, at: number): NewTicket => ({
+    id: e.ticketId, shopId: e.shopId, number: e.orderNumber, lines: e.lines, firedAt: at, addOn: e.addOn,
+    ...(e.online ? { online: e.online } : {}), ...(e.platform ? { platform: e.platform } : {}),
+  });
   for (const e of events) {
-    if (now - e.at > TICKET_HORIZON_MS) continue;
     switch (e.type) {
       case 'order.sent':
-        t = fire(t, { id: e.ticketId, shopId: e.shopId, number: e.orderNumber, lines: e.lines, firedAt: e.at, addOn: e.addOn, ...(e.online ? { online: e.online } : {}), ...(e.station ? { station: e.station } : {}) });
+        if (e.held) held.set(e.ticketId, e); else t = fire(t, ticketOf(e, e.at));
         break;
-      case 'order.send_undone': t = recall(t, e.ticketId); break;
+      // Its time starts at Send: the kitchen's clock is about cooking, not about when it was paid.
+      case 'order.released': {
+        const h = held.get(e.ticketId);
+        if (h) { held.delete(e.ticketId); t = fire(t, ticketOf(h, e.at)); }
+        break;
+      }
+      case 'order.send_undone': held.delete(e.ticketId); t = recall(t, e.ticketId); break;
+      // A batch held for what it is made from reaches the kitchen when it is released (production.ts).
+      case 'prep.ordered':
+        if (e.waitFor?.length) break;
+        t = fire(t, { id: e.ticketId, shopId: e.shopId, number: 0, lines: [], firedAt: e.at, prep: { prepId: e.prepId, name: e.name, qty: e.qty, unit: e.unit } });
+        break;
+      case 'prep.released':
+        // Once, and never for a batch taken back before it went.
+        if (recalled.has(e.ticketId) || t.some((x) => x.id === e.ticketId)) break;
+        t = fire(t, { id: e.ticketId, shopId: e.shopId, number: 0, lines: [], firedAt: e.at, prep: { prepId: e.prepId, name: e.name, qty: e.qty, unit: e.unit } });
+        break;
+      case 'prep.order_undone': recalled.add(e.ticketId); t = recall(t, e.ticketId); break;
       case 'order.item_changed':
       case 'order.item_cancelled': {
+        if (amendHeld(e, e.type === 'order.item_changed' ? e.after : null)) break; // paid first, not sent yet
         const was = kitchenLine(t, e.lineId);
         if (!was) break; // not sent: the kitchen never saw it
         before.set(e.id, was);
+        if (e.type === 'order.item_changed' && e.remake) {
+          // Thrown away and made again: struck on its ticket, the new one on a ticket of its own.
+          const old = t.find((x) => x.lines.some((l) => l.id === e.lineId))!;
+          const binnedId = `${e.lineId}~${e.id}`;
+          const ticketId = `remake-${e.id}`;
+          t = t.map((x) => (x !== old ? x : {
+            ...x, changed: true, alertAt: e.at,
+            lines: x.lines.map((l): KitchenLine => (l.id === e.lineId ? { ...l, id: binnedId, cancelled: true, binned: true } : l)),
+          }));
+          t = fire(t, {
+            id: ticketId, shopId: e.shopId, number: e.orderNumber, lines: [{ ...e.after, id: e.lineId, sent: true }], firedAt: e.at,
+            addOn: true, remake: true, ...(old.online ? { online: old.online } : {}), ...(old.platform ? { platform: old.platform } : {}),
+          });
+          remadeAs.set(e.id, { ticketId, binnedId, was });
+          break;
+        }
         t = amendLine(t, e.lineId, e.type === 'order.item_changed' ? e.after : null, e.at);
         break;
       }
       case 'order.change_undone': {
+        const h = heldBefore.get(e.undoneEventId);
+        if (h) {
+          const sent = held.get(h.ticketId);
+          if (sent) {
+            const lines = sent.lines.some((l) => l.id === h.line.id)
+              ? sent.lines.map((l) => (l.id === h.line.id ? h.line : l))
+              : [...sent.lines.slice(0, h.index), h.line, ...sent.lines.slice(h.index)];
+            held.set(h.ticketId, { ...sent, lines });
+          }
+          break;
+        }
+        const r = remadeAs.get(e.undoneEventId);
+        if (r) {
+          remadeAs.delete(e.undoneEventId);
+          t = recall(t, r.ticketId);
+          t = t.map((x) => (x.lines.some((l) => l.id === r.binnedId)
+            ? { ...x, lines: x.lines.map((l) => (l.id === r.binnedId ? { ...r.was } : l)) } : x));
+          t = restoreLine(t, r.was, e.at);
+          break;
+        }
         const was = before.get(e.undoneEventId);
         if (was) t = restoreLine(t, was, e.at);
         break;
       }
       case 'kitchen.seen': t = ack(t, e.ticketId, e.at); break;
+      case 'kitchen.started': t = start(t, e.ticketId, e.at); break;
+      case 'kitchen.unstarted': t = unstart(t, e.ticketId); break;
       case 'kitchen.bumped': t = bump(t, e.ticketId, e.at); break;
       case 'kitchen.unbumped': t = unbump(t, e.ticketId); break;
-      case 'kitchen.served': t = serve(t, e.ticketId, e.lineId, e.at); break;
-      case 'kitchen.unserved': t = unserve(t, e.ticketId, e.lineId); break;
+      // The kitchen's Remake (SCRUM-177): the line stays to make again, marked so.
+      case 'stock.wasted':
+        if (e.ticketId && e.lineId) { remakes.set(e.id, { ticketId: e.ticketId, lineId: e.lineId }); remake(e.ticketId, e.lineId, 1); }
+        break;
+      case 'stock.waste_undone': {
+        const r = remakes.get(e.wasteId);
+        if (r) { remakes.delete(e.wasteId); remake(r.ticketId, r.lineId, -1); }
+        break;
+      }
       default: break; // payments and price changes do not concern the kitchen
     }
   }
-  return prune(t, now);
+  return t;
 };
+
+/**
+ * One cooked ticket, for later analysis (cook times per item, per hour, per cook load).
+ * waitMs: sent → Start (queue time); cookMs: Start → Done; totalMs: sent → Done.
+ * A ticket marked Done without Start has no start or cook time.
+ */
+export interface CookRecord {
+  ticketId: string;
+  orderNumber: number;
+  sentAt: number;
+  startedAt: number | null;
+  doneAt: number;
+  waitMs: number | null;
+  cookMs: number | null;
+  totalMs: number;
+  /** What was cooked (cancelled lines left out), so times can be split by item and category. */
+  items: { itemId: string; category: Category; size?: string; qty: number }[];
+}
+
+/**
+ * Every finished ticket's cooking times, folded from the event log like the tickets
+ * themselves, so Undo (unstarted / unbumped) and recalled sends are already applied.
+ * Not limited to a day: pass the history to analyse.
+ */
+export const cookLog = (events: readonly SyncEvent[]): CookRecord[] =>
+  foldTickets(events)
+    .filter((t) => t.doneAt !== undefined && !t.prep)
+    .map((t): CookRecord => {
+      const doneAt = t.doneAt as number;
+      const startedAt = t.startedAt !== undefined && t.startedAt <= doneAt ? t.startedAt : null;
+      return {
+        ticketId: t.id,
+        orderNumber: t.number,
+        sentAt: t.firedAt,
+        startedAt,
+        doneAt,
+        waitMs: startedAt === null ? null : startedAt - t.firedAt,
+        cookMs: startedAt === null ? null : doneAt - startedAt,
+        totalMs: doneAt - t.firedAt,
+        items: t.lines.filter((l) => !l.cancelled).map((l) => ({
+          itemId: l.itemId, category: itemById(l.itemId).category, ...(l.size ? { size: l.size } : {}), qty: l.qty,
+        })),
+      };
+    })
+    .sort((a, b) => a.doneAt - b.doneAt);

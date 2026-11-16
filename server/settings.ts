@@ -11,24 +11,27 @@ export interface ShopSettings {
   shopId?: string;
   shopName?: string;
   place?: string;
-  /** The receipt's last line; absent = DEFAULT_FOOTER, '' = none. */
-  receiptFooter?: string;
   /** Windows printer name; absent = no printer yet (dry run). */
   printer?: string;
-  /** Receipt paper width in mm; absent = 80. */
-  paperWidth?: 58 | 80;
-  /** Customers pay before the order goes to the kitchen; absent = pay first (Bata Kade, 2026-10-30); false = eat first, pay after. */
-  payFirst?: boolean;
-  /** The shop's logo beside its name in every screen's corner: a small image as a data: URL; absent = the shop's own (Bata Kade's); '' = none. */
-  logo?: string;
   setupDone?: boolean;
   /** The cloud copy, once the wizard connected it with the shop code. */
   cloudUrl?: string;
   cloudToken?: string;
   /** This shop's own secret with the cloud: only this server can connect the shop again. */
   cloudSecret?: string;
-  /** The counter is taking online orders. */
+  /** The counter is taking online orders from cheesybeez.com. */
   onlineOpen?: boolean;
+  /** The manager phones' inbox in the cloud (SCRUM-94): how far this shop has taken it, and the local device it files under. */
+  managerInboxSeq?: number;
+  /** The local device the CRM's own campaign records are filed under (server/crm/jobs.ts). */
+  crmDevice?: string;
+  managerInboxDevice?: string;
+  /** The owner activated CV on #cameras (SCRUM-169): the CV pack is kept installed. */
+  cvActive?: boolean;
+  /** The local device the owner's camera setup on #cameras is filed under (SCRUM-171). */
+  cvSetupDevice?: string;
+  /** The local device the camera worker's events are filed under (SCRUM-170). */
+  cvWorkerDevice?: string;
 }
 
 export function settingsFile(file: string) {

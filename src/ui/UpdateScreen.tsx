@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { PRODUCT_NAME } from '../domain/brand.ts';
 import { nextCounterUpdate, type CounterUpdate, type HealthSeen } from '../domain/updating.ts';
 import { isCloudSite } from '../services/pairing.ts';
+import { PRODUCT_NAME } from '../shop/identity.ts';
 
 /**
- * Serves whoever walks up to the counter (or looks at the kitchen screen) while Lume POS updates
+ * Serves whoever walks up to the counter (or looks at the kitchen screen) while CheesyBeez updates
  * itself: they already know the POS; the one thing they need is why it stopped answering and when
  * it is back. Downloading: a small notice, the counter still works. Installing, starting or going
  * back: the whole screen says so. The new version answering: the screens reload into it, then
@@ -18,7 +18,10 @@ const readUpdated = (): string | null => {
   try { const v = sessionStorage.getItem(UPDATED); sessionStorage.removeItem(UPDATED); return v; } catch { return null; }
 };
 
-export function UpdateScreen({ reload = () => location.reload(), idleMs = LOOK_IDLE_MS, activeMs = LOOK_ACTIVE_MS }: {
+/** One function for every render: a new one each time would restart the health check at once, in a loop. */
+const reloadPage = () => location.reload();
+
+export function UpdateScreen({ reload = reloadPage, idleMs = LOOK_IDLE_MS, activeMs = LOOK_ACTIVE_MS }: {
   reload?: () => void; idleMs?: number; activeMs?: number;
 }) {
   const [state, setState] = useState<CounterUpdate>({ kind: 'none' });
@@ -30,12 +33,17 @@ export function UpdateScreen({ reload = () => location.reload(), idleMs = LOOK_I
     let stop = false;
     let timer: ReturnType<typeof setTimeout>;
     let prev: CounterUpdate = { kind: 'none' };
+    let looking = false;
     const look = async () => {
+      if (looking) return;
+      looking = true;
+      clearTimeout(timer);
       let seen: HealthSeen;
       try {
         const r = await fetch('/api/v1/health', { cache: 'no-store', signal: AbortSignal.timeout(4_000) });
         seen = r.ok ? ((await r.json()) as Exclude<HealthSeen, 'unreachable'>) : 'unreachable';
       } catch { seen = 'unreachable'; }
+      looking = false;
       if (stop) return;
       if (seen !== 'unreachable' && seen.version && page.current === null) page.current = seen.version;
       prev = nextCounterUpdate(prev, seen, page.current);
@@ -48,8 +56,11 @@ export function UpdateScreen({ reload = () => location.reload(), idleMs = LOOK_I
       }
       timer = setTimeout(() => void look(), prev.kind === 'none' ? idleMs : activeMs);
     };
+    // A minimised or hidden window has its timers slowed right down: look again the moment it is back.
+    const back = () => { if (document.visibilityState === 'visible') void look(); };
+    document.addEventListener('visibilitychange', back);
     void look();
-    return () => { stop = true; clearTimeout(timer); };
+    return () => { stop = true; clearTimeout(timer); document.removeEventListener('visibilitychange', back); };
   }, [reload, idleMs, activeMs]);
 
   useEffect(() => {

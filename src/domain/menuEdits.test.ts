@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mayRecord } from './auth.ts';
-import { MENU, SAMPLE_SECTIONS, SAMPLE_START, itemById, menuItems, setMenuState } from './menu.ts';
-import { checkNewItem, checkOverride, checkSection, EMPTY_MENU_STATE, effectiveMenu, hoursLabel, menuStateFromEvents, nextMorning, sectionOpen, type NewItem } from './menuEdits.ts';
+import { MENU, itemById, menuItems, setMenuState } from './menu.ts';
+import { checkNewItem, checkOverride, EMPTY_MENU_STATE, effectiveMenu, menuStateFromEvents, nextMorning, type NewItem } from './menuEdits.ts';
 import { addLine, bareLine, emptyOrder, markSent } from './order.ts';
 import { orderTotal } from './order.ts';
 
@@ -19,7 +19,7 @@ test('the printed menu, then the owner\'s changes on top; the newest change wins
     set('seafood', {}, 5),
     { type: 'order.paid' },
   ]);
-  const menu = effectiveMenu(SAMPLE_START, state, 0);
+  const menu = effectiveMenu(MENU, state, 0);
   const m = menu.find((x) => x.id === 'margherita')!;
   assert.deepEqual(m.variants!.map((v) => v.price), [160000, 220000]);
   assert.equal(m.name.en, 'Margherita Classic');
@@ -40,39 +40,9 @@ test('sold out until the next morning, then back by itself', () => {
   assert.equal(new Date(until).getDate(), 14);
   assert.equal(new Date(nextMorning(new Date(2026, 9, 14, 3, 0).getTime())).getDate(), 14, 'after midnight: this morning');
   const state = menuStateFromEvents([soldOut('bbq-chicken', until)]);
-  assert.equal(effectiveMenu(SAMPLE_START, state, at).find((x) => x.id === 'bbq-chicken')!.soldOut, true);
-  assert.equal(effectiveMenu(SAMPLE_START, state, until + 1).find((x) => x.id === 'bbq-chicken')!.soldOut, undefined);
+  assert.equal(effectiveMenu(MENU, state, at).find((x) => x.id === 'bbq-chicken')!.soldOut, true);
+  assert.equal(effectiveMenu(MENU, state, until + 1).find((x) => x.id === 'bbq-chicken')!.soldOut, undefined);
   assert.deepEqual(menuStateFromEvents([soldOut('bbq-chicken', until, 1), soldOut('bbq-chicken', null, 2)]).soldOut, {});
-});
-
-test('a section with hours is sold only then; past midnight works; the owner gives both times', () => {
-  const at = (h: number, m = 0) => new Date(2026, 9, 30, h, m).getTime();
-  const morning = { hours: { from: 300, to: 660 } };
-  const night = { hours: { from: 1080, to: 300 } };
-  assert.equal(sectionOpen(morning, at(5)), true);
-  assert.equal(sectionOpen(morning, at(10, 59)), true);
-  assert.equal(sectionOpen(morning, at(11)), false, 'the stop time is the first minute it is not sold');
-  assert.equal(sectionOpen(night, at(17, 59)), false);
-  assert.equal(sectionOpen(night, at(22)), true);
-  assert.equal(sectionOpen(night, at(2)), true, 'after midnight: still tonight');
-  assert.equal(sectionOpen({}, at(3)), true, 'no hours: all day');
-  assert.equal(hoursLabel(night.hours), '6 pm to 5 am');
-  assert.equal(hoursLabel({ from: 390, to: 750 }), '6:30 am to 12:30 pm');
-  assert.equal(hoursLabel(undefined), 'All day');
-
-  const start = {
-    sections: [{ ...SAMPLE_SECTIONS[1], ...night }, ...SAMPLE_SECTIONS.filter((_, i) => i !== 1)],
-    items: MENU,
-  };
-  const burgers = (now: number) => effectiveMenu(start, EMPTY_MENU_STATE, now).filter((m) => m.category === SAMPLE_SECTIONS[1].id);
-  assert.ok(burgers(at(12)).every((m) => m.offHours), 'not sold at noon');
-  assert.ok(burgers(at(19)).every((m) => !m.offHours), 'sold at night');
-  assert.ok(effectiveMenu(start, EMPTY_MENU_STATE, at(12)).some((m) => m.category !== SAMPLE_SECTIONS[1].id && !m.offHours));
-
-  const kottu = { name: 'Kottu', cookMinutes: 8, sizes: [], adds: [] };
-  assert.equal(checkSection({ ...kottu, ...night }), null);
-  assert.ok(checkSection({ ...kottu, hours: { from: 300, to: 300 } }));
-  assert.ok(checkSection({ ...kottu, hours: { from: -1, to: 300 } }));
 });
 
 test('a price change never alters an order already sent; a new order gets the new price', () => {
@@ -89,29 +59,9 @@ test('a price change never alters an order already sent; a new order gets the ne
   }
 });
 
-test("a manager's price change: only the prices move; the owner's name and hiding stay; {} goes back to print", () => {
-  const manager = { id: 'm', name: 'Ravi', role: 'manager' as const };
-  const price = (itemId: string, after: object, at: number) =>
-    ({ id: `p${at}`, shopId: 's', at, orderNumber: 0, actor: manager, type: 'menu.price_set', itemId, before: {}, after });
-  const state = menuStateFromEvents([
-    set('margherita', { name: { en: 'Margherita Classic' }, prices: { M: 150000 } }, 1),
-    price('margherita', { prices: { L: 230000 } }, 2),
-    price('chicken-burger', { prices: { one: 50000 } }, 3),
-    price('chicken-burger', {}, 4),
-  ]);
-  assert.deepEqual(state.overrides.margherita, { name: { en: 'Margherita Classic' }, prices: { L: 230000 } });
-  assert.equal(state.overrides['chicken-burger'], undefined);
-  const m = effectiveMenu(SAMPLE_START, state, 0).find((x) => x.id === 'margherita')!;
-  assert.equal(m.name.en, 'Margherita Classic');
-  assert.deepEqual(m.variants!.map((v) => v.price), [MENU.find((x) => x.id === 'margherita')!.variants![0].price, 230000]);
-});
-
-test('owners and managers change the menu, cashiers do not; changes are checked', () => {
+test('only the owner changes the menu; managers may mark things sold out; changes are checked', () => {
   assert.equal(mayRecord('owner', 'menu.item_set'), true);
-  assert.equal(mayRecord('manager', 'menu.item_set'), true);
-  assert.equal(mayRecord('cashier', 'menu.item_set'), false);
-  assert.equal(mayRecord('manager', 'menu.price_set'), true);
-  assert.equal(mayRecord('cashier', 'menu.price_set'), false);
+  assert.equal(mayRecord('manager', 'menu.item_set'), false);
   assert.equal(mayRecord('manager', 'menu.sold_out'), true);
   assert.equal(mayRecord('cashier', 'menu.sold_out'), false);
   const m = MENU.find((x) => x.id === 'margherita')!;
@@ -133,7 +83,7 @@ test("the owner's own item takes its section's shape, sells like any item, and i
       set('new-chicken-alfredo', { prices: { L: 300000 } }, 2),
       soldOut('new-chicken-alfredo', 5_000, 3),
     ]);
-    const menu = effectiveMenu(SAMPLE_START, state, 0);
+    const menu = effectiveMenu(MENU, state, 0);
     assert.equal(menu.length, MENU.length + 1);
     const m = menu.at(-1)!;
     assert.equal(m.category, 'pasta');
@@ -142,7 +92,7 @@ test("the owner's own item takes its section's shape, sells like any item, and i
     assert.equal(m.edited, true);
     assert.equal(m.soldOut, true);
 
-    const burger = effectiveMenu(SAMPLE_START, menuStateFromEvents([added('new-cheese-burger', { category: 'burger', name: { en: 'Cheese Burger' }, description: '', prices: { one: 55000 } })]), 0).at(-1)!;
+    const burger = effectiveMenu(MENU, menuStateFromEvents([added('new-cheese-burger', { category: 'burger', name: { en: 'Cheese Burger' }, description: '', prices: { one: 55000 } })]), 0).at(-1)!;
     assert.equal(burger.price, 55000);
     assert.deepEqual(burger.adds, MENU.find((x) => x.id === 'chicken-burger')!.adds, 'the burger extras');
 
@@ -153,26 +103,21 @@ test("the owner's own item takes its section's shape, sells like any item, and i
   }
 });
 
-test('a size added to its section later: an added item sells in it once it has a price for it', () => {
-  const kottu = { name: 'Kottu', cookMinutes: 8, sizes: [{ id: 'regular', label: 'Regular' }, { id: 'large', label: 'Large' }], adds: [] };
-  const section = { id: 's1', shopId: 's', at: 1, orderNumber: 0, actor: owner, type: 'menu.section_set', sectionId: 'sec-kottu', section: kottu };
-  const item = { category: 'sec-kottu', name: { en: 'Egg Kottu' }, description: '', prices: { regular: 70000 } };
-  const before = effectiveMenu(SAMPLE_START, menuStateFromEvents([section, added('new-egg-kottu', item, 2)]), 0).at(-1)!;
-  assert.deepEqual(before.variants!.map((v) => v.id), ['regular'], 'no price for Large yet: not offered');
-  assert.match(checkOverride(before, { prices: { large: 120000 } })!, /no large size/);
-  assert.equal(checkOverride(before, { prices: { large: 120000 } }, ['regular', 'large']), null);
-  const after = effectiveMenu(SAMPLE_START, menuStateFromEvents([section, added('new-egg-kottu', item, 2), set('new-egg-kottu', { prices: { large: 120000 } }, 3)]), 0).at(-1)!;
-  assert.deepEqual(after.variants!.map((v) => [v.id, v.label, v.price]), [['regular', 'Regular', 70000], ['large', 'Large', 120000]]);
-});
-
-test("a starting item sold in fewer sizes than its section: it sells in the others once it has a price (Full rice & curry)", () => {
-  const rice = { id: 'rice', name: 'Rice', cookMinutes: 3, sizes: [{ id: 'normal', label: 'Normal' }, { id: 'full', label: 'Full' }], adds: [] };
-  const fish = { id: 'fish', category: 'rice', name: { en: 'Fish Rice' }, description: '', aliases: [], variants: [{ id: 'normal', label: 'Normal', price: 30000 }], adds: [], leaveOut: [] };
-  const start = { sections: [rice], items: [fish] };
-  assert.deepEqual(effectiveMenu(start, EMPTY_MENU_STATE, 0)[0].variants!.map((v) => v.id), ['normal'], 'no Full price yet: not offered');
-  assert.equal(checkOverride(fish, { prices: { full: 40000 } }, ['normal', 'full']), null);
-  const after = effectiveMenu(start, menuStateFromEvents([set('fish', { prices: { full: 40000 } })]), 0)[0];
-  assert.deepEqual(after.variants!.map((v) => [v.id, v.label, v.price]), [['normal', 'Normal', 30000], ['full', 'Full', 40000]]);
+test('an added item from a section this menu does not have is kept, hidden: its order still prices (the blank Register, 2026-11-15)', () => {
+  // As the shop recorded it from another build: a "Kottu" section with Full/Normal sizes.
+  const kottu = { category: 'sec-kottu', name: { en: 'egg kottu' }, description: '', prices: { full: 80000, normal: 40000 } };
+  try {
+    setMenuState(menuStateFromEvents([added('new-egg-kottu', kottu, 1), added('new-bad', { prices: {} }, 2)]), 0);
+    const item = itemById('new-egg-kottu');
+    assert.equal(item.name.en, 'egg kottu');
+    assert.equal(item.hidden, true, 'not offered for sale');
+    assert.deepEqual(item.variants!.map((v) => [v.id, v.label, v.price]), [['full', 'Full', 80000], ['normal', 'Normal', 40000]]);
+    assert.ok(!menuItems().some((m) => m.id === 'new-bad'), 'an item with no name is still left out');
+    const sent = markSent(addLine(emptyOrder(1010), { ...bareLine('new-egg-kottu', 'full' as never), qty: 2, unit: 80000 }), 1);
+    assert.equal(orderTotal(sent), 160000);
+  } finally {
+    setMenuState(EMPTY_MENU_STATE);
+  }
 });
 
 test('Undo takes an added item off the menu, but an order that already has it still prices', () => {
@@ -189,15 +134,13 @@ test('Undo takes an added item off the menu, but an order that already has it st
   }
 });
 
-test('a new item needs an English name and a whole-rupee price for at least one size of its section', () => {
-  assert.equal(checkNewItem(alfredo as NewItem, SAMPLE_SECTIONS), null);
-  assert.equal(checkNewItem({ ...alfredo, prices: { S: 110000, M: 210000 } } as NewItem, SAMPLE_SECTIONS), null, 'not sold in Large: fine');
-  assert.match(checkNewItem({ ...alfredo, prices: {} } as NewItem, SAMPLE_SECTIONS)!, /prices/);
-  assert.match(checkNewItem({ ...alfredo, prices: { ...alfredo.prices, S: 110050 } } as NewItem, SAMPLE_SECTIONS)!, /whole rupees/);
-  assert.match(checkNewItem({ ...alfredo, prices: { one: 50000 } } as NewItem, SAMPLE_SECTIONS)!, /size/);
-  assert.match(checkNewItem({ ...alfredo, name: { en: '  ' } } as NewItem, SAMPLE_SECTIONS)!, /English name/);
-  assert.match(checkNewItem({ ...alfredo, category: 'drinks' } as unknown as NewItem, SAMPLE_SECTIONS)!, /section/);
+test('a new item needs an English name and a whole-rupee price for every size of its section', () => {
+  assert.equal(checkNewItem(alfredo as NewItem, MENU), null);
+  assert.match(checkNewItem({ ...alfredo, prices: { S: 110000, M: 210000 } } as NewItem, MENU)!, /prices/);
+  assert.match(checkNewItem({ ...alfredo, prices: { ...alfredo.prices, S: 110050 } } as NewItem, MENU)!, /whole rupees/);
+  assert.match(checkNewItem({ ...alfredo, prices: { one: 50000 } } as NewItem, MENU)!, /size/);
+  assert.match(checkNewItem({ ...alfredo, name: { en: '  ' } } as NewItem, MENU)!, /English name/);
+  assert.match(checkNewItem({ ...alfredo, category: 'drinks' } as unknown as NewItem, MENU)!, /section/);
   assert.equal(mayRecord('owner', 'menu.item_added'), true);
-  assert.equal(mayRecord('manager', 'menu.item_added'), true);
-  assert.equal(mayRecord('cashier', 'menu.item_added'), false);
+  assert.equal(mayRecord('manager', 'menu.item_added'), false);
 });

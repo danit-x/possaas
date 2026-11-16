@@ -1,5 +1,5 @@
 /*
- * The ordering page's design system, made for a phone in one hand.
+ * cheesybeez.com: the ordering page's design system, made for a phone in one hand.
  * Every colour, space, radius and type size below comes from these tokens; nothing else.
  * Colours are checked for WCAG AA: text 4.5:1 or more on the page, cards and chips, in both themes.
  */
@@ -270,6 +270,21 @@ button { cursor: pointer; }
 .o-form input { min-height: var(--target); padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--page); color: var(--heading); font-size: var(--text-body); }
 .o-form input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .o-hint { color: var(--bad); font-size: var(--text-caption); font-weight: 400; }
+.o-form textarea { min-height: calc(var(--target) * 1.6); padding: var(--space-1) var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--page); color: var(--heading); font: inherit; font-size: var(--text-body); resize: vertical; }
+.o-form textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+/* Pickup or delivery (SCRUM-193): two big halves, the chosen one filled. */
+.o-kind { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-1); margin-top: var(--space-2); }
+.o-kind button { min-height: 56px; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-1); padding: 0 var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-card); background: transparent; color: var(--heading); font: inherit; font-weight: 600; transition: background 150ms var(--ease), border-color 150ms var(--ease); }
+.o-kind button[aria-checked='true'] { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+.o-kind svg { width: 20px; height: 20px; stroke-width: 1.75; }
+.o-kind__fee { font-size: var(--text-caption); font-weight: 500; opacity: 0.8; white-space: nowrap; }
+.o-fee { display: flex; justify-content: space-between; padding-top: var(--space-1); color: var(--body); }
+.o-locate { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+.o-locate__ok { display: inline-flex; align-items: center; gap: var(--space-half); color: var(--heading); font-weight: 600; }
+.o-locate svg { width: 18px; height: 18px; stroke-width: 1.75; }
+/* .o-btn is styled for desktop only; the location button needs it on phones too. */
+.o-locate .o-btn { min-height: var(--target); display: inline-flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--card); color: var(--heading); font: inherit; font-weight: 600; }
 .o-error { margin: 0; color: var(--bad); font-weight: 500; }
 .o-muted { color: var(--caption); font-size: var(--text-caption); font-weight: 400; }
 .o-center { margin: 0; text-align: center; }
@@ -292,3 +307,67 @@ button { cursor: pointer; }
 .o-receipt li { display: flex; justify-content: space-between; gap: var(--space-2); padding: var(--space-1) 0; color: var(--heading); font-size: var(--text-body); }
 .o-actions { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-3); }
 .o-skeleton { height: 220px; border-radius: var(--radius-card); background: var(--card); animation: o-breathe 1.4s var(--ease) infinite; }
+
+/* Offers on this phone (Offers.tsx, CRM push) */
+.o-offers { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; margin: 24px auto; padding: 20px; border-radius: 18px; background: var(--o-card, #fff); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
+.o-offers p { margin: 0; flex: 1 1 260px; font-size: 16px; line-height: 1.4; }
+.o-offers__form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; width: 100%; }
+.o-offers__form label { display: flex; flex-direction: column; gap: 6px; flex: 1 1 220px; font-size: 14px; font-weight: 500; }
+.o-offers__form input { height: 48px; padding: 0 14px; border-radius: 12px; border: 1px solid rgba(0, 0, 0, 0.18); font: inherit; font-size: 17px; }
+.o-offers__error { color: #c62828; width: 100%; }
+/* Opened from the receipt's QR code (#offers): the sign-up says what it is, then the one field. */
+.o-offers__intro { width: 100%; }
+.o-offers__intro h2 { margin: 0 0 4px; font-size: 20px; font-weight: 600; letter-spacing: -0.3px; color: var(--heading); }
+.o-offers__intro p, .o-offers__next, .o-offers__hint { margin: 0; flex: 1 1 100%; font-size: 14px; line-height: 1.45; color: var(--body); }
+.o-offers__next { padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; }
+.o-offers__next b { color: var(--heading); font-weight: 600; }
+.o-offers__hint { font-size: 13px; color: var(--caption); }
+
+/* The offers inbox (OffersInbox.tsx): a bell beside the shop's state, the list in a sheet. */
+.o-head__end { display: inline-flex; align-items: center; gap: var(--space-1); }
+.o-bell { position: relative; display: inline-grid; place-items: center; width: var(--target); height: var(--target); border: 0; border-radius: var(--radius-pill); background: none; color: var(--heading); }
+.o-bell:hover { background: var(--chip); }
+.o-bell__n { position: absolute; top: 4px; right: 2px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill); background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+.o-inbox__list { margin: var(--space-1) 0 var(--space-2); padding: 0; list-style: none; }
+.o-inbox__item { padding: var(--space-2) 0; border-top: 1px solid var(--border); }
+.o-inbox__item:first-child { border-top: 0; }
+.o-inbox__top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-1); color: var(--heading); font-size: 17px; }
+.o-inbox__item p { margin: 4px 0 0; color: var(--body); font-size: 15px; line-height: 1.45; }
+.o-inbox__when { display: block; margin-top: 6px; color: var(--caption); font-size: 13px; }
+.o-inbox__new { flex: none; padding: 2px 10px; border-radius: var(--radius-pill); background: var(--closed-fill); color: var(--closed-ink); font-size: 12px; font-weight: 600; }
+.o-inbox__empty { margin: var(--space-2) 0; color: var(--body); }
+.o-inbox__order { margin-top: var(--space-1); }
+.o-inbox__foot { margin: var(--space-2) 0 0; text-align: center; color: var(--caption); font-size: 14px; }
+
+/* ----- The customer's account (Account.tsx) ----- */
+.o-acct-in { min-height: var(--target); font-weight: 600; text-decoration: none; }
+.o-acct-me { display: inline-grid; place-items: center; width: 40px; height: 40px; margin: 4px; border: 0; border-radius: var(--radius-pill); background: var(--primary); color: var(--on-primary); font: inherit; font-size: 15px; font-weight: 700; letter-spacing: 0.02em; }
+.o-acct-me:focus-visible, .o-acct-in:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.o-acct__email { margin: -8px 0 var(--space-2); }
+.o-acct__h { margin: var(--space-3) 0 var(--space-1); color: var(--heading); font-size: var(--text-card); font-weight: 700; }
+.o-acct__google { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); min-height: 48px; margin: var(--space-2) 0; }
+.o-acct__orders, .o-acct__addrs { margin: 0; padding: 0; list-style: none; }
+.o-acct__order { padding: var(--space-2) 0; border-top: 1px solid var(--border); }
+.o-acct__order:first-child { border-top: 0; padding-top: 0; }
+.o-acct__order-top { display: flex; justify-content: space-between; gap: var(--space-2); color: var(--caption); font-size: var(--text-caption); }
+.o-acct__order p { margin: 4px 0 var(--space-1); color: var(--heading); line-height: 1.4; }
+.o-acct .o-btn { min-height: var(--target); display: inline-flex; align-items: center; justify-content: center; padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--card); color: var(--heading); font: inherit; font-weight: 600; }
+.o-acct .o-btn:disabled { color: var(--caption); }
+.o-acct__save { align-self: flex-start; }
+.o-acct__addrs li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-1); padding: var(--space-1) 0; border-top: 1px solid var(--border); color: var(--heading); }
+.o-acct__addrs li:first-child { border-top: 0; }
+.o-acct__foot { display: flex; flex-wrap: wrap; gap: 0 var(--space-1); margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--border); }
+.o-acct__foot .o-link { display: inline-flex; align-items: center; font-size: var(--text-caption); color: var(--caption); }
+.o-acct__delete.is-armed { color: var(--bad); font-weight: 600; }
+.o-saved { margin-bottom: var(--space-1); }
+
+/* From the QR code on the bill (SCRUM-257): how to put the app on this phone. */
+.o-app { background: var(--card); border-bottom: 1px solid var(--border); }
+.o-app__in { display: flex; align-items: center; gap: var(--space-2); padding-top: var(--space-2); padding-bottom: var(--space-2); flex-wrap: wrap; position: relative; }
+.o-app__icon { width: 56px; height: 56px; border-radius: var(--radius-card); flex: none; }
+.o-app__text { flex: 1; min-width: 180px; padding-right: var(--space-4); }
+.o-app__text h2 { margin: 0 0 var(--space-half); font-size: var(--text-card); color: var(--heading); }
+.o-app__text p, .o-app__steps { margin: 0; color: var(--body); font-size: var(--text-caption); }
+.o-app__steps { padding-left: 1.2em; }
+.o-app__go { min-height: var(--target); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-pill); background: var(--primary); color: var(--on-primary); font-weight: 600; }
+.o-app__close { position: absolute; top: var(--space-1); right: 0; width: var(--target); height: var(--target); border: 0; border-radius: var(--radius-pill); background: none; color: var(--caption); font-size: 24px; }

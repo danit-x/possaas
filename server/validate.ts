@@ -1,57 +1,69 @@
-import { DAY_EVENT_TYPES } from '../src/domain/cashUp.ts';
+import { isPhotoId } from '../src/domain/photos.ts';
+import { isPlatformMark } from '../src/domain/platforms.ts';
+import { isNote } from '../src/domain/gapReview.ts';
+import { isUnitId } from '../src/domain/counting.ts';
 import { MENU } from '../src/domain/menu.ts';
+import { checkStockSetting } from '../src/domain/stockSettings.ts';
+import { checkAnswer, RECIPE_EVENT_TYPES, type Answer } from '../src/domain/costing.ts';
+import { checkDraft } from '../src/domain/recipeDrafts.ts';
+import { isGapReason } from '../src/domain/counting.ts';
+import { checkWaste } from '../src/domain/waste.ts';
+import { checkMiss, SHORTHAND_EVENT_TYPES } from '../src/domain/shorthandMisses.ts';
+import { checkChoices, checkMoneyOut, MONEY_EVENT_TYPES } from '../src/domain/moneyOut.ts';
+import { checkValueEvent, VALUE_EVENT_TYPES } from '../src/domain/valuePlaces.ts';
+import { checkPrepLimit, checkPrepOrder } from '../src/domain/prep.ts';
+import { checkWarehouseName, isStockKey, isWarehouseId } from '../src/domain/warehouses.ts';
+import { checkTableEvent, TABLE_EVENT_TYPES, VISION_EVENT_TYPES } from '../src/domain/tables.ts';
+import { SHOP_EVENT_TYPES } from '../src/domain/freshStart.ts';
+import { BILL_EVENT_TYPES, checkBillLine } from '../src/domain/billExtras.ts';
+import { checkModuleEvent, MODULE_EVENT_TYPES } from '../src/domain/modules.ts';
+import { CAMPAIGN_EVENT_TYPES, checkCampaignEvent } from '../src/domain/campaigns.ts';
+import { isCustomerId } from '../src/domain/customers.ts';
+import { checkSection, checkSectionOrder, isCustomSection, SECTION_ID } from '../src/domain/sections.ts';
+import { checkNewItem, checkOverride, MENU_EVENT_TYPES, NEW_ITEM_ID, type ItemOverride, type NewItem } from '../src/domain/menuEdits.ts';
+import { checkCombo, COMBO_ID } from '../src/domain/combos.ts';
+import { validPhotoChoice } from '../src/domain/menuPhotos.ts';
+import type { Combo, MenuItem } from '../src/domain/types.ts';
 import {
-  checkNewItem, checkOverride, checkSection, MENU_EVENT_TYPES, NEW_ITEM_ID, NEW_SECTION_ID, OPTION_ID, SIZE_KEY, type ItemOverride, type NewItem, type SectionDef,
-} from '../src/domain/menuEdits.ts';
-import type { MenuItem } from '../src/domain/types.ts';
-import {
-  KITCHEN_EVENT_TYPES, ORDER_EVENT_TYPES, PUSH_BATCH, type SyncEvent,
+  KITCHEN_EVENT_TYPES, MOVEMENT_KINDS, ORDER_EVENT_TYPES, PREP_EVENT_TYPES, PUSH_BATCH, STOCK_EVENT_TYPES, type SyncEvent,
 } from '../src/domain/sync.ts';
 
 const TYPES = new Set<string>([
-  ...ORDER_EVENT_TYPES, ...KITCHEN_EVENT_TYPES, ...MENU_EVENT_TYPES, ...DAY_EVENT_TYPES,
+  ...ORDER_EVENT_TYPES, ...KITCHEN_EVENT_TYPES, ...STOCK_EVENT_TYPES, ...PREP_EVENT_TYPES, ...MENU_EVENT_TYPES, ...RECIPE_EVENT_TYPES, ...SHORTHAND_EVENT_TYPES,
+  ...TABLE_EVENT_TYPES, ...VISION_EVENT_TYPES, ...MONEY_EVENT_TYPES, ...VALUE_EVENT_TYPES, ...SHOP_EVENT_TYPES, ...MODULE_EVENT_TYPES, ...CAMPAIGN_EVENT_TYPES, ...BILL_EVENT_TYPES,
 ]);
-const cents = (v: unknown): boolean => Number.isSafeInteger(v) && (v as number) >= 0;
-const tally = (v: unknown): boolean => isObj(v) && cents(v.cents) && cents(v.orders);
-/** The count a close carries: whole numbers only, every way of paying there. */
-const validCount = (v: unknown, from: unknown, to: unknown): boolean =>
-  isObj(v) && v.from === from && v.to === to && cents(v.orders) && cents(v.total) && cents(v.voids) && cents(v.discounts) &&
-  isObj(v.byTender) && ['cash', 'transfer', 'card', 'qr', 'comp'].every((t) => tally((v.byTender as Record<string, unknown>)[t]));
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const shortString = (v: unknown, max = 64): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
+/** What a held batch waits for, by name: a short list of item names. */
+const names = (v: unknown): boolean => Array.isArray(v) && v.length <= 40 && v.every((n) => shortString(n, 120));
 const isAddedId = (v: unknown): v is string => typeof v === 'string' && NEW_ITEM_ID.test(v);
 const onMenu = (itemId: unknown): boolean => MENU.some((entry) => entry.id === itemId) || isAddedId(itemId);
 /**
  * An item the owner added: the server checks one event at a time, so it does not know which
- * section it is in, nor that section's sizes and extras. Any well-formed size or extra passes;
- * the menu ignores what the item lacks.
+ * section it is in. Any section's sizes and extras pass; the menu ignores what the item lacks.
  */
-const anyAdded = (o: Record<string, unknown>): MenuItem => {
-  const ids = (v: unknown, ok: RegExp) => (isObj(v) ? Object.keys(v).filter((k) => ok.test(k)) : []);
-  return {
-    id: 'new-item', category: 'any', name: { en: 'This item' }, description: '', aliases: [],
-    variants: ids(o.prices, SIZE_KEY).map((id) => ({ id, label: id, price: 0 })), price: 0,
-    adds: ids(o.adds, OPTION_ID).map((id) => ({ id, label: id, price: 0 })), leaveOut: [],
-  };
+const ANY_ADDED: MenuItem = {
+  id: 'new-item', category: 'pizza', name: { en: 'This item' }, description: '', aliases: [],
+  variants: (['S', 'M', 'L', 'x1', 'x2', 'x3'] as const).map((id) => ({ id, label: id, price: 0 })), price: 0,
+  adds: MENU.flatMap((m) => m.adds), leaveOut: [],
 };
 const validNewItem = (value: unknown): boolean =>
   value === null || (isObj(value) && isObj(value.name) && isObj(value.prices) &&
     Object.entries(value.name).every(([key, name]) => ['en', 'si', 'ta'].includes(key) && typeof name === 'string') &&
     Object.values(value.prices).every((price) => typeof price === 'number') &&
-    Object.keys(value).every((key) => ['category', 'name', 'description', 'prices', 'number', 'leaveOut'].includes(key)) &&
-    checkNewItem(value as unknown as NewItem, null) === null);
-const validOption = (v: unknown): boolean =>
-  isObj(v) && Object.keys(v).every((k) => ['id', 'label', 'hint', 'price'].includes(k));
-const validSection = (value: unknown): boolean =>
-  value === null || (isObj(value) && Object.keys(value).every((key) => ['name', 'cookMinutes', 'sizes', 'adds', 'station', 'hours'].includes(key)) &&
-    Array.isArray(value.sizes) && value.sizes.every(validOption) && Array.isArray(value.adds) && value.adds.every(validOption) &&
-    checkSection(value as unknown as SectionDef) === null);
-/** A manager's price change carries prices and extras' prices only. */
-const onlyPrices = (value: unknown): boolean => isObj(value) && Object.keys(value).every((k) => k === 'prices' || k === 'adds');
-
+    Object.keys(value).every((key) => ['category', 'name', 'description', 'prices'].includes(key)) &&
+    checkNewItem(value as unknown as NewItem, MENU) === null);
+/** A section's setting, or null (none / taken back); its sizes keep their count from `before`. */
+const validSection = (id: string, value: unknown, before: unknown): boolean =>
+  value === null || (isObj(value) && checkSection(id, value, isObj(before) ? before : null) === null);
+/** A combo pack (SCRUM-231): the owner's own dishes are only known by their id here. */
+const validCombo = (value: unknown): boolean =>
+  value === null || (isObj(value) && checkCombo(value as unknown as Combo, MENU, isAddedId) === null &&
+    Object.keys(value).every((key) => ['name', 'price', 'slots', 'hidden'].includes(key)) &&
+    (value.slots as unknown[]).every((s) => isObj(s) && Object.keys(s).every((key) => ['qty', 'size', 'options', 'usual'].includes(key))));
 const validOverride = (itemId: unknown, value: unknown): boolean => {
   if (!isObj(value)) return false;
-  const item = MENU.find((entry) => entry.id === itemId) ?? (isAddedId(itemId) ? anyAdded(value) : undefined);
+  const item = MENU.find((entry) => entry.id === itemId) ?? (isAddedId(itemId) ? ANY_ADDED : undefined);
   if (!item) return false;
   if (value.name !== undefined && (!isObj(value.name) ||
       Object.entries(value.name).some(([key, name]) =>
@@ -62,9 +74,7 @@ const validOverride = (itemId: unknown, value: unknown): boolean => {
       Object.values(value.prices).some((price) => typeof price !== 'number'))) return false;
   if (value.adds !== undefined && (!isObj(value.adds) ||
       Object.values(value.adds).some((price) => typeof price !== 'number'))) return false;
-  // A sized item may get a price in a size its section gained (the server does not know the sections).
-  const sizes = item.variants && isObj(value.prices) ? Object.keys(value.prices).filter((k) => SIZE_KEY.test(k)) : [];
-  return checkOverride(item, value as ItemOverride, sizes) === null;
+  return checkOverride(item, value as ItemOverride) === null;
 };
 
 /**
@@ -82,29 +92,234 @@ export const validatePush = (body: unknown, tenantId: string): { events: SyncEve
     if (!Number.isSafeInteger(e.orderNumber) || (e.orderNumber as number) < 0) return { reason: `event ${e.id} has no orderNumber` };
     if (!Number.isSafeInteger(e.at)) return { reason: `event ${e.id} has no time` };
     if (e.shopId !== tenantId) return { reason: `event ${e.id} belongs to another shop`, wrongShop: true };
-    if (e.type.startsWith('order.') || e.type.startsWith('menu.') || e.type.startsWith('day.')) {
+    if (e.type.startsWith('order.') || e.type.startsWith('stock.') || e.type.startsWith('prep.') || e.type.startsWith('menu.') || e.type.startsWith('recipe.') || e.type.startsWith('shorthand.')
+      || e.type.startsWith('table.') || e.type.startsWith('vision.') || e.type.startsWith('money.') || e.type.startsWith('value.') || e.type.startsWith('shop.') || e.type.startsWith('crm.')) {
       const a = e.actor;
       if (!isObj(a) || !shortString(a.id) || !shortString(a.name, 80) || !shortString(a.role, 16)) {
         return { reason: `event ${e.id} does not say who did it` };
       }
     }
-    if ((e.type === 'kitchen.served' || e.type === 'kitchen.unserved') && (!shortString(e.ticketId) || !shortString(e.lineId))) {
-      return { reason: `event ${e.id} does not say which portion` };
+    if (e.type === 'shop.started_fresh' && (!Number.isSafeInteger(e.before) || (e.before as number) < 0 || (e.before as number) > (e.at as number))) {
+      return { reason: `event ${e.id} has an invalid cut-off` };
     }
+    if (e.type.startsWith('crm.')) {
+      const why = checkCampaignEvent(e);
+      if (why) return { reason: `event ${e.id}: ${why}` };
+    }
+    // The customer a payment was for (CRM): an opaque id, never a number or a name.
+    if (e.type === 'order.paid' && e.customerId !== undefined && !isCustomerId(e.customerId)) {
+      return { reason: `event ${e.id} has an invalid customer` };
+    }
+    // A split bill (split.ts): its parts are whole cents and add up to the total.
+    if (e.type === 'order.paid' && e.parts !== undefined && (
+      !Array.isArray(e.parts) || e.parts.length < 1 || e.parts.length > 50
+      || !e.parts.every((p) => p && Number.isSafeInteger(p.amount) && p.amount >= 0 && Number.isSafeInteger(p.tendered) && shortString(p.tender, 16))
+      || e.parts.reduce((n, p) => n + p.amount, 0) !== e.total)) {
+      return { reason: `event ${e.id} has invalid payment parts` };
+    }
+    // A paid order's difference (SCRUM-242): whole cents either way, and how it moved.
+    if (e.type === 'order.settled' && (!Number.isSafeInteger(e.amount) || !Number.isSafeInteger(e.tendered) || !shortString(e.tender, 16))) {
+      return { reason: `event ${e.id} has an invalid settlement` };
+    }
+    if (e.type === 'shop.module_set') {
+      const why = checkModuleEvent(e);
+      if (why) return { reason: `event ${e.id}: ${why}` };
+    }
+    if (e.type === 'order.sent' && e.held !== undefined && e.held !== true) return { reason: `event ${e.id} has an invalid hold` };
+    if (e.type === 'order.released' && !shortString(e.ticketId)) return { reason: `event ${e.id} has no ticket` };
+    if (e.type === 'order.sent' && e.platform !== undefined && !isPlatformMark(e.platform)) {
+      return { reason: `event ${e.id} has an unknown delivery app or code` };
+    }
+    if (e.type === 'stock.adjusted' && (
+      !shortString(e.itemId) || typeof e.deltaPacks !== 'number' || !Number.isFinite(e.deltaPacks) || e.deltaPacks === 0 ||
+      (e.reason !== undefined && !['waste', 'audit', 'receive'].includes(String(e.reason)))
+    )) return { reason: `event ${e.id} has an invalid stock change` };
+    if (e.type === 'stock.movement' && (
+      !shortString(e.itemId) || !shortString(e.docId, 80) || !MOVEMENT_KINDS.includes(e.kind as never) ||
+      typeof e.qtyBase !== 'number' || !Number.isFinite(e.qtyBase) || e.qtyBase === 0 || Math.abs(e.qtyBase) > 1e9 ||
+      (e.kind === 'GRN' && e.qtyBase < 0) || (e.kind === 'GRN_UNDO' && e.qtyBase > 0)
+    )) return { reason: `event ${e.id} has an invalid stock movement` };
+    if (e.type === 'stock.price_set' && (
+      !shortString(e.itemId) || !Number.isSafeInteger(e.before) || !Number.isSafeInteger(e.after) ||
+      (e.before as number) < 0 || (e.after as number) < 0 || (e.grnId !== undefined && !shortString(e.grnId))
+    )) return { reason: `event ${e.id} has an invalid price` };
+    if (e.type === 'stock.item_added') {
+      const item = e.item;
+      if (
+        !isObj(item) || !shortString(item.id) || !shortString(item.name, 120) ||
+        !shortString(item.category, 80) || !Array.isArray(item.supplierIds) ||
+        item.supplierIds.length === 0 || !item.supplierIds.every((id) => shortString(id)) ||
+        new Set(item.supplierIds).size !== item.supplierIds.length ||
+        !['g', 'ml', 'pcs', 'sheets'].includes(String(item.baseUnit)) ||
+        typeof item.packQty !== 'number' || !Number.isFinite(item.packQty) || item.packQty <= 0 ||
+        !Number.isSafeInteger(item.workingPriceCents) || (item.workingPriceCents as number) < 0
+      ) return { reason: `event ${e.id} has an invalid ingredient` };
+    }
+    if (e.type === 'stock.supplier_added') {
+      const supplier = e.supplier;
+      if (
+        !isObj(supplier) || !shortString(supplier.id) || !shortString(supplier.name, 120) ||
+        (supplier.phone !== undefined && !shortString(supplier.phone, 40)) ||
+        !Array.isArray(e.linkedItemIds) || !e.linkedItemIds.every((id) => shortString(id)) ||
+        new Set(e.linkedItemIds).size !== e.linkedItemIds.length
+      ) return { reason: `event ${e.id} has an invalid supplier` };
+    }
+    if (e.type === 'stock.supplier_edited') {
+      const details = (d: unknown) => isObj(d) && shortString(d.name, 120) && (d.phone === undefined || shortString(d.phone, 40));
+      const ids = (list: unknown) => Array.isArray(list) && list.every((id) => shortString(id)) && new Set(list).size === list.length;
+      if (!shortString(e.supplierId) || !details(e.before) || !details(e.after) || !ids(e.linked) || !ids(e.unlinked)) {
+        return { reason: `event ${e.id} has an invalid supplier edit` };
+      }
+    }
+    if (
+      (e.type === 'stock.item_archived' || e.type === 'stock.item_restored') &&
+      !shortString(e.itemId)
+    ) return { reason: `event ${e.id} has an invalid ingredient id` };
+    if (
+      (e.type === 'stock.supplier_archived' || e.type === 'stock.supplier_restored') &&
+      !shortString(e.supplierId)
+    ) return { reason: `event ${e.id} has an invalid supplier id` };
+    if (e.type === 'stock.counted') {
+      const amount = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= -1e9 && n <= 1e9;
+      const entries = e.entries;
+      if (
+        !shortString(e.itemId) || !amount(e.counted) || (e.counted as number) < 0 || !amount(e.expected) ||
+        !Array.isArray(entries) || entries.length > 10 ||
+        !entries.every((x) => isObj(x) && shortString(x.unit, 40) && amount(x.qty) && (x.qty as number) >= 0) ||
+        !(e.reason === null || isGapReason(e.reason)) || !Number.isSafeInteger(e.valueCents) ||
+        !['daily', 'weekly', 'monthly'].includes(String(e.tier)) ||
+        !(e.photo === undefined || e.photo === null || isPhotoId(e.photo)) ||
+        !(e.note === undefined || shortString(e.note, 200)) || (e.reason === 'other' && !(typeof e.note === 'string' && e.note.trim())) ||
+        !(e.warehouseId === undefined || isWarehouseId(e.warehouseId))
+      ) return { reason: `event ${e.id} has an invalid count` };
+    }
+    if (e.type === 'stock.wasted' && (checkWaste(e.what, e.qty, e.reason, e.note, e.name) !== null
+      || !(e.ticketId === undefined || shortString(e.ticketId)) || !(e.lineId === undefined || shortString(e.lineId)))) return { reason: `event ${e.id} has an invalid waste` };
+    if ((e.type.startsWith('prep.') && e.orderNumber !== 0)
+      || (e.type === 'prep.ordered' && (!shortString(e.ticketId) || checkPrepOrder(e.prepId, e.name, e.qty, e.unit) !== null
+        || !(e.waitFor === undefined || names(e.waitFor)) || !(e.plan === undefined || shortString(e.plan))))
+      || (e.type === 'prep.released' && (!shortString(e.ticketId) || checkPrepOrder(e.prepId, e.name, e.qty, e.unit) !== null || !names(e.waited)))
+      || (e.type === 'prep.order_undone' && !shortString(e.ticketId))
+      || (e.type === 'prep.limit_set' && (!shortString(e.prepId, 120) || checkPrepLimit(e.before) !== null || checkPrepLimit(e.after) !== null))) {
+      return { reason: `event ${e.id} has an invalid batch` };
+    }
+    if (e.type === 'stock.waste_undone' && (!shortString(e.wasteId) || !(e.ticketId === undefined || shortString(e.ticketId)))) return { reason: `event ${e.id} has an invalid waste id` };
+    if (e.type === 'stock.count_undone' && !shortString(e.countId)) return { reason: `event ${e.id} has an invalid count id` };
+    if (e.type === 'stock.unit_set' && (
+      !shortString(e.itemId) || !shortString(e.name, 20) || typeof e.base !== 'number' || !Number.isFinite(e.base) || (e.base as number) < 0
+    )) return { reason: `event ${e.id} has an invalid unit` };
+    if (e.type === 'stock.tier_set' && (!shortString(e.itemId) || !(e.tier === null || ['daily', 'weekly', 'monthly'].includes(String(e.tier))))) {
+      return { reason: `event ${e.id} has an invalid count tier` };
+    }
+    const packs = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1e6;
+    const poLines = (lines: unknown): boolean => Array.isArray(lines) && lines.length > 0 && lines.length <= 200 &&
+      lines.every((l) => isObj(l) && shortString(l.itemId) && packs(l.packs) && (l.packs as number) > 0 &&
+        (l.stockQty === undefined || (typeof l.stockQty === 'number' && Number.isFinite(l.stockQty) && l.stockQty > 0 && l.stockQty <= 1e9)) &&
+        (l.unitPriceCents === undefined || (typeof l.unitPriceCents === 'number' && Number.isFinite(l.unitPriceCents) && l.unitPriceCents >= 0 && l.unitPriceCents <= 1e9)));
+    if (e.type === 'stock.ordered' && ((e.poNo !== undefined && !shortString(e.poNo, 20)) || !shortString(e.supplierId) || !poLines(e.lines))) {
+      return { reason: `event ${e.id} has an invalid purchase order` };
+    }
+    if (e.type === 'stock.order_edited' && (!shortString(e.orderId) || !poLines(e.lines))) return { reason: `event ${e.id} has an invalid order change` };
+    if (e.type === 'stock.draft_set' && (!shortString(e.supplierId) || !(Array.isArray(e.lines) && (e.lines.length === 0 || poLines(e.lines))))) {
+      return { reason: `event ${e.id} has an invalid draft order` };
+    }
+    if (e.type === 'stock.order_cancelled' && (!shortString(e.orderId) || !shortString(e.reason, 200))) {
+      return { reason: `event ${e.id} cancels an order without saying why` };
+    }
+    if (e.type === 'stock.order_reopened' && !shortString(e.orderId)) return { reason: `event ${e.id} has an invalid order id` };
+    if (e.type === 'stock.grn') {
+      const by = e.approvedBy;
+      const lines = e.lines;
+      if (
+        (e.grnNo !== undefined && !shortString(e.grnNo, 20)) || !shortString(e.orderId) || !shortString(e.supplierId) || !Array.isArray(lines) || lines.length > 200 ||
+        !lines.every((l) => isObj(l) && shortString(l.itemId) && packs(l.ordered) && packs(l.received) && (l.accepted === undefined || packs(l.accepted)) && (l.returned === undefined || packs(l.returned))
+          && (l.warehouseId === undefined || isWarehouseId(l.warehouseId))) ||
+        !(by === null || (isObj(by) && shortString(by.id) && shortString(by.name, 80) && (by.role === 'manager' || by.role === 'owner'))) ||
+        !(e.shortDecision === undefined || e.shortDecision === 'wait' || e.shortDecision === 'close') ||
+        !(e.overDecision === undefined || e.overDecision === 'accept' || e.overDecision === 'return') ||
+        !(e.note === undefined || shortString(e.note, 500))
+      ) return { reason: `event ${e.id} has an invalid goods received note` };
+      const rows = lines as { ordered: number; received: number; accepted?: number; returned?: number }[];
+      // Without a manager (SCRUM-226): no extra, and a short delivery waits for the rest.
+      if (by === null && rows.some((l) => l.received > l.ordered)) return { reason: `event ${e.id} has extra without a manager's approval` };
+      if (by === null && rows.some((l) => l.received < l.ordered) && e.shortDecision !== 'wait') return { reason: `event ${e.id} closes an order short without a manager's approval` };
+      if (rows.some((l) => l.received < l.ordered) && e.shortDecision === undefined) return { reason: `event ${e.id} is short but does not say wait or close` };
+      if (rows.some((l) => l.received > l.ordered) && e.overDecision === undefined) return { reason: `event ${e.id} has extra but does not say accept or return` };
+      // The stock a GRN puts in is worked out from accepted: it must be exactly what the decisions allow.
+      for (const l of rows) {
+        if (l.accepted === undefined) continue;
+        const accepted = l.received > l.ordered && e.overDecision === 'return' ? l.ordered : l.received;
+        if (Math.abs(l.accepted - accepted) > 1e-6 || Math.abs((l.returned ?? 0) - (l.received - accepted)) > 1e-6) return { reason: `event ${e.id} puts the wrong amount into stock` };
+      }
+    }
+    if (e.type === 'stock.grn_price_reviewed' && (e.orderNumber !== 0 || !shortString(e.grnId) || typeof e.use !== 'boolean')) {
+      return { reason: `event ${e.id} decides no GRN price` };
+    }
+    if (e.type === 'stock.numbered' && (!shortString(e.docId, 80) || (e.kind !== 'PO' && e.kind !== 'GRN') || !shortString(e.number, 20))) {
+      return { reason: `event ${e.id} has an invalid document number` };
+    }
+    if (e.type === 'stock.settings_set') {
+      const why = checkStockSetting(e.key, e.value);
+      if (why) return { reason: `event ${e.id} has an invalid setting: ${why}` };
+    }
+    if (e.type === 'stock.grn_undone') {
+      const by = e.approvedBy;
+      if (!shortString(e.grnId) || !shortString(e.reason, 200) || !(isObj(by) && shortString(by.id) && shortString(by.name, 80) && (by.role === 'manager' || by.role === 'owner'))) {
+        return { reason: `event ${e.id} undoes a GRN without a manager or a reason` };
+      }
+    }
+    // Warehouses (SCRUM-184): the shape here; whether a warehouse exists is checked against the log (stockRules.ts).
+    const info = (v: unknown) => isObj(v) && checkWarehouseName(v.name) === null && typeof v.archived === 'boolean' && Object.keys(v).length === 2;
+    if (e.type === 'stock.warehouse_set' && (!isWarehouseId(e.warehouseId) || !(e.before === null || info(e.before)) || !info(e.after))) {
+      return { reason: `event ${e.id} has an invalid warehouse` };
+    }
+    if (e.type === 'stock.kitchen_side_set' && (!isWarehouseId(e.before) || !isWarehouseId(e.after))) return { reason: `event ${e.id} has an invalid warehouse` };
+    if (e.type === 'stock.home_set' && (!isStockKey(e.stockKey) || !(e.before === null || isWarehouseId(e.before)) || !(e.after === null || isWarehouseId(e.after)))) {
+      return { reason: `event ${e.id} has an invalid home warehouse` };
+    }
+    if (e.type === 'stock.moved' && (!isStockKey(e.stockKey) || !isWarehouseId(e.from) || !isWarehouseId(e.to) || e.from === e.to ||
+      typeof e.qty !== 'number' || !Number.isFinite(e.qty) || e.qty <= 0 || e.qty > 1e9)) return { reason: `event ${e.id} has an invalid move` };
+    if (e.type === 'stock.move_undone' && !shortString(e.moveId)) return { reason: `event ${e.id} has an invalid move id` };
+    if (e.type === 'stock.limit_set' && (!shortString(e.itemId) || !(e.packs === null || (packs(e.packs) && (e.packs as number) > 0)))) {
+      return { reason: `event ${e.id} has an invalid order-when-below` };
+    }
+    if (e.type === 'stock.receive_unit_set' && (!shortString(e.itemId) || !isUnitId(e.unit))) {
+      return { reason: `event ${e.id} has an invalid receiving unit` };
+    }
+    if ((e.type === 'stock.gap_reviewed' || e.type === 'stock.gap_answered') && (
+      !shortString(e.itemId) || !shortString(e.countId) || !isNote(e.note) ||
+      (e.type === 'stock.gap_reviewed' && e.decision !== 'ok' && e.decision !== 'ask')
+    )) return { reason: `event ${e.id} has an invalid gap review` };
     if (e.type.startsWith('menu.') && e.orderNumber !== 0) return { reason: `event ${e.id} has an invalid menu order number` };
-    if (e.type === 'day.closed' &&
-        (e.orderNumber !== 0 || !Number.isSafeInteger(e.from) || !Number.isSafeInteger(e.to) || (e.from as number) >= (e.to as number) ||
-          !cents(e.float) || !cents(e.counted) || !validCount(e.count, e.from, e.to))) {
-      return { reason: `event ${e.id} has an invalid close of the day` };
+    if (e.type === 'recipe.answer_set') {
+      const valid = (a: unknown) => a === null || (isObj(a) && checkAnswer(String(e.question), a as Answer) === null);
+      if (e.orderNumber !== 0 || !shortString(e.question, 200) || !valid(e.before) || !valid(e.after)) {
+        return { reason: `event ${e.id} has an invalid recipe answer` };
+      }
+    }
+    if (e.type === 'recipe.viewed' && e.orderNumber !== 0) return { reason: `event ${e.id} has an invalid order number` };
+    // A draft is checked for its shape only: it changes nothing until it is published (recipeDrafts.ts).
+    if (e.type === 'recipe.draft_set' && (
+      e.orderNumber !== 0 || !shortString(e.question, 200) || !(e.after === null || checkDraft(String(e.question), e.after) === null)
+    )) return { reason: `event ${e.id} has an invalid recipe draft` };
+    if (e.type.startsWith('value.') && checkValueEvent(e as { type: string }) !== null) return { reason: `event ${e.id} has an invalid value addition` };
+    if ((e.type === 'money.grn_removed' || e.type === 'money.grn_restored') && (e.orderNumber !== 0 || !shortString(e.grnId))) return { reason: `event ${e.id} names no GRN` };
+    // The owner's line on the bill (SCRUM-256): plain letters the printer has, two lines at most.
+    if (e.type === 'shop.bill_line_set' && (e.orderNumber !== 0 || checkBillLine(e.text) !== null)) return { reason: `event ${e.id} has an invalid bill line` };
+    if (e.type === 'money.choices_set' && (e.orderNumber !== 0 || checkChoices(e.what, e.choices) !== null)) return { reason: `event ${e.id} has an invalid list` };
+    if (e.type === 'money.out' && (e.orderNumber !== 0 || checkMoneyOut(e) !== null)) return { reason: `event ${e.id} has an invalid money out` };
+    if ((e.type === 'money.out_undone' || e.type === 'money.out_restored') && !shortString(e.outId)) return { reason: `event ${e.id} names no money out` };
+    if (e.type === 'shorthand.missed' && (e.orderNumber !== 0 || checkMiss(e.text, e.unresolved, e.gaveUp) !== null)) {
+      return { reason: `event ${e.id} has an invalid shorthand miss` };
+    }
+    // Tables and cameras (SCRUM-166): exactly their own fields, so no password or image rides along.
+    if (e.type.startsWith('table.') || e.type.startsWith('vision.')) {
+      const why = checkTableEvent(e);
+      if (why) return { reason: `event ${e.id} is refused: ${why}` };
     }
     if (e.type === 'menu.item_set' &&
         (!shortString(e.itemId) || !validOverride(e.itemId, e.before) || !validOverride(e.itemId, e.after))) {
       return { reason: `event ${e.id} has an invalid menu change` };
-    }
-    if (e.type === 'menu.price_set' &&
-        (!shortString(e.itemId) || !onlyPrices(e.before) || !onlyPrices(e.after) ||
-          !validOverride(e.itemId, e.before) || !validOverride(e.itemId, e.after))) {
-      return { reason: `event ${e.id} has an invalid price change` };
     }
     if (e.type === 'menu.sold_out' &&
         (!shortString(e.itemId) || !onMenu(e.itemId) ||
@@ -114,8 +329,21 @@ export const validatePush = (body: unknown, tenantId: string): { events: SyncEve
     if (e.type === 'menu.item_added' && (!isAddedId(e.itemId) || !validNewItem(e.item))) {
       return { reason: `event ${e.id} has an invalid new menu item` };
     }
-    if (e.type === 'menu.section_set' && (typeof e.sectionId !== 'string' || !NEW_SECTION_ID.test(e.sectionId) || !validSection(e.section))) {
-      return { reason: `event ${e.id} has an invalid menu section` };
+    if (e.type === 'menu.combo_set' &&
+        (typeof e.itemId !== 'string' || !COMBO_ID.test(e.itemId) || !validCombo(e.before) || !validCombo(e.after))) {
+      return { reason: `event ${e.id} has an invalid combo` };
+    }
+    // Sections (SCRUM-241): a printed section's id or one of his own; the whole setting, before and after.
+    if (e.type === 'menu.section_set' && (
+      typeof e.itemId !== 'string' || !(['pizza', 'burger', 'pasta'].includes(e.itemId) || SECTION_ID.test(e.itemId)) ||
+      !validSection(e.itemId, e.before, null) || !validSection(e.itemId, e.after, e.before) ||
+      (isCustomSection(e.itemId) && e.before === null && e.after === null)
+    )) return { reason: `event ${e.id} has an invalid menu section` };
+    if (e.type === 'menu.sections_ordered' && (
+      e.itemId !== 'sections' || checkSectionOrder(e.before) !== null || checkSectionOrder(e.after) !== null
+    )) return { reason: `event ${e.id} has an invalid order of sections` };
+    if (e.type === 'menu.photo_set' && (!shortString(e.itemId) || !onMenu(e.itemId) || !validPhotoChoice(e.photo))) {
+      return { reason: `event ${e.id} has an invalid photo change` };
     }
   }
   return { events: body.events as SyncEvent[] };

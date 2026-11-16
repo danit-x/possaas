@@ -5,8 +5,8 @@ import { parseArgs } from 'node:util';
 /**
  * Registers a device with the cloud copy and prints its settings, once. The
  * token is stored in D1 only as a SHA-256 hash, so a lost token means a new device.
- *   npm run device -- --shop bata-kade-galle --name "Bata Kade Galle"            (the shop server)
- *   npm run device -- --shop bata-kade-galle --kind owner --url <cloud address>     (the owner's phone)
+ *   npm run device -- --shop cheesybeez-thalwila --name "CheesyBeez Thalwila"            (the shop server)
+ *   npm run device -- --shop cheesybeez-thalwila --kind owner --url <cloud address>     (the owner's phone)
  *   add --local to register in the local test database (wrangler dev) instead of the real one.
  */
 const { values } = parseArgs({
@@ -31,16 +31,16 @@ const t = Date.now();
 const sql = `INSERT OR IGNORE INTO shops (id, name, created_at) VALUES ('${shop}', '${name}', ${t});
 INSERT INTO devices (id, tenant_id, kind, token_hash, created_at) VALUES ('${id}', '${shop}', '${values.kind}', '${hash}', ${t});`;
 
-execFileSync('npx', ['wrangler', 'd1', 'execute', 'melo', values.local ? '--local' : '--remote', '--command', sql],
+execFileSync('npx', ['wrangler', 'd1', 'execute', 'cheesybeez-cloud', values.local ? '--local' : '--remote', '--command', sql],
   { stdio: ['ignore', 'ignore', 'inherit'], cwd: import.meta.dirname });
 
 console.log(`Device ${id} (${values.kind}) added to ${shop} in the ${values.local ? 'local' : 'real'} cloud database.`);
 if (values.kind === 'shop_server') {
   console.log('\nAdd these lines to server/.env on the shop server, then restart it:\n');
-  console.log(`CLOUD_URL=${values.url ?? (values.local ? 'http://localhost:8787' : 'https://melo.cheesybeez-cloud.workers.dev')}`);
+  console.log(`CLOUD_URL=${values.url ?? (values.local ? 'http://localhost:8787' : 'https://cheesybeez-cloud.<your-subdomain>.workers.dev')}`);
   console.log(`CLOUD_TOKEN=${token}`);
   console.log(`CLOUD_SHOP=${shop}`);
 } else {
-  const base = values.url ?? (values.local ? 'http://localhost:8787' : 'https://melo.cheesybeez-cloud.workers.dev');
+  const base = values.url ?? (values.local ? 'http://localhost:8787' : 'https://cheesybeez-cloud.<your-subdomain>.workers.dev');
   console.log(`\nOpen this once on the owner's phone (it is the key: keep it private):\n  ${base}/?owner=${token}#owner`);
 }

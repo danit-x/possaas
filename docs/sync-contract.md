@@ -126,7 +126,31 @@ plan below, the rule is marked **Changed**.
 ## New event types
 
 The kitchen's taps become events so the counter and owner see them:
-`kitchen.seen`, `kitchen.bumped`, `kitchen.unbumped` (see `KitchenEvent` in `sync.ts`).
+`kitchen.seen`, `kitchen.started`, `kitchen.unstarted`, `kitchen.bumped`, `kitchen.unbumped`
+(see `KitchenEvent` in `sync.ts`). Start and Done time the cooking: `docs/cook-times.md`.
+
+Production with dependencies (SCRUM-161, `PrepEvent` in `sync.ts`): `prep.ordered` may carry
+`waitFor` (names it waits for; present = held, not on the kitchen screen) and `plan` (the ticket the
+person asked for). `prep.released` (`ticketId`, `prepId`, `name`, `qty`, `unit`, `waited`) puts a
+held batch on the kitchen screen; only the shop server writes it (id `rel-<ticketId>`), a device's is
+refused. The kitchen fires a ticket from the release alone and ignores one for a batch taken back.
+
+Tables and cameras (CV Table Management, SCRUM-166; `TableEvent` / `VisionEvent` in `events.ts`, rules
+and fold in `tables.ts`). All have `orderNumber` 0 and an actor; the server takes exactly these fields,
+so no camera password or image can ride along:
+`table.layout_set {tables:[{id,label,seats}]}`, `table.state_changed {tableId,from,to,confidence}` (the
+camera, by the rules of `observe`: free/reserved → occupied, occupied → free or needs_cleaning, needs_cleaning → free; ignored by the fold when the table is no longer in `from`), `table.state_set {tableId,from,to}`
+(staff; holds until presence flips), `table.state_set_undone {tableId,undoneEventId}` (Undo, like
+`order.change_undone`), `table.alert_raised {tableId,alert:'needs_cleaning'}`,
+`table.alert_cleared {tableId,alertEventId}`, `vision.cameras_set {cameras:[{id,name,ip,rtspPath,enabled}]}`
+(at most 16, at most 4 `enabled`; `ip` is a host only, `rtspPath` a path only), `vision.zones_set {cameraId,zones:[{id,tableId,points}]}`
+(points `{x,y}` normalised 0-1), `vision.settings_set {mode:'off'|'shadow'|'live'}` (since 2026-10-30 only the mode: the table rules and the 50% CPU limit are fixed in `src/domain/tables.ts`; older events may also carry `shortVisitS,leftCheckS,autoFreeS` or `seatS,leaveS,cleanAlertS` (all three, never mixed) and `cpuLimit` (whole 5-50), are still accepted, and the fold ignores those values; in Shadow a `table.state_changed` is kept but moves no table),
+`vision.camera_offline` / `vision.camera_online {cameraId}`, `vision.heartbeat {cameras:[{id,online,fps}],cpu,slowed?}` (`slowed`: the CPU guard has the worker checking every 2 s; the server keeps one heartbeat per 5 minutes, or sooner when a camera or `slowed` changes).
+Who may record them (`mayRecord`, SCRUM-167): role `vision` only `table.state_changed`, `table.alert_raised`,
+`table.alert_cleared`, `vision.camera_offline`/`camera_online`/`heartbeat`, and nobody else may; `table.state_set` and its
+Undo any signed-in role but `kitchen`; `table.layout_set`, `vision.cameras_set`/`zones_set`/`settings_set` the owner.
+`vision` is never a person (no staff row, no PIN login): the server refuses any device push whose actor is `vision`;
+only the server stamps it on the camera worker's events (SCRUM-170).
 
 ## Decision needed: where the server runs
 

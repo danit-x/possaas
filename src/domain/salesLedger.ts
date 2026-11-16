@@ -2,6 +2,7 @@ import type { OrderEvent } from './events.ts';
 import { itemById } from './menu.ts';
 import type { Cents, OrderLine, Tender } from './types.ts';
 import { lineItemName } from './halves.ts';
+import { changeGiven } from './split.ts';
 
 /**
  * The sales ledger: each payment as one tidy row, with the items it paid for, for the
@@ -53,9 +54,10 @@ export interface SaleRow {
  * takes its ticket back, manager changes and cancels apply, and their Undo reverses them.
  * Payments, discounts and kitchen events leave the lines alone.
  */
-export const orderLinesFrom = (events: readonly OrderEvent[]): { lines: OrderLine[]; online: boolean } => {
+export const orderLinesFrom = (events: readonly OrderEvent[]): { lines: OrderLine[]; online: boolean; deliveryFee: Cents } => {
   let lines: OrderLine[] = [];
   let online = false;
+  let deliveryFee = 0;
   const tickets = new Map<string, string[]>();
   const undo = new Map<string, () => void>(); // a manager change's id → how to put it back
   const replace = (id: string, line: OrderLine) => { lines = lines.map((l) => (l.id === id ? line : l)); };
@@ -69,6 +71,7 @@ export const orderLinesFrom = (events: readonly OrderEvent[]): { lines: OrderLin
         lines = [...lines, ...e.lines];
         tickets.set(e.ticketId, e.lines.map((l) => l.id));
         if (e.online) online = true;
+        if (e.online?.delivery) deliveryFee = e.online.delivery.fee;
         break;
       case 'order.send_undone':
         for (const id of tickets.get(e.ticketId) ?? []) remove(id);
@@ -88,7 +91,7 @@ export const orderLinesFrom = (events: readonly OrderEvent[]): { lines: OrderLin
       default: break;
     }
   }
-  return { lines, online };
+  return { lines, online, deliveryFee };
 };
 
 const nameOf = (itemId: string): { name: string; size: (id?: string) => string | null; option: (id: string) => string } => {
@@ -114,7 +117,7 @@ export const saleFrom = (
   paid: Extract<OrderEvent, { type: 'order.paid' }>,
   orderEvents: readonly OrderEvent[],
 ): SaleRow => {
-  const { lines, online } = orderLinesFrom(orderEvents);
+  const { lines, online, deliveryFee } = orderLinesFrom(orderEvents);
   const items = lines.map((l, i): SaleItemRow => {
     const n = nameOf(l.itemId);
     const unitPrice = l.unit ?? 0;
@@ -139,11 +142,12 @@ export const saleFrom = (
     paidAt: paid.at,
     itemsCount: items.reduce((s, it) => s + it.qty, 0),
     subtotal,
-    discount: Math.max(0, subtotal - paid.total),
+    // A delivery's fee is in the total but on no line; a Free order (comp) waives it.
+    discount: Math.max(0, subtotal + (paid.tender === 'comp' ? 0 : deliveryFee) - paid.total),
     total: paid.total,
     tender: paid.tender,
     tendered: paid.tendered,
-    changeGiven: paid.tender === 'cash' ? Math.max(0, paid.tendered - paid.total) : 0,
+    changeGiven: changeGiven(paid),
     cashier: paid.actor.name,
     online,
     items,

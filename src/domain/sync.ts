@@ -1,7 +1,20 @@
+import type { MoneyEvent } from './moneyOut.ts';
+import type { BillEvent } from './billExtras.ts';
+import type { ValueEvent } from './valuePlaces.ts';
 import type { Actor } from './auth.ts';
-import type { DayClosedEvent } from './cashUp.ts';
-import type { OrderEvent } from './events.ts';
+import type { OrderEvent, TableEvent, VisionEvent } from './events.ts';
+import type { RecipeEvent } from './costing.ts';
+import type { ShorthandEvent } from './shorthandMisses.ts';
 import type { MenuEvent } from './menuEdits.ts';
+import type { Cents } from './types.ts';
+import type { InventoryItem, Supplier } from './inventoryData.ts';
+import type { CountEntry, GapReason, Tier } from './counting.ts';
+import type { StockSettings } from './stockSettings.ts';
+import type { WasteReason, WasteWhat } from './waste.ts';
+import type { WarehouseInfo } from './warehouses.ts';
+import type { ShopEvent } from './freshStart.ts';
+import type { ModuleEvent } from './modules.ts';
+import type { CampaignEvent } from './campaigns.ts';
 
 /**
  * The sync contract between devices and the server (SCRUM-59, 60, 29, 30).
@@ -22,21 +35,185 @@ interface KitchenBase {
 
 export type KitchenEvent =
   | (KitchenBase & { type: 'kitchen.seen' })
+  /** The cook started on the ticket; with `kitchen.bumped` it times the cooking (cookLog). */
+  | (KitchenBase & { type: 'kitchen.started' })
+  | (KitchenBase & { type: 'kitchen.unstarted' })
   | (KitchenBase & { type: 'kitchen.bumped' })
-  | (KitchenBase & { type: 'kitchen.unbumped' })
-  /** A pay-first counter handed over (or took back) one portion of a line. */
-  | (KitchenBase & { type: 'kitchen.served' | 'kitchen.unserved'; lineId: string });
+  | (KitchenBase & { type: 'kitchen.unbumped' });
 
-/** Everything that syncs. Menu changes: src/domain/menuEdits.ts; the day's close: src/domain/cashUp.ts. */
-export type SyncEvent = OrderEvent | KitchenEvent | MenuEvent | DayClosedEvent;
+/**
+ * Stock changes (inventory), recorded like sales so they reach MySQL and the cloud
+ * copy with who did them. Not about an order: `orderNumber` is always 0.
+ */
+interface StockBase {
+  id: string;
+  shopId: string;
+  at: number;
+  orderNumber: 0;
+  actor: Actor;
+}
+
+interface StockItemBase extends StockBase {
+  itemId: string;
+}
+
+export type StockEvent =
+  | (StockItemBase & { type: 'stock.adjusted'; deltaPacks: number; reason?: 'waste' | 'audit' | 'receive' })
+  /** grnId: the price a GRN delivered at (and the GRN's Undo putting the old one back). */
+  | (StockItemBase & { type: 'stock.price_set'; before: Cents; after: Cents; grnId?: string })
+  | (StockBase & { type: 'stock.item_added'; item: InventoryItem })
+  | (StockBase & { type: 'stock.supplier_added'; supplier: Supplier; linkedItemIds: string[] })
+  | (StockItemBase & { type: 'stock.item_archived' | 'stock.item_restored' })
+  | (StockBase & { type: 'stock.supplier_archived' | 'stock.supplier_restored'; supplierId: string })
+  /** Edit Supplier: name and phone before/after, and the ingredients it now supplies or no longer does. */
+  | (StockBase & {
+    type: 'stock.supplier_edited'; supplierId: string;
+    before: Omit<Supplier, 'id'>; after: Omit<Supplier, 'id'>; linked: string[]; unlinked: string[];
+  })
+  /**
+   * A shelf count (counting.ts): what was left, what the app expected then (both in base
+   * units), how it was counted, and why it differs when the gap is beyond the allowance.
+   * The shelf becomes counted - expected + what it was, so concurrent sales stay exact.
+   */
+  | (StockItemBase & {
+    type: 'stock.counted'; counted: number; expected: number; entries: CountEntry[];
+    reason: GapReason | null; valueCents: Cents; tier: Tier;
+    /** What happened, when the reason is Other. */
+    note?: string;
+    /** The shelf photo taken as proof of a big gap (SCRUM-94), kept on the shop PC. */
+    photo?: string | null;
+    /** Counted in one warehouse only (SCRUM-184): counted and expected are that warehouse's. */
+    warehouseId?: string;
+    /**
+     * Never sent: set by withoutTestData (freshStart.ts) on a count taken while test data was still
+     * in the stock, so the shelf becomes exactly `counted` instead of moving by counted - expected.
+     */
+    absolute?: true;
+  })
+  /** Takes back a count (Undo on the count screen). */
+  | (StockBase & { type: 'stock.count_undone'; countId: string })
+  /** A unit learned for an item: "Tray" = 30 pcs (base: 0 removes it). */
+  | (StockItemBase & { type: 'stock.unit_set'; name: string; base: number })
+  /** The owner fixes how often an item is counted; null hands it back to the automatic choice. */
+  | (StockItemBase & { type: 'stock.tier_set'; tier: Tier | null })
+  /** What receiving this item is counted in, the owner's choice (SCRUM-96): a unit id from unitsOf ('pack', 'kg', 'unit:Tray'). */
+  | (StockItemBase & { type: 'stock.receive_unit_set'; unit: string })
+  /** "Order when below" this many packs, the owner's choice (SCRUM-135); null hands it back to the reorder rule. */
+  | (StockItemBase & { type: 'stock.limit_set'; packs: number | null })
+  /** The owner on a count's gap (SCRUM-95): OK, or a question to the manager. */
+  | (StockItemBase & { type: 'stock.gap_reviewed'; countId: string; decision: 'ok' | 'ask'; note: string })
+  /** The manager answers the owner's question about a gap. */
+  | (StockItemBase & { type: 'stock.gap_answered'; countId: string; note: string })
+  /** A purchase order (purchaseOrders.ts): packs and agreed price per pack from one supplier. Its id is the event id. */
+  | (StockBase & { type: 'stock.ordered'; poNo?: string; supplierId: string; lines: PoLine[] })
+  /** A purchase order cancelled, with why (only while nothing has been received); Undo reopens it. */
+  | (StockBase & { type: 'stock.order_cancelled'; orderId: string; reason: string })
+  | (StockBase & { type: 'stock.order_reopened'; orderId: string })
+  /** A purchase order's lines replaced (edit, or "Add to PO"); only while nothing has been received. */
+  | (StockBase & { type: 'stock.order_edited'; orderId: string; lines: PoLine[] })
+  /** One supplier's draft order, whole (Items add to it; the Order page places it); no lines clears it. */
+  | (StockBase & { type: 'stock.draft_set'; supplierId: string; lines: PoLine[] })
+  /**
+   * Goods received against a purchase order (GRN), in packs. Stock itself goes up by
+   * 'receive' adjustments; this is the record, closing the order. approvedBy: the manager
+   * whose PIN approved a quantity or price difference.
+   */
+  | (StockBase & { type: 'stock.grn'; grnNo?: string; orderId: string; supplierId: string; lines: GrnLine[]; approvedBy: Actor | null; shortDecision?: 'wait' | 'close'; overDecision?: 'accept' | 'return'; /** The approving manager's final note, if any. */ note?: string })
+  /** A GRN taken back by a manager, with why: its stock comes off and its order goes back. The GRN stays, marked undone. */
+  | (StockBase & { type: 'stock.grn_undone'; grnId: string; reason?: string; approvedBy?: Actor })
+  /**
+   * A manager decides a delivered price a cashier saved without approval (SCRUM-226): `use` makes it the
+   * item's price (stock.price_set follows, with this grnId); otherwise the item keeps its price.
+   */
+  | (StockBase & { type: 'stock.grn_price_reviewed'; grnId: string; use: boolean })
+  /** One stock movement, in base units (g, ml, pcs, sheets); docId: the GRN or count it belongs to. */
+  | (StockItemBase & { type: 'stock.movement'; kind: MovementKind; qtyBase: number; docId: string })
+  /** The shop server gives a PO or GRN its display number (docNumbers.ts). Only the server writes these. */
+  | (StockBase & { type: 'stock.numbered'; docId: string; kind: 'PO' | 'GRN'; number: string })
+  /**
+   * Thrown away instead of sold (manager mode, the bin; waste.ts). Takes stock the way a sale
+   * does: a dish through its recipe, a semi-processed item through its batch, raw directly.
+   */
+  | (StockBase & { type: 'stock.wasted'; what: WasteWhat;
+    /** What it was called when thrown away ("Margherita · Large"), for history and reports. */
+    name: string; qty: number; reason: WasteReason; note?: string;
+    /** From the kitchen's Remake (SCRUM-177): the ticket and line it was made for, which the kitchen makes again. */
+    ticketId?: string; lineId?: string })
+  /** ticketId: undoing a kitchen Remake (SCRUM-177), so the kitchen may record it too. */
+  | (StockBase & { type: 'stock.waste_undone'; wasteId: string; ticketId?: string })
+  /** The owner changes one of the stock rules' numbers (stockSettings.ts). */
+  | (StockBase & { type: 'stock.settings_set'; key: keyof StockSettings; value: number })
+  /** A warehouse added (before null), renamed or archived by the owner (warehouses.ts, SCRUM-184); Undo writes it back. */
+  | (StockBase & { type: 'stock.warehouse_set'; warehouseId: string; before: WarehouseInfo | null; after: WarehouseInfo })
+  /** The warehouse next to the kitchen, which sales take from first (the owner's). */
+  | (StockBase & { type: 'stock.kitchen_side_set'; before: string; after: string })
+  /** An item's home warehouse, by stock key (`stock:<id>`, `semi:<key>`); null: the default. */
+  | (StockBase & { type: 'stock.home_set'; stockKey: string; before: string | null; after: string | null })
+  /** Stock carried from one warehouse to another; the total does not change. qty: base units, or a semi-processed item's unit. */
+  | (StockBase & { type: 'stock.moved'; stockKey: string; from: string; to: string; qty: number })
+  | (StockBase & { type: 'stock.move_undone'; moveId: string });
+
+/**
+ * Semi-processed items (prep.ts, SCRUM-136). Running low, one is sent to the kitchen as a prep
+ * ticket (`ticketId`); the cook Starts and marks it Done like an order (kitchen.* events), and
+ * Done is the batch made: the item's stock goes up and its raw items come off. From its first
+ * batch on, sales take the item. prepId: the item's key (his own as `kitchen:<id>`, a sheet
+ * batch by name); qty in `unit`. Undo right after sending takes the ticket back.
+ *
+ * Dependencies (production.ts): an order whose inputs are not on hand is sent held, with
+ * `waitFor` naming them ("Culture"), after the orders that make them; `plan` is the ticket the
+ * person asked for, so its parts are told apart. A held order reaches the kitchen only with
+ * `prep.released`, which the shop server writes once its inputs are on hand (`id` rel-<ticket>,
+ * so it is written once), with the order's details so the kitchen needs nothing older.
+ */
+export type PrepEvent =
+  | (StockBase & { type: 'prep.ordered'; ticketId: string; prepId: string; name: string; qty: number; unit: string; waitFor?: string[]; plan?: string })
+  | (StockBase & { type: 'prep.order_undone'; ticketId: string })
+  | (StockBase & { type: 'prep.released'; ticketId: string; prepId: string; name: string; qty: number; unit: string; waited: string[] })
+  /** "Make more when below" this amount, in the item's unit (managers and the owner); null: automatic. */
+  | (StockBase & { type: 'prep.limit_set'; prepId: string; before: number | null; after: number | null });
+
+export const PREP_EVENT_TYPES = ['prep.ordered', 'prep.order_undone', 'prep.released', 'prep.limit_set'] as const satisfies readonly PrepEvent['type'][];
+
+/**
+ * Stock moves only by these (stockMovements.ts): GRN in, GRN_UNDO out, COUNT_ADJUST ±.
+ * Sales are not stored: they are worked out from paid orders and their recipes.
+ */
+export const MOVEMENT_KINDS = ['GRN', 'GRN_UNDO', 'COUNT_ADJUST'] as const;
+export type MovementKind = (typeof MOVEMENT_KINDS)[number];
+
+/** stockQty: base units; unitPriceCents: agreed one-pack price (missing on older orders). */
+export interface PoLine { itemId: string; packs: number; stockQty?: number; unitPriceCents?: Cents }
+/**
+ * ordered: what was still owed when it came; received: what came; accepted: what went into
+ * stock (the stock movement is worked out from this); returned: the extra sent back;
+ * unitPriceCents: delivered price per pack.
+ * Older notes have no accepted: their stock was written as separate movements.
+ */
+export interface GrnLine { itemId: string; ordered: number; received: number; accepted?: number; returned?: number; unitPriceCents?: Cents;
+  /** The warehouse it went into (SCRUM-184); missing: the item's home. */
+  warehouseId?: string }
+
+/** Everything that syncs. Menu changes: src/domain/menuEdits.ts; shorthand misses: shorthandMisses.ts; tables and cameras: tables.ts; starting fresh: freshStart.ts; modules: modules.ts. */
+export type SyncEvent = OrderEvent | KitchenEvent | StockEvent | PrepEvent | MenuEvent | RecipeEvent | ShorthandEvent | TableEvent | VisionEvent | MoneyEvent | ValueEvent | ShopEvent | ModuleEvent | CampaignEvent | BillEvent;
 
 /** An event before the log gives it an id and stamps the shop. */
 export type NewSyncEvent = SyncEvent extends infer E ? (E extends SyncEvent ? Omit<E, 'id' | 'shopId'> : never) : never;
 
-export const KITCHEN_EVENT_TYPES = ['kitchen.seen', 'kitchen.bumped', 'kitchen.unbumped', 'kitchen.served', 'kitchen.unserved'] as const;
+export const KITCHEN_EVENT_TYPES = [
+  'kitchen.seen', 'kitchen.started', 'kitchen.unstarted', 'kitchen.bumped', 'kitchen.unbumped',
+] as const satisfies readonly KitchenEvent['type'][];
+export const STOCK_EVENT_TYPES = [
+  'stock.adjusted', 'stock.price_set', 'stock.item_added', 'stock.supplier_added',
+  'stock.item_archived', 'stock.item_restored', 'stock.supplier_archived', 'stock.supplier_restored', 'stock.supplier_edited',
+  'stock.counted', 'stock.count_undone', 'stock.unit_set', 'stock.tier_set', 'stock.gap_reviewed', 'stock.gap_answered', 'stock.receive_unit_set', 'stock.limit_set',
+  'stock.ordered', 'stock.order_cancelled', 'stock.order_reopened', 'stock.order_edited', 'stock.draft_set', 'stock.grn', 'stock.grn_undone', 'stock.grn_price_reviewed', 'stock.movement', 'stock.numbered', 'stock.settings_set',
+  'stock.wasted', 'stock.waste_undone',
+  'stock.warehouse_set', 'stock.kitchen_side_set', 'stock.home_set', 'stock.moved', 'stock.move_undone',
+] as const satisfies readonly StockEvent['type'][];
 export const ORDER_EVENT_TYPES = [
-  'order.sent', 'order.send_undone', 'order.paid', 'order.payment_undone', 'order.item_changed', 'order.item_cancelled',
-  'order.line_removed', 'order.line_adjusted', 'order.discount_set', 'order.comped', 'order.change_undone',
+  'order.sent', 'order.send_undone', 'order.paid', 'order.payment_undone', 'order.settled', 'order.item_changed', 'order.item_cancelled',
+  'order.line_removed', 'order.line_adjusted', 'order.discount_set', 'order.comped', 'order.change_undone', 'order.released', 'order.given', 'order.given_undone',
 ] as const satisfies readonly OrderEvent['type'][];
 
 /** An event as the server hands it back: who wrote it, and where it sits in the shop's history. */
@@ -86,8 +263,6 @@ export interface PullResponse {
   /** True when there are more after `lastSeq`: pull again straight away. */
   more: boolean;
   serverTime: number;
-  /** The shop PC's clock minus the cloud's, as last measured (ms); absent when not known. For the Owner view's clock card. */
-  clockOffMs?: number;
 }
 
 /** WSS /api/v1/stream?after=<seq>: server → device only. */
@@ -97,7 +272,7 @@ export type StreamMessage =
 
 /** What the server sends on any 4xx/5xx. */
 export interface ApiError {
-  error: 'unauthorized' | 'wrong_shop' | 'forbidden' | 'invalid_event' | 'printer' | 'wrong_pin' | 'too_many' | 'server';
+  error: 'unauthorized' | 'wrong_shop' | 'forbidden' | 'invalid_event' | 'printer' | 'wrong_pin' | 'too_many' | 'unavailable' | 'server';
   message: string;
 }
 
@@ -137,22 +312,6 @@ export const retryDelayMs = (attempt: number): number => Math.min(60_000, 1000 *
  */
 export const clockOffsetMs = (serverTime: number, sentAt: number, receivedAt: number): number =>
   Math.round(serverTime - (sentAt + receivedAt) / 2);
-
-/** How far a shop PC's clock may be off before anyone is told: menu hours, the business day and receipts follow it. */
-export const CLOCK_TOLERANCE_MS = 5 * 60_000;
-
-/**
- * "2 h 10 min behind", "3 days ahead", or null while the clock is close enough.
- * `pcAheadMs` is the PC's clock minus the real time (the cloud's).
- */
-export const clockOffText = (pcAheadMs: number | null | undefined): string | null => {
-  if (pcAheadMs == null || Math.abs(pcAheadMs) < CLOCK_TOLERANCE_MS) return null;
-  const min = Math.round(Math.abs(pcAheadMs) / 60_000);
-  const by = min < 60 ? `${min} min`
-    : min < 48 * 60 ? `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ''}`
-    : `${Math.round(min / 1440)} days`;
-  return `${by} ${pcAheadMs > 0 ? 'ahead' : 'behind'}`;
-};
 
 export const syncStatus = (online: boolean, pendingCount: number): SyncStatus =>
   !online ? 'offline' : pendingCount > 0 ? 'pending' : 'synced';

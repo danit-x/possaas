@@ -3,7 +3,7 @@ import {
   PULL_LIMIT, PUSH_BATCH, retryDelayMs, syncStatus,
   type PullResponse, type PushRequest, type PushResponse, type StreamMessage, type SyncStatus, type SyncTransport,
 } from '../domain/sync.ts';
-import { addEvents, markRejected, markSynced, readAll, readOutbox, subscribeEvents } from '../ui/eventLog.ts';
+import { addEvents, markRejected, markSynced, readOutbox, readStored, subscribeEvents } from '../ui/eventLog.ts';
 import { storageKey } from '../ui/storage.ts';
 
 /**
@@ -52,7 +52,7 @@ const setOnline = (v: boolean) => { if (online !== v) { online = v; statusListen
 /** How many different orders still have something the server has not confirmed. */
 const waitingOrders = (): number => {
   const pending = new Set(readOutbox());
-  return new Set(readAll().filter((e) => pending.has(e.id)).map((e) => e.orderNumber)).size;
+  return new Set(readStored().filter((e) => pending.has(e.id)).map((e) => e.orderNumber)).size;
 };
 
 /** null when this device does not sync (no pairing yet, or the demo). */
@@ -86,7 +86,7 @@ export function startSync(transport: SyncTransport, deviceId = 'browser'): () =>
     try {
       for (;;) {
         const waiting = new Set(readOutbox());
-        const batch = readAll().filter((e) => waiting.has(e.id)).slice(0, PUSH_BATCH);
+        const batch = readStored().filter((e) => waiting.has(e.id)).slice(0, PUSH_BATCH);
         if (!batch.length) break;
         const res = await transport.push({ deviceId, events: batch });
         if (stopped) return;
@@ -94,7 +94,7 @@ export function startSync(transport: SyncTransport, deviceId = 'browser'): () =>
         // Refused for good (SCRUM-41): retrying would never succeed, and must not block the rest.
         if (res.rejected?.length) {
           console.warn('The server refused these events:', res.rejected);
-          markRejected(res.rejected.map((r) => r.id));
+          markRejected(res.rejected);
         }
         pushAttempt = 0;
         setOnline(true);

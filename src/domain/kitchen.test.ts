@@ -1,12 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  COOK_MINUTES, KEEP_DONE_MS, cookTimeMs,
+  COOK_MINUTES, KEEP_DONE_MS, cookTimeMs, lineCookState,
   TICKET_HORIZON_MS, ack, amendLine, bump, cookState, kitchenLine, restoreLine, elapsedLabel, fire, needsAttention, prune, queue, recall,
-  cancelledToServe, forStation, serve, servingRows, splitByStation, ticketLines, ticketsFromEvents, toServe, unbump, unserve, urgency,
+  ticketLines, ticketsFromEvents, unbump, urgency, start, unstart, cookLog,
 } from './kitchen.ts';
-import { SAMPLE_START, setStartingMenu } from './menu.ts';
-import type { MenuItem, Section } from './types.ts';
 import type { SyncEvent } from './sync.ts';
 import { addLine, bareLine, emptyOrder, markSent, unsentLines } from './order.ts';
 
@@ -160,18 +158,35 @@ test('changing twice compares with the latest version; other tickets are untouch
   assert.equal(t[1].changed, undefined);
 });
 
-test('cookState: cooking while any ticket of the order is open, done when all are bumped', () => {
+test('cookState: waiting until Start, cooking once an open ticket is started, done when all are bumped', () => {
   let t = fire([], { shopId: SHOP, id: 'a', number: 1042, lines: [M('x')], firedAt: 0 });
   t = fire(t, { shopId: SHOP, id: 'b', number: 1042, lines: [M('y')], firedAt: 5, addOn: true });
   t = fire(t, { shopId: SHOP, id: 'c', number: 1043, lines: [M('z')], firedAt: 5 });
+  assert.equal(cookState(t, 1042), 'waiting', 'sent, but the cook has not started');
+  t = start(t, 'a', 8);
   assert.equal(cookState(t, 1042), 'cooking');
   t = bump(t, 'a', 10);
-  assert.equal(cookState(t, 1042), 'cooking'); // the added round is still cooking
+  assert.equal(cookState(t, 1042), 'waiting'); // the added round is not started yet
+  t = start(t, 'b', 12);
+  assert.equal(cookState(t, 1042), 'cooking');
   t = bump(t, 'b', 20);
   assert.equal(cookState(t, 1042), 'done');
-  assert.equal(cookState(t, 1043), 'cooking');
+  assert.equal(cookState(t, 1043), 'waiting');
   assert.equal(cookState(amendLine(t, 'x', null, 30), 1042), 'cooking'); // a manager change reopens it
   assert.equal(cookState(prune(t, 10 ** 12), 1042), 'done'); // pruned hours later: still done
+});
+
+test('lineCookState: per line, so an add-on round is not "made" with the first', () => {
+  let t = fire([], { shopId: SHOP, id: 'a', number: 1042, lines: [M('x')], firedAt: 0 });
+  t = fire(t, { shopId: SHOP, id: 'b', number: 1042, lines: [M('y')], firedAt: 5, addOn: true });
+  assert.equal(lineCookState(t, 'x'), 'waiting');
+  t = start(t, 'a', 8);
+  assert.equal(lineCookState(t, 'x'), 'cooking');
+  assert.equal(lineCookState(t, 'y'), 'waiting');
+  t = bump(t, 'a', 10);
+  assert.equal(lineCookState(t, 'x'), 'done');
+  assert.equal(lineCookState(amendLine(t, 'x', null, 30), 'x'), 'cooking', 'a change reopens it, but it was still made');
+  assert.equal(lineCookState(prune(t, 10 ** 12), 'x'), 'done', 'pruned hours later: made');
 });
 
 test('restoreLine puts a cancelled line back exactly and alerts the kitchen again', () => {
@@ -222,6 +237,27 @@ test('tickets are folded from events: send, change, undo, seen, done, recall', (
   assert.deepEqual(ticketsFromEvents([ev[0], recalled], 200), []);
 });
 
+test('paid first (SCRUM-239): a held send reaches the kitchen only at Send, timed from Send; undone, never', () => {
+  const actor = { id: 's1', name: 'Nimal', role: 'cashier' as const };
+  const base = { shopId: SHOP, actor, orderNumber: 1044 };
+  const sent = { ...lines()[0], sent: true };
+  const ev: SyncEvent[] = [
+    { ...base, id: 'e1', at: 100, type: 'order.sent', ticketId: 't1', lines: [sent], addOn: false, held: true },
+    { ...base, id: 'e2', at: 110, type: 'order.paid', total: 250000, tender: 'cash', tendered: 250000 },
+  ];
+  assert.deepEqual(ticketsFromEvents(ev, 200), [], 'paid, not sent: nothing for the kitchen yet');
+
+  const released: SyncEvent = { ...base, id: 'e3', at: 500, type: 'order.released', ticketId: 't1' };
+  const t = ticketsFromEvents([...ev, released], 600);
+  assert.equal(t.length, 1);
+  assert.equal(t[0].firedAt, 500, 'the kitchen clock starts at Send');
+  assert.equal(needsAttention(t[0]), true, 'it arrives like any order');
+  assert.equal(ticketsFromEvents([...ev, released, released], 600).length, 1, 'released once');
+
+  const undone: SyncEvent = { ...base, id: 'e4', at: 120, type: 'order.send_undone', ticketId: 't1' };
+  assert.deepEqual(ticketsFromEvents([ev[0], undone, released], 600), [], 'a payment undone takes the held send with it');
+});
+
 test('events older than a day are skipped', () => {
   const actor = { id: 's1', name: 'Nimal', role: 'cashier' as const };
   const old: SyncEvent = { id: 'e1', shopId: SHOP, actor, orderNumber: 1001, at: 0, type: 'order.sent', ticketId: 't1', lines: lines(), addOn: false };
@@ -241,92 +277,127 @@ test('an online order keeps its pickup time on the kitchen ticket', () => {
   assert.equal(b.online, undefined);
 });
 
-const portion = (id: string, itemId: string, qty = 1, size?: string) => ({ id, itemId, qty, adds: [], outs: [], ...(size ? { size } : {}) });
-
-test('serving list: paid portions grouped by meal, longest wait first, one tap serves the oldest', () => {
-  let t = fire([], { shopId: SHOP, id: 'a', number: 1, lines: [portion('a1', 'devilled-chicken', 1, 'L'), portion('a2', 'margherita')], firedAt: 100 });
-  t = fire(t, { shopId: SHOP, id: 'b', number: 2, lines: [portion('b1', 'devilled-chicken', 2, 'L')], firedAt: 200 });
-  t = fire(t, { shopId: SHOP, id: 'c', number: 3, lines: [portion('c1', 'devilled-chicken', 1, 'M')], firedAt: 300 });
-  const rows = servingRows(t);
-  assert.deepEqual(rows.map((r) => [r.name, r.detail, r.count]), [
-    ['Devilled Chicken', 'Large', 3], ['Margherita', '', 1], ['Devilled Chicken', 'Medium', 1],
-  ]);
-  assert.deepEqual(rows[0].next, { ticketId: 'a', lineId: 'a1', number: 1 });
-  assert.deepEqual(rows[0].ticketIds, ['a', 'b']);
-
-  t = serve(t, 'a', 'a1', 400);
-  const large = servingRows(t).find((r) => r.detail === 'Large')!;
-  assert.equal(large.count, 2);
-  assert.equal(large.next.ticketId, 'b', 'the oldest left is next');
-  assert.equal(servingRows(t)[0].name, 'Margherita', "order 1's margherita is now the longest wait");
-  assert.equal(t[0].doneAt, undefined, 'the margherita is still to serve');
-  t = serve(t, 'a', 'a2', 410);
-  assert.equal(t[0].doneAt, 410, 'nothing left on it: done');
-  assert.equal(needsAttention(t[0]), false, 'done also counts as seen');
+test('Start marks a ticket cooking (and seen); Undo takes it back', () => {
+  let t = fire([], ticket('a', 1001, 100));
+  t = start(t, 'a', 200);
+  assert.equal(t[0].startedAt, 200);
+  assert.equal(needsAttention(t[0]), false);
+  t = start(t, 'a', 300);
+  assert.equal(t[0].startedAt, 200, 'a second Start keeps the first time');
+  t = unstart(t, 'a');
+  assert.equal(t[0].startedAt, undefined);
+  assert.equal(queue(t).length, 1, 'starting does not take it off the screen');
 });
 
-test('a line is served one portion at a time, never more than was paid; taking one back reopens', () => {
-  let t = fire([], { shopId: SHOP, id: 'b', number: 2, lines: [portion('b1', 'devilled-chicken', 2, 'L')], firedAt: 0 });
-  t = serve(serve(t, 'b', 'b1', 10), 'b', 'b1', 20);
-  assert.equal(t[0].doneAt, 20);
-  assert.deepEqual(serve(t, 'b', 'b1', 30), t, 'a third portion was never paid for');
-  t = unserve(t, 'b', 'b1');
-  assert.equal(t[0].doneAt, undefined);
-  assert.equal(toServe(t[0].lines[0]), 1);
-  assert.deepEqual(unserve(unserve(t, 'b', 'b1'), 'b', 'b1')[0].lines[0].served, 0, 'never below none');
-});
-
-test('a cancelled line leaves the serving list; served and unserved fold from events', () => {
-  const base = { shopId: SHOP, orderNumber: 7 };
-  const line = { ...portion('x', 'devilled-chicken', 2, 'L'), sent: true };
-  const ev: SyncEvent[] = [
-    { ...base, id: 'e1', at: 100, type: 'order.sent', ticketId: 't', lines: [line], addOn: false, actor: { id: 's', name: 'S', role: 'cashier' } },
-    { ...base, id: 'e2', at: 200, type: 'kitchen.served', ticketId: 't', lineId: 'x' },
-    { ...base, id: 'e3', at: 300, type: 'kitchen.served', ticketId: 't', lineId: 'x' },
-    { ...base, id: 'e4', at: 400, type: 'kitchen.unserved', ticketId: 't', lineId: 'x' },
+test('cookLog times each finished ticket from the events, Undo applied', () => {
+  const actor = { id: 's1', name: 'Nimal', role: 'cashier' as const };
+  const base = { shopId: SHOP, orderNumber: 1001 };
+  const k = (id: string, at: number, type: 'kitchen.started' | 'kitchen.unstarted' | 'kitchen.bumped' | 'kitchen.unbumped', ticketId = 't1'): SyncEvent =>
+    ({ ...base, id, at, type, ticketId });
+  const sent = (id: string, ticketId: string, at: number): SyncEvent =>
+    ({ ...base, id, actor, at, type: 'order.sent', ticketId, lines: lines(), addOn: false });
+  const events: SyncEvent[] = [
+    sent('e1', 't1', 0),
+    k('e2', 60_000, 'kitchen.started'),
+    k('e3', 61_000, 'kitchen.unstarted'), // tapped by mistake
+    k('e4', 120_000, 'kitchen.started'),
+    k('e5', 600_000, 'kitchen.bumped'),
+    sent('e6', 't2', 0),
+    k('e7', 300_000, 'kitchen.bumped', 't2'), // Done without Start
+    sent('e8', 't3', 0),
+    k('e9', 10_000, 'kitchen.started', 't3'), // still cooking
   ];
-  assert.equal(servingRows(ticketsFromEvents(ev.slice(0, 2), 500))[0].count, 1);
-  assert.equal(queue(ticketsFromEvents(ev.slice(0, 3), 500)).length, 0);
-  assert.equal(servingRows(ticketsFromEvents(ev, 500))[0].count, 1);
-  const gone = amendLine(ticketsFromEvents(ev, 500), 'x', null, 600);
-  assert.equal(servingRows(gone).length, 0);
-  assert.deepEqual(cancelledToServe(gone).map((t) => t.number), [7], 'the counter sees it once, then taps it away');
-  assert.equal(cancelledToServe(bump(gone, 't', 700)).length, 0);
+  const log = cookLog(events);
+  assert.deepEqual(log.map((r) => r.ticketId), ['t2', 't1'], 'finished tickets only, in the order they were done');
+  const [t2, t1] = log;
+  assert.deepEqual(
+    { sentAt: t1.sentAt, startedAt: t1.startedAt, doneAt: t1.doneAt, waitMs: t1.waitMs, cookMs: t1.cookMs, totalMs: t1.totalMs },
+    { sentAt: 0, startedAt: 120_000, doneAt: 600_000, waitMs: 120_000, cookMs: 480_000, totalMs: 600_000 },
+  );
+  assert.deepEqual(t1.items, [{ itemId: 'devilled-chicken', category: 'pizza', size: 'L', qty: 2 }]);
+  assert.equal(t2.cookMs, null);
+  assert.equal(t2.totalMs, 300_000);
+
+  const reopened = cookLog([...events, k('e10', 700_000, 'kitchen.unbumped')]);
+  assert.deepEqual(reopened.map((r) => r.ticketId), ['t2'], 'a Done taken back is not cooked yet');
 });
 
-/** A shop with two kitchens: rice & curry on the left, kottu on the right, short eats in neither. */
-const twoKitchens = () => {
-  const section = (id: string, station?: 'left' | 'right'): Section => ({ id, name: id, cookMinutes: 5, sizes: [], adds: [], ...(station ? { station } : {}) });
-  const item = (id: string, category: string): MenuItem => ({ id, category, name: { en: id }, description: '', aliases: [], price: 50000, adds: [], leaveOut: [] });
-  setStartingMenu({
-    sections: [section('rice', 'left'), section('kottu', 'right'), section('short-eats')],
-    items: [item('chicken-rice', 'rice'), item('chicken-kottu', 'kottu'), item('roll', 'short-eats')],
+test('a Remake marks the line on its ticket, which stays open to make again; its Undo clears the mark (SCRUM-177)', () => {
+  const actor = { id: 'c1', name: 'Kasun', role: 'cashier' as const };
+  const sent: SyncEvent = { id: 's1', shopId: SHOP, at: 1000, orderNumber: 1001, actor, type: 'order.sent', ticketId: 't1', addOn: false,
+    lines: [{ id: 'L1', itemId: 'margherita', size: 'L', qty: 1, adds: [], outs: [], sent: true }] };
+  const remade: SyncEvent = { id: 'w1', shopId: SHOP, at: 2000, orderNumber: 0, actor, type: 'stock.wasted',
+    what: { kind: 'dish', itemId: 'margherita', size: 'L' }, name: 'Margherita · Large', qty: 1, reason: 'burnt', ticketId: 't1', lineId: 'L1' };
+  const [t] = ticketsFromEvents([sent, remade], 3000);
+  assert.equal(t.doneAt, undefined);
+  assert.equal(ticketLines(t)[0].remade, 1);
+  const undo: SyncEvent = { id: 'u1', shopId: SHOP, at: 2500, orderNumber: 0, actor, type: 'stock.waste_undone', wasteId: 'w1', ticketId: 't1' };
+  assert.equal(ticketLines(ticketsFromEvents([sent, remade, undo], 3000)[0])[0].remade, undefined);
+  // The bin's waste (no ticket) does not touch the kitchen.
+  const bin: SyncEvent = { ...remade, id: 'w2', ticketId: undefined, lineId: undefined };
+  assert.equal(ticketLines(ticketsFromEvents([sent, bin], 3000)[0])[0].remade, undefined);
+});
+
+test('ready to collect (SCRUM-240): since the last Done, amber at 10 min, red at 20 or when too old to know', async () => {
+  const { readySince, readyUrgency, READY_WARN_MS, READY_BAD_MS } = await import('./kitchen.ts');
+  let t = fire([], ticket('a', 1044, 100));
+  t = fire(t, ticket('b', 1044, 200));
+  assert.equal(readySince(t, 1044), null, 'still to make');
+  t = bump(t, 'a', 300);
+  assert.equal(readySince(t, 1044), null, 'one round still open');
+  t = bump(t, 'b', 500);
+  assert.equal(readySince(t, 1044), 500);
+  assert.equal(readySince(t, 1045), null);
+  assert.equal(readyUrgency(500, 500 + READY_WARN_MS - 1), 'ok');
+  assert.equal(readyUrgency(500, 500 + READY_WARN_MS), 'warn');
+  assert.equal(readyUrgency(500, 500 + READY_BAD_MS), 'bad');
+  assert.equal(readyUrgency(null, 0), 'bad');
+});
+
+test('the customer changed their mind (SCRUM-242): in place the ticket changes; a remake strikes it and sends a new ticket; Undo puts it back', () => {
+  const actor = { id: 'c1', name: 'Kasun', role: 'cashier' as const };
+  const M = { id: 'L1', itemId: 'margherita', size: 'M' as const, qty: 1, adds: [], outs: [], sent: true };
+  const L = { ...M, size: 'L' as const };
+  const audit = { shopId: SHOP, orderNumber: 1001, actor, totalBefore: 0, totalAfter: 0 };
+  const sent: SyncEvent = { id: 's1', shopId: SHOP, at: 1000, orderNumber: 1001, actor, type: 'order.sent', ticketId: 't1', addOn: false, lines: [M] };
+  const started: SyncEvent = { id: 'k1', shopId: SHOP, at: 1500, orderNumber: 1001, type: 'kitchen.started', ticketId: 't1' };
+  const change = (id: string, remake: boolean): SyncEvent => ({
+    ...audit, id, at: 2000, type: 'order.item_changed', lineId: 'L1', before: M, after: L, reason: 'x', ...(remake ? { made: true, remake: true } : {}),
   });
-};
 
-test('two kitchens: an order splits into one ticket per kitchen; no kitchen named = the left one', () => {
-  twoKitchens();
-  try {
-    const order = [portion('a', 'chicken-rice'), portion('b', 'chicken-kottu', 2), portion('c', 'roll')];
-    assert.deepEqual(splitByStation(order).map((g) => [g.station, g.lines.map((l) => l.id)]), [['left', ['a', 'c']], ['right', ['b']]]);
-    assert.deepEqual(splitByStation([portion('b', 'chicken-kottu')]).map((g) => g.station), ['right'], 'only the kitchen that has something');
-    assert.deepEqual(splitByStation([]), []);
-  } finally { setStartingMenu(SAMPLE_START); }
-  // One kitchen (no section names one): one ticket, no station, as before.
-  assert.deepEqual(splitByStation([portion('a', 'margherita'), portion('b', 'devilled-chicken')]).map((g) => [g.station, g.lines.length]), [[undefined, 2]]);
+  // 1. Change the ticket: the same ticket, Medium struck, Large beside it; it flashes again.
+  const inPlace = ticketsFromEvents([sent, change('c', false)], 3000);
+  assert.equal(inPlace.length, 1);
+  assert.equal(ticketLines(inPlace[0])[0].status, 'changed');
+  assert.equal(needsAttention(inPlace[0]), true);
+
+  // 2. Throw away, make new: the old line is struck as thrown away; the Large is a new ticket, marked Remake.
+  const remade = ticketsFromEvents([sent, started, change('r', true)], 3000);
+  assert.equal(remade.length, 2);
+  const [old, fresh] = remade;
+  assert.deepEqual(ticketLines(old).map((l) => [l.status, l.binned]), [['cancelled', true]]);
+  assert.equal(needsAttention(old), true, 'the cook sees the old one is to go in the bin');
+  assert.equal(fresh.remake, true);
+  assert.equal(fresh.number, 1001);
+  assert.equal(fresh.startedAt, undefined, 'the new one is still to make');
+  assert.deepEqual(fresh.lines.map((l) => [l.id, l.size]), [['L1', 'L']]);
+  assert.equal(lineCookState(remade, 'L1'), 'waiting', 'the counter sees the new one, not to make yet');
+
+  // Undo: the new ticket goes, the old line is back as it was.
+  const undo: SyncEvent = { ...audit, id: 'u', at: 2500, type: 'order.change_undone', undoneEventId: 'r', undoneType: 'order.item_changed' };
+  const back = ticketsFromEvents([sent, started, change('r', true), undo], 3000);
+  assert.equal(back.length, 1);
+  assert.deepEqual(back[0].lines.map((l) => [l.id, l.size, Boolean(l.cancelled)]), [['L1', 'M', false]]);
 });
 
-test("each kitchen's screen shows its own tickets; the station folds from the event", () => {
-  const base = { shopId: SHOP, orderNumber: 9, addOn: false, actor: { id: 's', name: 'S', role: 'cashier' as const } };
-  const ev: SyncEvent[] = [
-    { ...base, id: 'e1', at: 100, type: 'order.sent', ticketId: 'l', lines: [portion('a', 'margherita')], station: 'left' },
-    { ...base, id: 'e2', at: 100, type: 'order.sent', ticketId: 'r', lines: [portion('b', 'margherita')], station: 'right' },
-    { ...base, id: 'e3', at: 100, type: 'order.sent', ticketId: 'old', lines: [portion('c', 'margherita')] },
-  ];
-  const t = ticketsFromEvents(ev, 200);
-  assert.deepEqual(forStation(t, 'left').map((x) => x.id), ['l', 'old'], 'a ticket from before two kitchens is the left one\'s');
-  assert.deepEqual(forStation(t, 'right').map((x) => x.id), ['r']);
-  assert.equal(forStation(t, null).length, 3, 'the counter sees both');
-  // Each kitchen's Done is its own: the order cooks on until both are done.
-  assert.equal(cookState(bump(t, 'l', 300), 9), 'cooking');
+test('a change to an order paid first and not yet sent reaches the kitchen as changed, at Send (SCRUM-242)', () => {
+  const actor = { id: 'c1', name: 'Kasun', role: 'cashier' as const };
+  const M = { id: 'L1', itemId: 'margherita', size: 'M' as const, qty: 1, adds: [], outs: [], sent: true };
+  const audit = { shopId: SHOP, orderNumber: 1001, actor, totalBefore: 0, totalAfter: 0 };
+  const held: SyncEvent = { id: 's1', shopId: SHOP, at: 1000, orderNumber: 1001, actor, type: 'order.sent', ticketId: 't1', addOn: false, lines: [M], held: true };
+  const change: SyncEvent = { ...audit, id: 'c', at: 1500, type: 'order.item_changed', lineId: 'L1', before: M, after: { ...M, size: 'L' }, reason: 'x', afterPay: true };
+  const released: SyncEvent = { id: 'r1', shopId: SHOP, at: 2000, orderNumber: 1001, actor, type: 'order.released', ticketId: 't1' };
+  assert.deepEqual(ticketsFromEvents([held, change, released], 3000)[0].lines.map((l) => l.size), ['L']);
+  const undo: SyncEvent = { ...audit, id: 'u', at: 1600, type: 'order.change_undone', undoneEventId: 'c', undoneType: 'order.item_changed' };
+  assert.deepEqual(ticketsFromEvents([held, change, undo, released], 3000)[0].lines.map((l) => l.size), ['M']);
 });
