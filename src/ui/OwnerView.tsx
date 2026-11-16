@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { rulesSuggestions, type CaseView, type Insight } from '../domain/insights.ts';
 import { daysAgo } from '../domain/itemStory.ts';
 import { MAX_NOTE } from '../domain/gapReview.ts';
-import { SEED_INVENTORY, SEED_SUPPLIERS } from '../domain/inventoryData.ts';
-import { inventoryFromEvents, suppliersFromEvents } from '../domain/inventory.ts';
 import { fmt } from '../domain/money.ts';
 import { useInstall } from '../services/ownerApp.ts';
 import { adminShop, ownerToken } from '../services/pairing.ts';
@@ -153,12 +151,8 @@ export function OwnerView({ phone = false, onBack, shop }: {
 
   const { glance, insights } = useMemo(() => {
     if (!events) return { glance: null, insights: [] as Insight[] };
-    const stock = {
-      items: inventoryFromEvents(SEED_INVENTORY, events).filter((item) => !item.archived),
-      suppliers: suppliersFromEvents(SEED_SUPPLIERS, events),
-    };
-    const insights = rulesSuggestions.insights({ events, now: at, stock });
-    return { glance: glanceOf(events, stock, insights, at), insights };
+    const insights = rulesSuggestions.insights({ events, now: at });
+    return { glance: glanceOf(events, insights, at), insights };
   }, [events, at]);
   const opened = insights.find((i) => i.id === open) ?? null;
 

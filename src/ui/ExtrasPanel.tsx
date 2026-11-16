@@ -29,6 +29,8 @@ interface Props {
   /** `remake`: the cashier picked "Throw away, make new". */
   onSubmit: (spec: LineSpec, reason: string, remake: boolean) => void;
   onRemove?: (reason: string) => void;
+  /** Switch item: the next item tapped on the menu takes this line's place (same quantity). */
+  onSwitch?: () => void;
   onClose: () => void;
 }
 
@@ -44,7 +46,7 @@ const toggle = (list: string[], id: string): string[] =>
  */
 const COOK_WORD: Record<CookState, string> = { waiting: 'Not started in the kitchen', cooking: 'Cooking in the kitchen', done: 'Made already' };
 
-export function ExtrasPanel({ item: start, line, size, manager = false, combo, cook, onSubmit, onRemove, onClose }: Props) {
+export function ExtrasPanel({ item: start, line, size, manager = false, combo, cook, onSubmit, onRemove, onSwitch, onClose }: Props) {
   /** The cashier changing a sent line: which way the kitchen gets it. */
   const ways = Boolean(cook && line?.sent && !manager);
   const made = cook !== undefined && cook !== 'waiting';
@@ -135,6 +137,9 @@ export function ExtrasPanel({ item: start, line, size, manager = false, combo, c
     <section className="extras" aria-label={`${item.name.en} extras`}>
       <div className="extras__top">
         <button type="button" className="panel__back extras__back" onClick={onClose}><span aria-hidden="true">←</span> Back to order <kbd>Esc</kbd></button>
+        {editing && onSwitch && !manager && (
+          <button type="button" className="extras__switch" onClick={onSwitch}>Switch item</button>
+        )}
         {editing && onRemove && (
             <button
               type="button"

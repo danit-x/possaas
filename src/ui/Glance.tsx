@@ -63,7 +63,7 @@ const icon = (d: ReactNode, size = 24) => (
 );
 
 /** What the black screen shows: a key per thing that can be tapped. */
-type Key = 'summary' | 'ring' | 'split' | 'stock' | StationId | `hour:${number}` | `dot:${string}` | `todo:${string}`;
+type Key = 'summary' | 'ring' | StationId | `hour:${number}` | `todo:${string}`;
 
 export function GlanceView({ glance: g, insights, links, onOpen }: {
   glance: Glance;
@@ -88,11 +88,8 @@ export function GlanceView({ glance: g, insights, links, onOpen }: {
   const screen: { title: string; text: string; href?: string | null; open?: Insight } =
     key === 'summary' ? { title: 'Today in a sentence', text: g.summary }
       : key === 'ring' ? { title: 'Sales today', text: g.ringExplain }
-        : key === 'split' && g.split ? { title: 'Every Rs 100', text: g.split.explain }
-          : key === 'stock' ? { title: 'Stock', text: g.stock.explain, href: '#items' }
-            : station ? { title: station.label, text: station.explain, href: station.href }
-              : key.startsWith('hour:') ? { title: 'Sales by hour', text: g.hours.find((h) => `hour:${h.hour}` === key)?.explain ?? '' }
-                : key.startsWith('dot:') ? { title: 'Stock', text: g.stock.dots.find((d) => `dot:${d.id}` === key)?.explain ?? '', href: `#items/item/${encodeURIComponent(key.slice(4))}` }
+        : station ? { title: station.label, text: station.explain, href: station.href }
+          : key.startsWith('hour:') ? { title: 'Sales by hour', text: g.hours.find((h) => `hour:${h.hour}` === key)?.explain ?? '' }
                   : todo ? {
                     title: 'To do',
                     text: [todo.title + '.', todo.detail, ...todo.action.items.slice(0, 4).map((i) => [i.primary, i.secondary].filter(Boolean).join(' · '))].filter(Boolean).join('\n'),
@@ -157,36 +154,6 @@ export function GlanceView({ glance: g, insights, links, onOpen }: {
             </div>
             <div className="glance__axis" aria-hidden="true">
               {g.hours.filter((_, i) => i % 3 === 0 || i === g.hours.length - 1).map((h) => <span key={h.hour}>{h.label}</span>)}
-            </div>
-          </section>
-
-          <button type="button" className="glance__card" aria-pressed={key === 'split'} onClick={() => pick('split')} disabled={!g.split}
-            aria-label={g.split ? `Every Rs 100 sold: Rs ${g.split.food} food, Rs ${g.split.waste} waste, Rs ${g.split.kept} kept` : 'Every Rs 100 sold: nothing sold yet'}>
-            <span className="glance__label">Every Rs 100 sold</span>
-            {g.split ? (
-              <>
-                <span className="glance__split" aria-hidden="true">
-                  <span className="glance__split-food" style={{ flexGrow: Math.max(1, g.split.food) }} />
-                  {g.split.waste > 0 && <span className="glance__split-waste" style={{ flexGrow: g.split.waste }} />}
-                  <span className="glance__split-kept" style={{ flexGrow: Math.max(1, g.split.kept) }} />
-                </span>
-                <span className="glance__split-keys num">
-                  <span><b>Rs {g.split.food}</b> food</span><span><b>Rs {g.split.waste}</b> waste</span><span><b>Rs {g.split.kept}</b> kept</span>
-                </span>
-              </>
-            ) : <span className="glance__sub">Nothing sold yet.</span>}
-          </button>
-
-          <section className="glance__card" aria-label="Stock">
-            <button type="button" className="glance__head glance__head--tap" aria-pressed={key === 'stock'} onClick={() => pick('stock')}>
-              <span className="glance__label">Stock · <span className="num">{rs(g.stock.value)}</span></span>
-              <span className="glance__sub num">{g.stock.low} low · {g.stock.out} out</span>
-            </button>
-            <div className="glance__dots">
-              {g.stock.dots.map((d) => (
-                <button key={d.id} type="button" className={`glance__dot glance__dot--${d.status}`} aria-pressed={key === `dot:${d.id}`}
-                  aria-label={`${d.name}, ${d.status === 'ok' ? 'in stock' : d.status === 'unknown' ? 'never counted' : d.status}`} onClick={() => pick(`dot:${d.id}`)} />
-              ))}
             </div>
           </section>
         </div>

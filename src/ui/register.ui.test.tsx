@@ -295,41 +295,6 @@ test('half-and-half: pick the other half in the pizza sheet, priced half of each
   expect(panel().getByText('Margherita')).toBeTruthy();
 });
 
-test('an Uber Eats order: the Uber Eats key, the code, the items; sent with the mark; closed as paid by Uber, no cash asked', async () => {
-  const user = userEvent.setup();
-  render(<App />);
-  await user.click(screen.getByRole('button', { name: /^Uber Eats/ }));
-  const sheet = within(screen.getByRole('dialog', { name: 'Uber Eats order' }));
-  const start = sheet.getByRole('button', { name: /Start order/ }) as HTMLButtonElement;
-  expect(start.disabled).toBe(true);
-  await user.type(sheet.getByLabelText('Uber Eats order code'), ' 4f2a9{Enter}');
-  expect(screen.queryByRole('dialog')).toBeNull();
-  expect(panel().getByText('Uber Eats · 4F2A9')).toBeTruthy();
-
-  await user.click(screen.getAllByRole('button', { name: 'M 1,450' })[0]); // Margherita M
-  await user.click(sendBtn());
-  const sent = readAll().find((e) => e.type === 'order.sent');
-  expect(sent).toMatchObject({ orderNumber: 1001, platform: { id: 'uber', code: '4F2A9' } });
-
-  const row = heldList().getByRole('button', { name: /^1001/ });
-  expect(within(row).getByText('Uber Eats · 4F2A9')).toBeTruthy();
-  await user.click(row);
-  expect(screen.queryByRole('button', { name: 'Pay' })).toBeNull();
-  await user.click(screen.getByRole('button', { name: 'Close · Uber Eats' }));
-  expect(screen.queryByRole('dialog')).toBeNull(); // no pay sheet: Uber pays the shop
-  expect(readAll().find((e) => e.type === 'order.paid')).toMatchObject({ orderNumber: 1001, tender: 'uber', total: 145000, tendered: 145000 });
-  expect(panel().getByText('Paid')).toBeTruthy();
-});
-
-test('the Uber Eats mark comes off with ×, before the order is sent', async () => {
-  const user = userEvent.setup();
-  render(<App />);
-  await user.click(screen.getByRole('button', { name: /^Uber Eats/ }));
-  await user.type(within(screen.getByRole('dialog', { name: 'Uber Eats order' })).getByLabelText('Uber Eats order code'), 'AB12{Enter}');
-  await user.click(panel().getByRole('button', { name: 'Not from Uber Eats' }));
-  expect(panel().queryByText('Uber Eats · AB12')).toBeNull();
-});
-
 test('− / + on the line just added: one more, one fewer, and below one it comes off with Undo (SCRUM-236)', async () => {
   const user = userEvent.setup();
   render(<App />);
@@ -344,16 +309,38 @@ test('− / + on the line just added: one more, one fewer, and below one it come
   expect(panel().getByText('Margherita')).toBeTruthy();
 });
 
-test('every line not yet sent has − / +; a sent line keeps them greyed', async () => {
+test('every line has − / +, sent ones too: a sent line changes with the kitchen told, and Undo', async () => {
   const user = userEvent.setup();
   render(<App />);
   await user.click(screen.getAllByRole('button', { name: 'M 1,450' })[0]);
   await user.click(screen.getAllByRole('button', { name: '450' })[0]); // Chicken Burger
-  expect((panel().getByRole('button', { name: 'One more Margherita' }) as HTMLButtonElement).disabled).toBe(false);
-  expect((panel().getByRole('button', { name: 'One more Chicken Burger' }) as HTMLButtonElement).disabled).toBe(false);
   await user.click(sendBtn());
   await user.click(heldList().getByRole('button', { name: /^1001/ }));
-  expect((panel().getByRole('button', { name: 'One more Margherita' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(panel().getByRole('button', { name: 'One more Margherita' }));
+  expect(await screen.findByText(/Changed Margherita · kitchen told/)).toBeTruthy();
+  expect(within(panel().getByRole('group', { name: 'How many Margherita' })).getByText('2')).toBeTruthy();
+  await user.click(panel().getByRole('button', { name: 'Remove Chicken Burger' }));
+  expect(panel().queryByText('Chicken Burger')).toBeNull();
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('Switch item: the next item tapped takes the place of the line, sent or not; Esc lets it go', async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(screen.getAllByRole('button', { name: 'M 1,450' })[0]); // Margherita M
+  await user.click(sendBtn());
+  await user.click(heldList().getByRole('button', { name: /^1001/ }));
+  await user.click(panel().getByRole('button', { name: /^Margherita/ }));
+  await user.click(screen.getByRole('button', { name: 'Switch item' }));
+  expect(screen.getByText('Tap the new item for Margherita')).toBeTruthy();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByText('Tap the new item for Margherita')).toBeNull();
+  await user.click(panel().getByRole('button', { name: /^Margherita/ }));
+  await user.click(screen.getByRole('button', { name: 'Switch item' }));
+  await user.click(screen.getAllByRole('button', { name: '450' })[0]); // Chicken Burger
+  expect(panel().queryByText('Margherita')).toBeNull();
+  expect(panel().getByText('Chicken Burger')).toBeTruthy();
+  expect(await screen.findByText(/Changed Chicken Burger · kitchen told/)).toBeTruthy();
 });
 
 test('Held bills counts the other bills still going', async () => {

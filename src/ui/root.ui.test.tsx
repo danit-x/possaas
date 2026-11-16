@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { appendEvent } from './eventLog.ts';
 import { Root } from './Root.tsx';
 import { setKitchenScreen } from './kitchenScreen.ts';
 
@@ -60,109 +59,44 @@ test('a kitchen device opened at /#kitchen has no Register key', () => {
   expect(screen.queryByRole('button', { name: /^Register/ })).toBeNull();
 });
 
-test('inventory and supplier bookmarks open their respective views', () => {
-  history.replaceState(null, '', '/#inventory');
-  const { unmount } = render(<Root />);
-  expect(screen.getByRole('main', { name: 'Inventory' })).toBeTruthy();
-
-  unmount();
-  history.replaceState(null, '', '/#suppliers');
-  render(<Root />);
-  expect(screen.getByRole('main', { name: 'Suppliers' })).toBeTruthy();
-});
-
-test('finding an ingredient supplier routes to the filtered supplier view', async () => {
-  history.replaceState(null, '', '/#inventory');
+test('the parts: Sell, Today and Cash out, then the Menu, then Settings; every part keeps its place; Sell goes to the register', async () => {
   const user = userEvent.setup();
-  render(<Root />);
-
-  await user.click(screen.getAllByRole('button', { name: 'Prima / David Stores (Wholesale)' })[0]);
-
-  expect(location.hash).toBe('#suppliers');
-  expect(screen.getByRole('heading', { name: 'Targeted Suppliers' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Expand Prima / David Stores (Wholesale)' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Expand Ajantha (Wholesale)' })).toBeTruthy();
-  expect(screen.queryByRole('button', { name: /Nimmi veg shop/ })).toBeNull();
-});
-
-test('adding a supplier with a new ingredient updates Inventory and Find Supplier', async () => {
-  history.replaceState(null, '', '/#suppliers');
-  const user = userEvent.setup();
-  render(<Root />);
-
-  await user.click(screen.getByRole('button', { name: '+ Add Supplier' }));
-  await user.type(screen.getByRole('textbox', { name: 'Supplier name' }), 'End-to-end Supplier');
-  await user.type(screen.getByRole('textbox', { name: 'Phone Optional' }), '+94770000000');
-  await user.type(screen.getByRole('searchbox', { name: 'Ingredients' }), 'End-to-end Flour');
-  await user.click(screen.getByRole('button', { name: '+ Add “End-to-end Flour” as new ingredient' }));
-  await user.click(within(screen.getByRole('group', { name: 'End-to-end Flour unit' })).getByRole('button', { name: 'kg' }));
-  await user.type(screen.getByRole('textbox', { name: 'End-to-end Flour price per kg' }), '300');
-  await user.click(screen.getByRole('button', { name: 'Save Supplier' }));
-
-  await user.click(await screen.findByRole('link', { name: 'Items' }));
-  const ingredientRow = screen.getByRole('heading', { name: 'End-to-end Flour' }).closest('.inv-row') as HTMLElement;
-  expect(within(ingredientRow).getByText('End-to-end Supplier')).toBeTruthy();
-
-  await user.click(within(ingredientRow).getByRole('button', { name: 'End-to-end Supplier' }));
-  expect(await screen.findByRole('heading', { name: 'Targeted Suppliers' })).toBeTruthy();
-  const supplierToggle = screen.getByRole('button', { name: 'Expand End-to-end Supplier' });
-  await user.click(supplierToggle);
-  expect(within(supplierToggle.closest('article') as HTMLElement).getByText('End-to-end Flour')).toBeTruthy();
-});
-
-test('the shop\'s day: the work first, then Items, then Settings; every part keeps its place; Sell goes to the register', async () => {
-  const user = userEvent.setup();
-  history.replaceState(null, '', '/#items');
+  history.replaceState(null, '', '/#menu');
   render(<Root />);
   const nav = () => within(screen.getByRole('navigation', { name: 'Owner sections' }));
   const names = () => nav().getAllByRole('link').map((a) => a.getAttribute('aria-label'));
   const current = () => nav().getAllByRole('link').filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.getAttribute('aria-label'));
-  const parts = ['Sell', 'Receive', 'Order', 'Count', 'Today', 'Money out', 'Items', 'Visual Flow', 'Computer vision', 'Settings'];
+  const parts = ['Sell', 'Today', 'Cash out', 'Menu', 'Settings'];
   expect(nav().getAllByRole('heading').map((h) => h.textContent)).toEqual(['Work', 'Things']);
-
-  for (const [link, main] of [['Receive', 'Receive'], ['Order', 'Order'], ['Count', 'Manager'], ['Today', 'Owner'], ['Money out', 'Money out'], ['Settings', 'Shop setup'], ['Visual Flow', 'Visual Flow'], ['Computer vision', 'Computer vision'], ['Items', 'Inventory']]) {
+  for (const [link, main] of [['Today', 'Owner'], ['Cash out', 'Cash out'], ['Menu', 'Menu'], ['Settings', 'Shop setup']]) {
     await user.click(nav().getByRole('link', { name: link }));
     expect(await screen.findByRole('main', { name: main })).toBeTruthy();
     expect(names()).toEqual(parts);
     expect(current()).toEqual([link]);
   }
-  // Items: raw materials, semi-processed, finished, all under Items.
-  const tabs = () => within(screen.getByRole('navigation', { name: 'Items' }));
-  expect(tabs().getAllByRole('link').map((a) => a.firstChild?.textContent)).toEqual(['Raw materials', 'Semi-processed', 'Finished', 'Warehouses', 'Menu']);
-  // The menu has its own tab, so it is found by its name.
-  await user.click(tabs().getByRole('link', { name: 'Menu' }));
-  expect(await screen.findByRole('main', { name: 'Menu' })).toBeTruthy();
-  expect(current()).toEqual(['Items']);
-  expect(tabs().getByRole('link', { name: 'Menu' }).getAttribute('aria-current')).toBe('page');
-  await user.click(tabs().getByRole('link', { name: /^Finished/ }));
-  expect(await screen.findByRole('main', { name: 'Menu' })).toBeTruthy();
-  expect(current()).toEqual(['Items']);
-  expect(tabs().getByRole('link', { name: /^Finished/ }).getAttribute('aria-current')).toBe('page');
-  // Each part says what is going on there.
   expect(await nav().findByText('No sales yet today')).toBeTruthy();
-  expect(nav().getByText('The register')).toBeTruthy();
-  expect(nav().getByText('No deliveries expected')).toBeTruthy();
+  expect(nav().getByText('Nothing out today')).toBeTruthy();
   await user.click(nav().getByRole('link', { name: 'Sell' }));
   expect(await screen.findByRole('complementary', { name: 'Current order' })).toBeTruthy();
 });
 
-test('a badge marks the part where a decision waits, without moving it; Ctrl K finds a part by what is going on there', async () => {
+test('Cash out from the Register (F1): one line with a manager PIN, Undo takes it off; every line is a synced event', async () => {
   const user = userEvent.setup();
-  // Onion counted and found empty: out.
-  appendEvent({ type: 'stock.adjusted', at: Date.now(), orderNumber: 0, actor: { id: 'o', name: 'Owner', role: 'owner' }, itemId: 'inv-0024', deltaPacks: 1, reason: 'audit' });
-  appendEvent({ type: 'stock.adjusted', at: Date.now(), orderNumber: 0, actor: { id: 'o', name: 'Owner', role: 'owner' }, itemId: 'inv-0024', deltaPacks: -1, reason: 'audit' });
-  history.replaceState(null, '', '/#menu');
   render(<Root />);
-  const nav = within(screen.getByRole('navigation', { name: 'Owner sections' }));
-  const items = nav.getByRole('link', { name: 'Items' });
-  expect(await within(items).findByText('Onion out')).toBeTruthy();
-  expect(items.textContent).toBe('ItemsOnion out1');
-  expect(nav.getAllByRole('link').map((a) => a.getAttribute('aria-label'))).toEqual(['Sell', 'Receive', 'Order', 'Count', 'Today', 'Money out', 'Items', 'Visual Flow', 'Computer vision', 'Settings']); // still in its place
-
-  await user.keyboard('{Control>}k{/Control}');
-  const ask = screen.getByRole('dialog', { name: 'Commands' });
-  await user.type(within(ask).getByRole('textbox', { name: 'Ask or find…' }), 'onion{Enter}');
-  expect(await screen.findByRole('main', { name: 'Inventory' })).toBeTruthy();
+  await user.keyboard('{F1}');
+  expect(await screen.findByRole('main', { name: 'Cash out' })).toBeTruthy();
+  await user.keyboard('fish 4500{Enter}');
+  if (screen.queryByRole('dialog')) await user.keyboard('2580'); // a cashier on the counter: a manager's PIN, once
+  expect(await screen.findByText('Fish 4,500 added')).toBeTruthy();
+  const today = within(screen.getByRole('region', { name: 'Cash out today' }));
+  expect(today.getByText('Fish')).toBeTruthy();
+  const { readAll } = await import('./eventLog.ts');
+  const line = readAll().find((e) => e.type === 'cash.out');
+  expect(line && 'amount' in line ? [line.name, line.amount, Boolean(line.shopId)] : null).toEqual(['Fish', 450000, true]);
+  await user.click(screen.getByRole('button', { name: 'Undo' }));
+  expect(await today.findByText(/Nothing yet today/)).toBeTruthy();
+  await user.keyboard('{F1}');
+  expect(await screen.findByRole('complementary', { name: 'Current order' })).toBeTruthy();
 });
 
 test('on a narrow screen the parts open as a drawer from the menu button', async () => {

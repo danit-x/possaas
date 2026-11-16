@@ -16,27 +16,30 @@ export const FAKE_STAFF: { pin: string; actor: Actor }[] = [
   { pin: '9999', actor: { id: 'fake-owner-1', name: 'Danit', role: 'owner' } },
 ];
 
-/** Demo orders for /?demo: three tables eating, nothing paid yet. */
+/**
+ * Demo orders for /?demo: three tables eating, nothing paid yet. Bata Kade's own items
+ * (src/shop/bataKade.ts), sold all day so the bills read right at any hour.
+ */
 export const fakeOrders = (now: number): Order[] => {
   const min = 60_000;
   return [
     {
       number: 1041, sentAt: now - 18 * min, lines: [
-        { id: 'demo-1041-a', itemId: 'devilled-chicken', qty: 1, size: 'L', adds: ['full-cheese'], outs: ['no-onion'], sent: true },
-        { id: 'demo-1041-b', itemId: 'margherita', qty: 2, size: 'M', adds: [], outs: [], sent: true },
-        { id: 'demo-1041-c', itemId: 'chicken-burger', qty: 1, adds: ['cheese-slice'], outs: [], sent: true },
+        { id: 'demo-1041-a', itemId: 'new-kt-chicken', qty: 1, size: 'x2', adds: [], outs: [], sent: true },
+        { id: 'demo-1041-b', itemId: 'new-fr-egg', qty: 2, size: 'x1', adds: [], outs: [], sent: true },
+        { id: 'demo-1041-c', itemId: 'new-ot-milk-tea', qty: 1, adds: [], outs: [], sent: true },
       ],
     },
     {
       number: 1042, sentAt: now - 9 * min, lines: [
-        { id: 'demo-1042-a', itemId: 'seafood', qty: 1, size: 'L', adds: [], outs: [], sent: true },
-        { id: 'demo-1042-b', itemId: 'crispy-chicken-burger', qty: 2, adds: [], outs: ['no-lettuce'], sent: true },
+        { id: 'demo-1042-a', itemId: 'new-ml-biriyani', qty: 2, adds: [], outs: [], sent: true },
+        { id: 'demo-1042-b', itemId: 'new-dr-coke-400ml', qty: 2, adds: [], outs: [], sent: true },
       ],
     },
     {
       number: 1043, sentAt: now - 3 * min, lines: [
-        { id: 'demo-1043-a', itemId: 'italian-pasta', qty: 1, size: 'M', adds: [], outs: [], sent: true },
-        { id: 'demo-1043-b', itemId: 'bbq-chicken', qty: 1, size: 'M', adds: ['half-cheese'], outs: [], sent: true },
+        { id: 'demo-1043-a', itemId: 'new-fr-mixed', qty: 1, size: 'x2', adds: [], outs: [], sent: true },
+        { id: 'demo-1043-b', itemId: 'new-kt-egg', qty: 1, size: 'x1', adds: [], outs: [], sent: true },
       ],
     },
   ];
@@ -48,7 +51,7 @@ export const fakeOrders = (now: number): Order[] => {
  * page shows hours only once the owner gives them (the cloud's ORDER_HOURS).
  */
 export const FAKE_ORDER_SHOP = {
-  name: 'CheesyBeez Thalwila',
+  name: 'Bata Kade',
   open: true,
   hours: { opens: 11 * 60, closes: 21 * 60 },
   phone: null,

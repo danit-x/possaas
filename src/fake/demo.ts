@@ -1,3 +1,4 @@
+import { itemById } from '../domain/menu.ts';
 import { emptyOrder } from '../domain/order.ts';
 import type { Order } from '../domain/types.ts';
 import { addEvents } from '../ui/eventLog.ts';
@@ -8,7 +9,8 @@ import { FAKE_SHOP_ID, FAKE_STAFF, FAKE_TABLE_STATES, FAKE_TABLES, fakeOrders } 
  * kitchen, and a floor of six tables. Storage is namespaced for the demo, so real orders are untouched.
  */
 export const demoSnapshot = (now: number): { order: Order; open: Order[]; nextNumber: number } => {
-  const open = fakeOrders(now);
+  // Bata Kade's items: on a menu without them (the tests' sample menu) the demo simply has no held bills.
+  const open = fakeOrders(now).filter((o) => o.lines.every((l) => onMenu(l.itemId)));
   // Fixed ids, so a second call (React StrictMode, a reload) adds nothing. Demo events never sync.
   addEvents(open.map((o) => ({
     type: 'order.sent', id: `demo-sent-${o.number}`, shopId: FAKE_SHOP_ID, actor: FAKE_STAFF[0].actor, orderNumber: o.number,
@@ -24,6 +26,10 @@ export const demoSnapshot = (now: number): { order: Order; open: Order[]; nextNu
       at: now - t.minutesAgo * minute, tableId: t.tableId, from: 'free' as const, to: t.to,
     })),
   ]);
-  const nextNumber = Math.max(...open.map((o) => o.number)) + 1;
+  const nextNumber = Math.max(1040, ...open.map((o) => o.number)) + 1;
   return { order: emptyOrder(nextNumber), open, nextNumber };
+};
+
+const onMenu = (itemId: string): boolean => {
+  try { itemById(itemId); return true; } catch { return false; }
 };

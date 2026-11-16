@@ -13,6 +13,7 @@ import type { Cents, Discount, Order, OrderLine, PaidOrder, Tender } from '../do
 import { platformLabel, platformName } from '../domain/platforms.ts';
 import { leaveOutsOf, lineItemName, secondHalf } from '../domain/halves.ts';
 import { boxesIn, opensBox } from '../domain/combos.ts';
+import { sizeShort } from '../domain/sections.ts';
 import { PayPanel } from './PayPanel.tsx';
 import type { PaidEdit } from '../domain/paidEdits.ts';
 import { kitchenWord, readyFor } from './OrdersRail.tsx';
@@ -30,7 +31,14 @@ const sub = (l: OrderLine): string => {
 
 /** What an order is, in a few words ("2 Margherita L, Chicken Burger"): how the cashier tells orders apart in a list. */
 export const orderSummary = (lines: readonly Pick<OrderLine, 'itemId' | 'qty' | 'size' | 'half'>[]): string =>
-  lines.map((l) => `${l.qty > 1 ? `${l.qty} ` : ''}${lineItemName(l)}${l.size ? ` ${l.size}` : ''}`).join(', ');
+  lines.map((l) => `${l.qty > 1 ? `${l.qty} ` : ''}${lineItemName(l)}${l.size ? ` ${summarySize(l)}` : ''}`).join(', ');
+
+/** "L" for a built-in size, the shop's own word ("Half") for one it made: never the size's id ("x1"). */
+const summarySize = (l: Pick<OrderLine, 'itemId' | 'size'>): string => {
+  let v: { id: string; label: string } | undefined;
+  try { v = itemById(l.itemId).variants?.find((s) => s.id === l.size); } catch { /* not on the menu now: its size id */ }
+  return v ? sizeShort(v) : l.size!;
+};
 
 /** The bill's number, as a badge nothing else on screen looks like (never mistaken for a price). */
 function OrderBadge({ number, quiet = false }: { number: number; quiet?: boolean }) {
@@ -314,8 +322,8 @@ export function OrderPanel({
     const name = lineItemName(l);
     const adj = lineAdjustment(shown, l);
     const isSel = i === sel;
-    // A line added to a paid order and not yet settled (SCRUM-253) is still unsent: − / + and ✕ work on it.
-    const canStep = !l.sent && !inBox && !manage;
+    // − / + work on any line still on the bill, sent ones too (the kitchen is told); a paid order's sent lines change through their sheet.
+    const canStep = !inBox && !manage && !(paid && l.sent);
     const edit = editOf.get(l.id);
     const cook = l.sent ? lineCookState(tickets, l.id) : 'waiting';
     const extra = inBox && l.box ? lineNet(shown, l) - l.box.share : 0;

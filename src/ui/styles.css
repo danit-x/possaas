@@ -307,6 +307,7 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .card__name { font-size: var(--fs-b); font-weight: 500; letter-spacing: -0.3px; }
 .card__no { color: var(--ink-3); margin-right: 8px; }
 .card__desc { font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.4; letter-spacing: -0.1px; }
+.card__si { font-size: var(--fs-s, 15px); color: var(--ink-2); line-height: 1.35; font-family: "Noto Sans Sinhala", "Nirmala UI", "Iskoola Pota", sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Prices sit on the card's bottom edge, so a row of cards lines up whatever the description's length;
    centred text (the later `.price` for GRN lines makes it an inline-flex, which would left-align it). */
 .card__prices { display: flex; gap: var(--sp-2); margin-top: auto; }
@@ -515,6 +516,8 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .extras__top { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-3) var(--sp-4) 0; min-height: 56px; }
 .extras__back { margin: 0; display: inline-flex; align-items: center; gap: 8px; }
 .extras__back span { font-size: 18px; }
+.extras__switch { margin-left: auto; min-height: 44px; padding: 0 14px; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--ink); }
+.extras__switch:hover { background: var(--chip); }
 .extras__remove { min-height: 44px; padding: 0 14px; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--bad); }
 .extras__remove:hover { background: color-mix(in srgb, var(--bad) 10%, transparent); }
 .extras__body { gap: 22px; padding-top: var(--sp-2); }
@@ -2111,7 +2114,7 @@ button.glance__card:disabled { cursor: default; }
 .glance__bar-today { position: relative; width: 100%; border-radius: 4px 4px 0 0; background: var(--ink); }
 .glance__axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-2); }
 
-.glance__trio { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; }
+.glance__trio { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .glance__trio > .glance__card { min-height: 220px; }
 .glance__split { display: flex; height: 28px; gap: 2px; }
 .glance__split > span { flex-basis: 0; }
@@ -2603,23 +2606,48 @@ button.glance__card:disabled { cursor: default; }
 .history { flex: 0 0 var(--history-w); width: var(--history-w); min-height: 0; overflow-y: auto; scrollbar-width: thin; box-sizing: border-box;
   padding: var(--sp-3) var(--sp-2) var(--sp-3) var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-4); border-right: 1px solid var(--line); }
 .history__part { display: flex; flex-direction: column; gap: 6px; }
-.history__head { margin: 0 4px; font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-2); }
+/* Find + All / Held / Paid: black and white only, like the rest of the counter. */
+.history__tools { display: flex; flex-direction: column; gap: 6px; }
+.history__find { width: 100%; min-height: 36px; box-sizing: border-box; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); font: inherit; font-size: var(--fs-xs); }
+.history__find::placeholder { color: var(--ink-3); }
+.history__show { display: grid; grid-template-columns: repeat(3, 1fr); padding: 3px; gap: 2px; border-radius: 10px; background: var(--chip); }
+.history__show button { min-height: 32px; border-radius: 8px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); background: none; }
+.history__show button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+.history__bar { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 4px; }
+.history__head { margin: 0; font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-2); }
+.history__sum { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
 .history__none { margin: 0 4px; font-size: var(--fs-xs); color: var(--ink-3); }
 .history__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.history__row { width: 100%; min-height: 56px; padding: 6px 10px; box-sizing: border-box; border-radius: 12px; display: flex; flex-direction: column; gap: 2px; text-align: left;
+.history__row { width: 100%; min-height: 56px; padding: 8px 10px; box-sizing: border-box; border-radius: 12px; display: flex; flex-direction: column; gap: 2px; text-align: left;
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink); }
 .history__row:hover { background: var(--chip); }
-.history__row--paid { background: none; }
+/* Held: still work to do, so a black edge (one-sided, so square corners on that side). */
+.history__row--held { border-radius: 0 12px 12px 0; box-shadow: inset 4px 0 0 var(--ink), inset 0 0 0 1px var(--line); padding-left: 14px; }
+.history__row--held.history__row--on { box-shadow: inset 4px 0 0 var(--ink), inset 0 0 0 2px var(--ink); }
+.history__row--warn, .history__row--bad { box-shadow: inset 4px 0 0 var(--ink), inset 0 0 0 1px var(--ink-3); }
+/* Paid: history, not work. One quiet line, the time and how it was paid under it. */
+.history__list--paid { gap: 0; }
+.history__row--paid { min-height: 44px; padding: 6px 6px; border-radius: 8px; background: none; box-shadow: inset 0 -1px 0 var(--line);
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 8px; row-gap: 0; align-items: baseline; }
+.history__row--paid .history__top { display: contents; }
+.history__row--paid .history__no { grid-column: 1; grid-row: 1; font-size: var(--fs-s); color: var(--ink-2); }
+.history__row--paid .history__what { grid-column: 2; grid-row: 1; color: var(--ink); }
+.history__row--paid .history__total { grid-column: 3; grid-row: 1; color: var(--ink-2); font-weight: 500; }
+.history__row--paid .history__meta { grid-column: 2 / 4; grid-row: 2; color: var(--ink-3); }
+.history__row--paid.history__row--on { background: var(--surface); box-shadow: inset 0 0 0 2px var(--ink); }
 .history__row--on { background: var(--surface); box-shadow: inset 0 0 0 2px var(--ink); }
-.history__row--warn { box-shadow: inset 4px 0 0 var(--warn), inset 0 0 0 1px var(--line); }
-.history__row--bad { box-shadow: inset 4px 0 0 var(--bad), inset 0 0 0 1px var(--line); }
 .history__top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .history__no { font-size: var(--fs-l); font-weight: 700; letter-spacing: -0.3px; }
-.history__total { font-size: var(--fs-s); font-weight: 600; }
+.history__total { font-size: var(--fs-s); font-weight: 700; }
 .history__what { font-size: var(--fs-xs); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.history__meta { display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: var(--fs-xs); color: var(--ink-2); }
-.history__meta .cookword { padding: 0; background: none; font-size: inherit; }
-.held__paid { color: var(--ok-ink); font-weight: 600; }
+.history__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: var(--fs-xs); color: var(--ink-2); }
+.history__meta .cookword { padding: 0; background: none; font-size: inherit; color: inherit; }
+.history__wait { color: var(--ink-2); }
+.history__wait--late { color: var(--ink); font-weight: 700; }
+.history__row--held .history__pill { margin-left: auto; }
+.history__pill { padding: 1px 8px; border-radius: 999px; border: 1px solid var(--ink); font-size: 11px; line-height: 16px; }
+.held__paid { color: var(--ink-2); font-weight: 600; }
 .held__unpaid { color: var(--ink); font-weight: 600; }
 @media (max-width: 560px) { .history { display: none; } }
 
@@ -2663,3 +2691,30 @@ button.glance__card:disabled { cursor: default; }
   100% { box-shadow: 0 0 0 0 transparent; transform: scale(1); }
 }
 @media (prefers-reduced-motion: reduce) { .rail__row--landed { animation-duration: 1ms; } }
+
+/* #cashout: the paper list (CashOut.tsx). One line to write, the names used before, today's lines and their total. */
+.cashout { display: flex; flex-direction: column; gap: var(--sp-4); width: 100%; max-width: 720px; margin: 0 auto; padding: 24px 16px 96px; }
+.cashout__bar { display: flex; align-items: center; justify-content: space-between; gap: 13px; padding: 12px 16px; }
+.cashout__head { display: flex; align-items: baseline; justify-content: space-between; gap: 13px; flex-wrap: wrap; }
+.cashout__day { color: var(--ink-2); font-size: 15px; }
+.cashout__entry { display: flex; gap: 8px; }
+.cashout__entry input { flex: 1; min-width: 0; height: 56px; padding: 0 21px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-size: 19px; letter-spacing: -0.2px; }
+.cashout__entry input:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+.cashout__add { flex: none; width: auto; height: 56px; padding: 0 21px; display: inline-flex; align-items: center; gap: 8px; font-size: 16px; }
+.cashout__add kbd { border-color: currentColor; color: inherit; opacity: 0.6; }
+.cashout__error { margin: -8px 0 0; }
+.cashout__names { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -5px; }
+.cashout__name { background: var(--chip); color: var(--ink); min-height: 44px; }
+.cashout__list { list-style: none; margin: 0; padding: 0; border-radius: 16px; background: var(--surface); box-shadow: var(--card-shadow); overflow: hidden; }
+.cashout__row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 13px; min-height: 55px; padding: 0 8px 0 21px; border-bottom: 1px solid var(--line); animation: rise 180ms var(--ease) both; }
+.cashout__row:last-child { border-bottom: 0; }
+.cashout__what { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.cashout__what b { font-size: 17px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cashout__what span { flex: none; font-size: 13px; color: var(--ink-3); }
+.cashout__amount { font-size: 17px; }
+.cashout__off { width: 44px; height: 44px; border-radius: 10px; font-size: 21px; color: var(--ink-3); }
+.cashout__off:hover { background: var(--chip); color: var(--bad); }
+.cashout__empty { padding: 21px; color: var(--ink-3); font-size: 15px; }
+.cashout__total { margin: 0; padding: 13px 21px 0; display: flex; justify-content: space-between; align-items: baseline; }
+.cashout__total span { color: var(--ink-2); font-size: 15px; }
+.cashout__total b { font-size: 34px; font-weight: 500; letter-spacing: -1px; }

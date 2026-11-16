@@ -65,8 +65,8 @@ test('spread over the day, the card does not invent a time', () => {
   assert.equal(card.title, 'Burnt 5 times this week');
 });
 
-test('both cards reach Today\'s To do through the suggestions service', () => {
+test('the repeated reason reaches Today\'s To do (no stock in this POS, so no waste-at-cost card)', () => {
   const events = [...usualWeeks, flour(at(1, 10), 6000), ...[0, 1, 2, 3, 4].map((d) => burnt(at(d, 19)))];
   const ids = rulesSuggestions.insights({ events, now: NOW, stock: shop }).map((i) => i.id);
-  assert.ok(ids.includes('waste-week') && ids.includes('waste-reason'), ids.join());
+  assert.ok(ids.includes('waste-reason') && !ids.includes('waste-week'), ids.join());
 });

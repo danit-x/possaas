@@ -1,11 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { billOfLine, billParts, BILLS_NODE, cookMinutesSold } from './billShare.ts';
-import { RATES_QUESTION, recipeQuestion, resourcesQuestion, type Answer } from './costing.ts';
-import { SEED_INVENTORY } from './inventoryData.ts';
+import { billOfLine, billParts, cookMinutesSold } from './billShare.ts';
 import { MENU } from './menu.ts';
 import type { MoneyWhat } from './moneyOut.ts';
-import { buildFlow } from './visualFlow.ts';
 
 const owner = { id: 'owner-1', name: 'Owner', role: 'owner' as const };
 const at = (y: number, m: number, d: number) => new Date(y, m - 1, d, 12).getTime();
@@ -67,33 +64,4 @@ test('which typed line a bill replaces', () => {
   assert.equal(billOfLine({ kind: 'other', cents: 100, label: 'Gas' }), 'gas');
   assert.equal(billOfLine({ kind: 'other', cents: 100, label: 'Box' }), null);
   assert.equal(billOfLine({ kind: 'labour', qty: 5 }), null);
-});
-
-const FOCUS = recipeQuestion('margherita', 'L');
-const typed: [string, Answer][] = [
-  [RATES_QUESTION, { kind: 'rates', rates: { electricity: 10000, labour: 0, equipment: 0 } } as Answer],
-  [resourcesQuestion(FOCUS), { kind: 'resources', lines: [{ kind: 'electricity', qty: 1 }, { kind: 'other', cents: 3000, label: 'Gas' }, { kind: 'other', cents: 2000, label: 'Box' }] } as Answer],
-];
-const flow = (bills: ReturnType<typeof billParts>, focus = FOCUS) =>
-  buildFlow({ focus, ctx: { items: SEED_INVENTORY, answers: new Map(typed) }, menu: MENU, bills });
-
-test('in the flow a real bill replaces the typed estimate of the same thing, not added on top', () => {
-  const none = flow([]);
-  assert.ok(Math.abs(none.breakdown.electricity - 10000) < 1e-6);
-  assert.equal(none.breakdown.bills, 0);
-  assert.ok(!none.nodes.some((n) => n.id === BILLS_NODE));
-
-  const bills = billParts([paid('electricity', 50_000_00, at(2026, 11, 1), '2026-10'), sent(at(2026, 10, 10), 'margherita', 1000)], MENU, NOW);
-  const g = flow(bills);
-  assert.equal(g.breakdown.electricity, 0); // the typed kWh is out
-  assert.ok(Math.abs(g.breakdown.bills - 5000) < 1e-6); // Rs 50,000 over 10,000 min: Rs 50 for 10 min
-  assert.ok(Math.abs(g.breakdown.overhead - 5000) < 1e-6); // no gas bill yet: typed gas and the box stay
-  assert.ok(Math.abs(g.breakdown.total - (none.breakdown.total - 10000 + 5000)) < 1e-6);
-  const into = g.edges.filter((e) => e.target === FOCUS).reduce((s, e) => s + e.cents, 0);
-  assert.ok(Math.abs(into - g.breakdown.total) < 1e-6);
-});
-
-test('a batch has no cook minutes, so it keeps its estimates', () => {
-  const bills = billParts([paid('electricity', 50_000_00, at(2026, 11, 1), '2026-10'), sent(at(2026, 10, 10), 'margherita', 10)], MENU, NOW);
-  assert.equal(flow(bills, 'semi:Pizza Dough Batch').breakdown.bills, 0);
 });

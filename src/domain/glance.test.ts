@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { glanceOf } from './glance.ts';
 import type { Insight } from './insights.ts';
-import { SEED_INVENTORY, SEED_SUPPLIERS } from './inventoryData.ts';
 import type { SyncEvent } from './sync.ts';
 import type { Tender } from './types.ts';
 
@@ -14,11 +13,10 @@ const ravi = { id: 'c1', name: 'Ravi', role: 'cashier' as const };
 let n = 0;
 const paid = (when: number, rupees: number, tender: Tender = 'cash'): SyncEvent =>
   ({ id: `p${++n}`, shopId: 's', at: when, orderNumber: 1000 + n, actor: ravi, type: 'order.paid', total: rupees * 100, tender, tendered: rupees * 100 });
-const shop = { items: SEED_INVENTORY, suppliers: SEED_SUPPLIERS };
 /** The last 4 Mondays: Rs 2,000 at noon and Rs 1,000 at 7 pm each. */
 const usualMondays = [7, 14, 21, 28].flatMap((d) => [paid(at(d, 12), 2000), paid(at(d, 19), 1000)]);
 const todays = [paid(at(0, 12, 30), 3000), paid(at(0, 13, 10), 1000, 'transfer')];
-const glance = (events: SyncEvent[], insights: Insight[] = []) => glanceOf(events, shop, insights, NOW);
+const glance = (events: SyncEvent[], insights: Insight[] = []) => glanceOf(events, insights, NOW);
 
 test('the ring: today against a usual day for this weekday, and how it is worked out', () => {
   const g = glance([...usualMondays, ...todays]);
@@ -59,32 +57,8 @@ test('Money splits what was taken by how it was paid', () => {
   assert.match(money.explain, /Cash: Rs 3,000\nBank transfer: Rs 1,000/);
 });
 
-test('Shelves and the stock dots: the value, each item in words, never-counted items apart', () => {
-  const counted: SyncEvent = { id: 'c1', shopId: 's', at: at(1, 9), orderNumber: 0, actor: ravi, type: 'stock.counted', itemId: 'inv-0001',
-    counted: 5000, expected: 0, entries: [], reason: null, valueCents: 0, tier: 'daily' };
-  const g = glance([counted]);
-  const shelves = g.stations.find((s) => s.id === 'shelves')!;
-  assert.equal(shelves.value, 'Rs 1,280'); // 5 kg of flour at Rs 6,400 a 25 kg bag
-  assert.equal(g.stock.unknown, SEED_INVENTORY.length - 1);
-  const flour = g.stock.dots.find((d) => d.id === 'inv-0001')!;
-  assert.equal(flour.status, 'ok');
-  assert.match(flour.explain, /^Pizza Flour: in stock\.\n¼ pack · 5 kg on hand, worth Rs 1,280\./);
-  assert.match(g.stock.dots.find((d) => d.id === 'inv-0005')!.explain, /never counted/);
-});
-
-test('every Rs 100 sold adds up to 100, and is not shown before the first sale', () => {
-  assert.equal(glance(usualMondays).split, null);
-  const sent: SyncEvent = { id: 's1', shopId: 's', at: at(0, 12, 20), orderNumber: 1, actor: ravi, type: 'order.sent', ticketId: 't1', addOn: false,
-    lines: [{ id: 'l1', itemId: 'margherita', size: 'L', qty: 1, adds: [], outs: [] }] };
-  const split = glance([...todays, sent]).split!;
-  assert.equal(split.food + split.waste + split.kept, 100);
-  assert.match(split.explain, /^Of every Rs 100 sold today:/);
-});
-
-test('Money: Uber Eats orders are counted, and said to be paid later by Uber, not in the drawer', () => {
-  const money = glance([...todays, paid(at(0, 14), 2500, 'uber')]).stations.find((s) => s.id === 'money')!;
-  assert.match(money.explain, /Uber Eats: Rs 2,500/);
-  assert.match(money.explain, /Uber Eats pays the shop later, less its commission: not in the drawer\./);
+test('the stations are the kitchen, the counter and the money: no deliveries or shelves', () => {
+  assert.deepEqual(glance(todays).stations.map((s) => s.id), ['kitchen', 'counter', 'money']);
 });
 
 test('Money: cash still to come from deliveries, and a delivery long past its time', () => {
@@ -98,11 +72,12 @@ test('Money: cash still to come from deliveries, and a delivery long past its ti
   assert.deepEqual([money.tone, money.badge], ['warn', 1]);
 });
 
-test('Money says what was paid: the drawer today, the bills this month, and suppliers are no cost (SCRUM-105)', () => {
+test('Money says what left the drawer: the cash out of this business day, and it links to the list', () => {
   const actor = { id: 'o', name: 'Owner', role: 'owner' as const };
-  const paid = (id: string, fields: object) => ({ id, shopId: 'shop', at: NOW, orderNumber: 0 as const, actor, type: 'money.out' as const, what: 'gas' as const, from: 'drawer' as const, cents: 250000, ...fields });
-  const money = glance([paid('a', {}), paid('b', { what: 'supplier', supplierId: 's1', cents: 700000 })]).stations.find((s) => s.id === 'money')!;
-  assert.equal(money.href, '#money');
-  assert.match(money.explain, /Paid out of the drawer today: Rs 9,500\./);
-  assert.match(money.explain, /Bills and other costs this month: Rs 2,500\.\nGas: Rs 2,500/);
+  const out = (id: string, name: string, rupees: number, when = at(0, 9)): SyncEvent =>
+    ({ id, shopId: 's', at: when, orderNumber: 0, actor, type: 'cash.out', name, amount: rupees * 100 });
+  const money = glance([...todays, out('a', 'Fish', 4500), out('b', 'Gas', 3000), out('y', 'Bank', 20000, at(1, 9))]).stations.find((s) => s.id === 'money')!;
+  assert.equal(money.href, '#cashout');
+  assert.match(money.explain, /Cash out of the drawer today: Rs 7,500 \(Fish, Gas\)\./);
+  assert.match(money.explain, /less the cash out\./);
 });

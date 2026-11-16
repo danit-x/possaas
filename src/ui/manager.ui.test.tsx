@@ -269,13 +269,9 @@ test('a line the kitchen already made says Made; removing it is recorded as wast
   expect(sheet.getByText('Made already')).toBeTruthy();
   expect(sheet.getByText('Removing it counts as waste.')).toBeTruthy();
   await user.click(sheet.getByRole('button', { name: 'Remove' }));
-  // Taking a sent line off is a void: a manager's PIN first, then the reason (counter redesign, 2026-11-16).
-  expect(total()).toBe('1,900');
-  await user.keyboard(pinFor('manager'));
-  await user.click(panel().getByRole('button', { name: /Customer changed mind/ }));
+  // Taking a sent line off: at once, no PIN (owner, 2026-11-17), recorded as made, so its food is waste.
   expect(total()).toBe('1,450');
-  expect(auditEvents().at(-1)).toMatchObject({ type: 'order.item_cancelled', reason: 'Customer changed mind', made: true });
-  await user.keyboard('{Escape}'); // back to the cashier
+  expect(auditEvents().at(-1)).toMatchObject({ type: 'order.item_cancelled', reason: 'Already made', made: true });
   await user.click(panel().getByRole('button', { name: /^Margherita/ }));
   await user.click(within(screen.getByRole('region', { name: / extras$/ })).getByRole('button', { name: /^Large/ }));
   // Made already: throwing it away and making a new one is picked for the cashier.
