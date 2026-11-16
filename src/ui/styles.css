@@ -2606,23 +2606,48 @@ button.glance__card:disabled { cursor: default; }
 .history { flex: 0 0 var(--history-w); width: var(--history-w); min-height: 0; overflow-y: auto; scrollbar-width: thin; box-sizing: border-box;
   padding: var(--sp-3) var(--sp-2) var(--sp-3) var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-4); border-right: 1px solid var(--line); }
 .history__part { display: flex; flex-direction: column; gap: 6px; }
-.history__head { margin: 0 4px; font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-2); }
+/* Find + All / Held / Paid: black and white only, like the rest of the counter. */
+.history__tools { display: flex; flex-direction: column; gap: 6px; }
+.history__find { width: 100%; min-height: 36px; box-sizing: border-box; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); font: inherit; font-size: var(--fs-xs); }
+.history__find::placeholder { color: var(--ink-3); }
+.history__show { display: grid; grid-template-columns: repeat(3, 1fr); padding: 3px; gap: 2px; border-radius: 10px; background: var(--chip); }
+.history__show button { min-height: 32px; border-radius: 8px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); background: none; }
+.history__show button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+.history__bar { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 4px; }
+.history__head { margin: 0; font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-2); }
+.history__sum { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
 .history__none { margin: 0 4px; font-size: var(--fs-xs); color: var(--ink-3); }
 .history__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.history__row { width: 100%; min-height: 56px; padding: 6px 10px; box-sizing: border-box; border-radius: 12px; display: flex; flex-direction: column; gap: 2px; text-align: left;
+.history__row { width: 100%; min-height: 56px; padding: 8px 10px; box-sizing: border-box; border-radius: 12px; display: flex; flex-direction: column; gap: 2px; text-align: left;
   background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink); }
 .history__row:hover { background: var(--chip); }
-.history__row--paid { background: none; }
+/* Held: still work to do, so a black edge (one-sided, so square corners on that side). */
+.history__row--held { border-radius: 0 12px 12px 0; box-shadow: inset 4px 0 0 var(--ink), inset 0 0 0 1px var(--line); padding-left: 14px; }
+.history__row--held.history__row--on { box-shadow: inset 4px 0 0 var(--ink), inset 0 0 0 2px var(--ink); }
+.history__row--warn, .history__row--bad { box-shadow: inset 4px 0 0 var(--ink), inset 0 0 0 1px var(--ink-3); }
+/* Paid: history, not work. One quiet line, the time and how it was paid under it. */
+.history__list--paid { gap: 0; }
+.history__row--paid { min-height: 44px; padding: 6px 6px; border-radius: 8px; background: none; box-shadow: inset 0 -1px 0 var(--line);
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 8px; row-gap: 0; align-items: baseline; }
+.history__row--paid .history__top { display: contents; }
+.history__row--paid .history__no { grid-column: 1; grid-row: 1; font-size: var(--fs-s); color: var(--ink-2); }
+.history__row--paid .history__what { grid-column: 2; grid-row: 1; color: var(--ink); }
+.history__row--paid .history__total { grid-column: 3; grid-row: 1; color: var(--ink-2); font-weight: 500; }
+.history__row--paid .history__meta { grid-column: 2 / 4; grid-row: 2; color: var(--ink-3); }
+.history__row--paid.history__row--on { background: var(--surface); box-shadow: inset 0 0 0 2px var(--ink); }
 .history__row--on { background: var(--surface); box-shadow: inset 0 0 0 2px var(--ink); }
-.history__row--warn { box-shadow: inset 4px 0 0 var(--warn), inset 0 0 0 1px var(--line); }
-.history__row--bad { box-shadow: inset 4px 0 0 var(--bad), inset 0 0 0 1px var(--line); }
 .history__top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .history__no { font-size: var(--fs-l); font-weight: 700; letter-spacing: -0.3px; }
-.history__total { font-size: var(--fs-s); font-weight: 600; }
+.history__total { font-size: var(--fs-s); font-weight: 700; }
 .history__what { font-size: var(--fs-xs); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.history__meta { display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: var(--fs-xs); color: var(--ink-2); }
-.history__meta .cookword { padding: 0; background: none; font-size: inherit; }
-.held__paid { color: var(--ok-ink); font-weight: 600; }
+.history__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: var(--fs-xs); color: var(--ink-2); }
+.history__meta .cookword { padding: 0; background: none; font-size: inherit; color: inherit; }
+.history__wait { color: var(--ink-2); }
+.history__wait--late { color: var(--ink); font-weight: 700; }
+.history__row--held .history__pill { margin-left: auto; }
+.history__pill { padding: 1px 8px; border-radius: 999px; border: 1px solid var(--ink); font-size: 11px; line-height: 16px; }
+.held__paid { color: var(--ink-2); font-weight: 600; }
 .held__unpaid { color: var(--ink); font-weight: 600; }
 @media (max-width: 560px) { .history { display: none; } }
 
