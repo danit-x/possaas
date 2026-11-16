@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { features } from '../domain/features.ts';
 import { receipt, type Dots, type ShopHeader } from '../domain/receipt.ts';
 import { totals } from '../domain/totals.ts';
 import type { Order, PaidOrder } from '../domain/types.ts';
@@ -57,8 +58,8 @@ export function ReceiptPreview() {
   // The logo as dots is made in the browser (logoDots.ts); the name alone until it is ready.
   const [shop, setShop] = useState<ShopHeader>(shopHeader);
   useEffect(() => { void printedHeader().then(setShop); }, []);
-  // A sample made in 9 minutes, to show where that band goes.
-  const lines = receipt(paid, { shop, cashier: 'Nimal', width, madeIn: 9 });
+  // A sample made in 9 minutes, to show where that band goes; a shop without the kitchen never prints it.
+  const lines = receipt(paid, { shop, cashier: 'Nimal', width, madeIn: features().kitchen ? 9 : null });
 
   const printTest = async () => {
     setTest('printing');
