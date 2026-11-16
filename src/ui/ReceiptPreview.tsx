@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { receipt } from '../domain/receipt.ts';
+import { useEffect, useRef, useState } from 'react';
+import { receipt, type Dots, type ShopHeader } from '../domain/receipt.ts';
 import { totals } from '../domain/totals.ts';
 import type { Order, PaidOrder } from '../domain/types.ts';
-import { canPrint, printReceipt } from '../services/printer.ts';
+import { canPrint, printReceipt, printedHeader } from '../services/printer.ts';
 import { receiptWidth, shopDetails, shopHeader } from '../services/shop.ts';
 
 /**
@@ -26,11 +26,39 @@ export const samplePaid = (): PaidOrder => {
   return { ...SAMPLE, total, tender: 'cash', tendered: 1000000, change: 1000000 - total, paidAt: Date.now() };
 };
 
+/** A picture drawn from the very dots the printer gets (the logo), so the preview shows the paper. */
+function PaperDots({ dots, label }: { dots: Dots; label: string }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const ctx = ref.current?.getContext('2d');
+    if (!ctx) return;
+    const raw = atob(dots.bits);
+    const row = Math.ceil(dots.width / 8);
+    const img = ctx.createImageData(dots.width, dots.height);
+    for (let y = 0; y < dots.height; y++) {
+      for (let x = 0; x < dots.width; x++) {
+        const on = (raw.charCodeAt(y * row + (x >> 3)) >> (7 - (x & 7))) & 1;
+        const p = (y * dots.width + x) * 4;
+        img.data[p] = img.data[p + 1] = img.data[p + 2] = on ? 17 : 255;
+        img.data[p + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }, [dots]);
+  // On paper the dots are 1/8 mm: shown at their share of the line, as they print.
+  const share = `${(dots.width / (receiptWidth() === 32 ? 384 : 576)) * 100}%`;
+  return <canvas ref={ref} className="paper__image" style={{ width: share }} width={dots.width} height={dots.height} role="img" aria-label={label} />;
+}
+
 export function ReceiptPreview() {
   const [paid] = useState(samplePaid);
   const [test, setTest] = useState<'idle' | 'printing' | 'printed' | 'failed'>('idle');
   const width = receiptWidth();
-  const lines = receipt(paid, { shop: shopHeader(), cashier: 'Nimal', width });
+  // The logo as dots is made in the browser (logoDots.ts); the name alone until it is ready.
+  const [shop, setShop] = useState<ShopHeader>(shopHeader);
+  useEffect(() => { void printedHeader().then(setShop); }, []);
+  // A sample made in 9 minutes, to show where that band goes.
+  const lines = receipt(paid, { shop, cashier: 'Nimal', width, madeIn: 9 });
 
   const printTest = async () => {
     setTest('printing');
@@ -58,9 +86,9 @@ export function ReceiptPreview() {
       </header>
       <figure className="paper" aria-label="Receipt preview" style={{ '--chars': width } as React.CSSProperties}>
         {lines.map((l, i) => (
-          <div key={i} className={`paper__line${l.big ? ' paper__line--big' : ''}${l.bold ? ' paper__line--bold' : ''}`}
+          <div key={i} className={`paper__line${l.big ? ' paper__line--big' : ''}${l.bold ? ' paper__line--bold' : ''}${l.invert ? ' paper__line--invert' : ''}`}
             style={{ textAlign: l.center ? 'center' : 'left' }}>
-            {l.text || ' '}
+            {l.image ? <PaperDots dots={l.image} label={`${l.text} logo`} /> : (l.text || ' ')}
           </div>
         ))}
       </figure>

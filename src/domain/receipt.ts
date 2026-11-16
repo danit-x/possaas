@@ -1,7 +1,7 @@
 import { itemById } from './menu.ts';
 import { fmt } from './money.ts';
 import { discountLabel, lineAdjustment, lineGross, totals } from './totals.ts';
-import type { PaidOrder, Tender } from './types.ts';
+import type { Order, PaidOrder, Tender } from './types.ts';
 import { lineItemName } from './halves.ts';
 
 /**
@@ -19,6 +19,14 @@ export const RECEIPT_WIDTH = 48;
 export type PaperWidth = 58 | 80;
 /** Characters a line in Font A: 48 on 80 mm, 32 on 58 mm. */
 export const PAPER_CHARS: Record<PaperWidth, number> = { 80: 48, 58: 32 };
+/** Dots across the printable width at 203 dpi: 72 mm on 80 mm paper, 48 mm on 58 mm. */
+export const PAPER_DOTS: Record<PaperWidth, number> = { 80: 576, 58: 384 };
+
+/**
+ * A black-and-white picture the printer draws dot by dot (the shop's logo): 1 bit a dot, rows top to
+ * bottom, 1 = black, leftmost dot in the high bit (ESC/POS GS v 0), base64.
+ */
+export interface Dots { width: number; height: number; bits: string }
 
 /** The shop's own header and footer, from its setup (src/services/shop.ts). */
 export interface ShopHeader {
@@ -27,6 +35,8 @@ export interface ShopHeader {
   lines: string[];
   /** Empty: no footer line. */
   footer: string;
+  /** The shop's logo as printer dots (logoDots.ts), printed above the name; absent = the name alone. */
+  logo?: Dots;
 }
 
 export interface ReceiptLine {
@@ -35,6 +45,10 @@ export interface ReceiptLine {
   bold?: boolean;
   /** Double width and height: the shop name and the total. Half as many characters fit. */
   big?: boolean;
+  /** Print this picture instead of the text (the logo); the text stays for plain-text views. */
+  image?: Dots;
+  /** White on black, the whole line: a band ("MADE FRESH IN 9 MIN"). */
+  invert?: boolean;
 }
 
 const TENDER_LABEL: Record<Tender, string> = {
@@ -75,11 +89,16 @@ const rule = (width: number): ReceiptLine => ({ text: '-'.repeat(width) });
 const minus = (cents: number) => `-${fmt(cents)}`;
 
 export function receipt(
-  paid: PaidOrder, opts: { cashier: string; shop: ShopHeader; width?: number; copy?: boolean },
+  paid: PaidOrder,
+  opts: {
+    cashier: string; shop: ShopHeader; width?: number; copy?: boolean;
+    /** Minutes the kitchen took, Send to Done (billExtras.ts madeInMinutes); absent when not made yet. */
+    madeIn?: number | null;
+  },
 ): ReceiptLine[] {
-  const { cashier, shop, width = RECEIPT_WIDTH, copy = false } = opts;
-  const t = totals(paid);
+  const { cashier, shop, width = RECEIPT_WIDTH, copy = false, madeIn = null } = opts;
   const out: ReceiptLine[] = [
+    ...(shop.logo ? [{ text: shop.name, center: true, image: shop.logo }] : []),
     // Double width: half as many characters fit, so a long name goes on two lines rather than off the paper.
     ...wrap(shop.name, Math.floor(width / 2)).map((text) => ({ text, center: true, bold: true, big: true })),
     ...shop.lines.flatMap((line) => wrap(line, width)).map((text) => ({ text, center: true })),
@@ -92,7 +111,30 @@ export function receipt(
     rule(width),
   ];
 
-  for (const l of paid.lines) {
+  out.push(...billBody(paid, width));
+  out.push({ text: twoCols('TOTAL', `Rs ${fmt(paid.total)}`, width / 2), bold: true, big: true });
+  if (paid.tender === 'cash') {
+    out.push({ text: twoCols('Cash', fmt(paid.tendered), width) });
+    out.push({ text: twoCols('Change', fmt(paid.change), width), bold: true });
+  } else if (paid.tender !== 'comp') { // Free already has its own line above
+    out.push({ text: twoCols('Paid by', TENDER_LABEL[paid.tender], width) });
+  }
+  out.push(rule(width));
+  // How fast the kitchen made it, when it has: something people notice (and tell others).
+  if (madeIn) out.push({ text: `MADE FRESH IN ${madeIn} MIN`, center: true, bold: true, invert: true }, rule(width));
+  for (const text of wrap(shop.footer, width)) out.push({ text, center: true });
+  return out;
+}
+
+/**
+ * What was bought, as it stands: each item and its price, its paid extras, any price adjustment,
+ * then a rule and whatever brought the prices down to the total. The TOTAL line is the caller's
+ * (a changed bill totals differently).
+ */
+export const billBody = (order: Order, width = RECEIPT_WIDTH): ReceiptLine[] => {
+  const t = totals(order);
+  const out: ReceiptLine[] = [];
+  for (const l of order.lines) {
     const item = itemById(l.itemId);
     const size = item.variants?.find((v) => v.id === l.size)?.label;
     const name = `${l.qty} x ${lineItemName(l).replace(/½/g, '1/2')}${size ? ` ${size}` : ''}`; // the printer has no ½
@@ -104,25 +146,15 @@ export function receipt(
       const label = item.adds.find((o) => o.id === id)?.label;
       if (label) out.push({ text: `    + ${label}` });
     }
-    const adj = lineAdjustment(paid, l);
+    const adj = lineAdjustment(order, l);
     if (adj > 0) out.push({ text: twoCols('    Price adjusted', minus(adj), width) });
   }
-
   out.push(rule(width));
   if (t.lineAdjust > 0 || t.orderDiscount > 0) out.push({ text: twoCols('Subtotal', fmt(t.subtotal - t.lineAdjust), width) });
-  const d = paid.adjust?.discount;
+  const d = order.adjust?.discount;
   if (d && t.orderDiscount > 0) out.push({ text: twoCols(discountLabel(d), minus(t.orderDiscount), width) });
-  out.push({ text: twoCols('TOTAL', `Rs ${fmt(paid.total)}`, width / 2), bold: true, big: true });
-  if (paid.tender === 'cash') {
-    out.push({ text: twoCols('Cash', fmt(paid.tendered), width) });
-    out.push({ text: twoCols('Change', fmt(paid.change), width), bold: true });
-  } else if (paid.tender !== 'comp') { // Free already has its own line above
-    out.push({ text: twoCols('Paid by', TENDER_LABEL[paid.tender], width) });
-  }
-  out.push(rule(width));
-  for (const text of wrap(shop.footer, width)) out.push({ text, center: true });
   return out;
-}
+};
 
 /** Plain text, for the preview and dry-run files. Big lines are shown at half width, as on paper. */
 export const receiptText = (lines: ReceiptLine[], width = RECEIPT_WIDTH): string =>
@@ -145,6 +177,8 @@ export const CMD = {
   boldOff: [ESC, 0x45, 0x00],
   big: [GS, 0x21, 0x11],
   normal: [GS, 0x21, 0x00],
+  invertOn: [GS, 0x42, 0x01],
+  invertOff: [GS, 0x42, 0x00],
   /** Feed 4 lines past the tear bar, then a partial cut. */
   feedCut: [GS, 0x56, 0x42, 0x04],
 } as const;
@@ -169,14 +203,59 @@ export const escpos = (lines: ReceiptLine[], { openDrawer = false } = {}): Uint8
   if (openDrawer) out.push(...CMD.kick);
   for (const l of lines) {
     out.push(...(l.center ? CMD.center : CMD.left));
+    if (l.image) { out.push(...rasterBytes(l.image)); continue; }
     if (l.bold) out.push(...CMD.boldOn);
     if (l.big) out.push(...CMD.big);
+    if (l.invert) out.push(...CMD.invertOn);
     out.push(...ascii(l.text), 0x0a);
+    if (l.invert) out.push(...CMD.invertOff);
     if (l.big) out.push(...CMD.normal);
     if (l.bold) out.push(...CMD.boldOff);
   }
   out.push(...CMD.left, ...CMD.feedCut);
   return Uint8Array.from(out);
+};
+
+/**
+ * A picture as raster bit-image commands (GS v 0), in bands of 64 rows: some printers drop a
+ * picture sent as one tall block.
+ */
+export const rasterBytes = ({ width, height, bits }: Dots): number[] => {
+  const raw = atob(bits);
+  const row = Math.ceil(width / 8);
+  const out: number[] = [];
+  for (let y = 0; y < height; y += 64) {
+    const h = Math.min(64, height - y);
+    out.push(GS, 0x76, 0x30, 0x00, row & 0xff, row >> 8, h & 0xff, h >> 8);
+    for (let i = y * row; i < (y + h) * row; i++) out.push(raw.charCodeAt(i));
+  }
+  return out;
+};
+
+/**
+ * A picture's pixels (RGBA, as a canvas gives them) as printer dots: transparent counts as paper,
+ * darker than `threshold` is ink, and blank rows above and below are cut so no paper is wasted.
+ * Logos are flat colours, so a plain threshold prints crisper than dithering.
+ */
+export const toDots = (rgba: ArrayLike<number>, width: number, height: number, threshold = 160): Dots | null => {
+  const ink = (x: number, y: number) => {
+    const p = (y * width + x) * 4;
+    const a = rgba[p + 3] / 255;
+    const lum = (0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2]) * a + 255 * (1 - a);
+    return lum < threshold;
+  };
+  const rows: number[] = [];
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (ink(x, y)) { rows.push(y); break; }
+  if (!rows.length) return null;
+  const top = rows[0];
+  const bottom = rows[rows.length - 1];
+  const h = bottom - top + 1;
+  const row = Math.ceil(width / 8);
+  const bytes = new Uint8Array(row * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < width; x++) if (ink(x, y + top)) bytes[y * row + (x >> 3)] |= 0x80 >> (x & 7);
+  let s = '';
+  bytes.forEach((b) => { s += String.fromCharCode(b); });
+  return { width, height: h, bits: btoa(s) };
 };
 
 /** Opens the cash drawer and nothing else: no paper (Shop setup → Printer → "Open the cash drawer"). */
