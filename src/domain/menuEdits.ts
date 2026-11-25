@@ -1,6 +1,6 @@
 import type { Actor } from './auth.ts';
-import type { Category, Cents, Combo, MenuItem, SizeId } from './types.ts';
-import { CUSTOM_SIZE_IDS, isCustomSection, isCustomSize, sectionsOf, type SectionSetting, type SectionsState } from './sections.ts';
+import type { Category, Cents, Combo, CustomSizeId, MenuItem, SizeId } from './types.ts';
+import { checkSizes, CUSTOM_SIZE_IDS, isCustomSection, isCustomSize, sectionsOf, type SectionSetting, type SectionsState } from './sections.ts';
 
 /**
  * The owner's own menu changes, on top of the printed menu (menu.ts stays the starting point,
@@ -31,6 +31,12 @@ export interface NewItem {
   description: string;
   /** One price per size of its section, or `one` for single-price sections. */
   prices: Partial<Record<SizeId | 'one', Cents>>;
+  /**
+   * His own sections only (Bata Kade, 2026-11-25): this dish's own sizes, in place of its section's.
+   * `[]` = one price; 2-3 = sizes he names (ids x1..x3), e.g. Half / Full on one rice & curry.
+   * Absent = as its section.
+   */
+  sizes?: { id: CustomSizeId; label: string }[];
 }
 
 /** Added items' ids, so they never meet a printed item's id. */
@@ -166,6 +172,11 @@ const shapeOf = (category: Category, printed: readonly MenuItem[], sections: Sec
   return printed.find((m) => m.category === category);
 };
 
+/** A dish's own sizes if it has a sensible set (his own sections only), else undefined = its section's. */
+const ownSizes = (n: NewItem): NewItem['sizes'] | undefined =>
+  isCustomSection(n.category) && Array.isArray(n.sizes) && n.sizes.length !== 1 && n.sizes.length <= CUSTOM_SIZE_IDS.length && checkSizes(n.sizes) === null
+    ? n.sizes : undefined;
+
 /** The sizes a new item in this section is priced in ('one' for a single price). */
 export const newItemSizes = (category: Category, printed: readonly MenuItem[], sections?: SectionsState['sections']): { id: SizeId | 'one'; label: string; hint?: string }[] =>
   shapeOf(category, printed, sections)?.variants?.map((v) => ({ id: v.id, label: v.label, hint: v.hint })) ?? [{ id: 'one', label: 'Price' }];
@@ -178,14 +189,18 @@ export const newItemSizes = (category: Category, printed: readonly MenuItem[], s
  */
 export const newMenuItem = (id: string, n: NewItem & { removed?: true }, printed: readonly MenuItem[], sections?: SectionsState['sections']): MenuItem | null => {
   if (!n || typeof n !== 'object' || typeof n.name?.en !== 'string') return null;
-  const shape = shapeOf(n.category, printed, sections);
+  const own = ownSizes(n);
+  const section = shapeOf(n.category, printed, sections);
+  // A dish with its own sizes keeps them, whatever its section's are.
+  const shape = section && own ? { ...(own.length ? { variants: own.map((z) => ({ id: z.id, label: z.label.trim(), price: 0 })) } : {}), adds: section.adds } : section;
   if (!shape) {
     const sizes = Object.entries(n.prices ?? {}).filter(([k, v]) => k !== 'one' && Number.isSafeInteger(v)) as [string, Cents][];
+    const named = (k: string) => own?.find((z) => z.id === k)?.label.trim() || k.charAt(0).toUpperCase() + k.slice(1);
     return {
       id, category: n.category, name: n.name, description: typeof n.description === 'string' ? n.description : '', aliases: [],
       // Its own sizes, as recorded: not this menu's S/M/L, so the type is widened on purpose.
       ...(sizes.length
-        ? { variants: sizes.map(([k, price]) => ({ id: k as SizeId, label: k.charAt(0).toUpperCase() + k.slice(1), price })) }
+        ? { variants: sizes.map(([k, price]) => ({ id: k as SizeId, label: named(k), price })) }
         : { price: n.prices?.one ?? 0 }),
       adds: [], leaveOut: [], added: true, hidden: true,
       ...(n.removed ? { removed: true } : {}),
@@ -245,6 +260,18 @@ const checkItemText = (n: NewItem): string | null => {
  */
 export const checkNewItem = (n: NewItem, printed: readonly MenuItem[], sections?: SectionsState['sections']): string | null => {
   if (typeof n?.category !== 'string') return 'that is not a menu section';
+  if (n.sizes !== undefined) {
+    // His own sizes for this one dish: one price ([]) or 2-3 he names, a price for each.
+    if (!isCustomSection(n.category)) return 'Pizza, Burgers and Pasta keep their sizes';
+    if (sections && !sections[n.category]) return 'that is not a menu section';
+    if (!Array.isArray(n.sizes) || n.sizes.length === 1 || n.sizes.length > CUSTOM_SIZE_IDS.length) return 'a dish has one price, or 2 or 3 sizes';
+    const badSize = checkSizes(n.sizes);
+    if (badSize) return badSize;
+    const ids: string[] = n.sizes.length ? n.sizes.map((z) => z.id) : ['one'];
+    const keys = Object.keys(n.prices ?? {});
+    if (keys.some((k) => !ids.includes(k))) return 'a price is for a size this dish does not have';
+    return checkItemText(n) ?? (ids.some((k) => !isPrice(n.prices?.[k as SizeId]) || n.prices[k as SizeId] === 0) ? 'prices are whole rupees, more than 0' : null);
+  }
   if (isCustomSection(n.category) && !sections) {
     const keys = Object.keys(n.prices ?? {});
     const given: string[] = keys.length === 1 && keys[0] === 'one' ? ['one'] : CUSTOM_SIZE_IDS.slice(0, keys.length);

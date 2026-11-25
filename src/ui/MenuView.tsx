@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { MENU, comboEntries, menuItems, menuSections, menuState, sectionById, startingItem } from '../domain/menu.ts';
-import { sizeShort, type Section } from '../domain/sections.ts';
+import { CUSTOM_SIZE_IDS, isCustomSection, sizeShort, type Section } from '../domain/sections.ts';
 import { SectionSheet } from './SectionSheet.tsx';
 import { managesRole } from '../domain/auth.ts';
 import { comboBlocked, separatePrice } from '../domain/combos.ts';
@@ -193,6 +193,19 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
   const sizes = item.variants?.map((v) => v.id) ?? ['one' as const];
   const [price, setPrice] = useState<Record<string, string>>(() =>
     Object.fromEntries(item.variants ? item.variants.map((v) => [v.id, String(v.price / 100)]) : [['one', String((item.price ?? 0) / 100)]]));
+  /**
+   * A dish he added in one of his own sections may have its own prices (2026-11-25): one, or 2-3
+   * he names (Half / Full). Each row is a size's name and price; one row = one price.
+   */
+  const ownShape = Boolean(base.added) && isCustomSection(item.category);
+  const [rows, setRows] = useState<{ label: string; price: string }[]>(() =>
+    item.variants ? item.variants.map((v) => ({ label: v.label, price: String(v.price / 100) })) : [{ label: '', price: String((item.price ?? 0) / 100) }]);
+  const shapeOf = (r: readonly { label: string }[]) => (r.length < 2 ? [] : r.map((x, i) => ({ id: CUSTOM_SIZE_IDS[i], label: x.label.trim() })));
+  const shapeNow = (item.variants ?? []).map((v) => ({ id: v.id, label: v.label }));
+  const reshaped = ownShape && JSON.stringify(shapeOf(rows)) !== JSON.stringify(shapeNow);
+  const setRow = (i: number, part: Partial<{ label: string; price: string }>) => { setRows(rows.map((r, j) => (j === i ? { ...r, ...part } : r))); setError(''); };
+  const addRow = () => setRows(rows.length === 1 ? [{ label: 'Half', price: rows[0].price }, { label: 'Full', price: '' }] : [...rows, { label: '', price: '' }]);
+  const removeRow = (i: number) => setRows(rows.length === 2 ? [{ label: '', price: rows[1 - i].price }] : rows.filter((_, j) => j !== i));
   const [adds, setAdds] = useState<Record<string, string>>(() => Object.fromEntries(item.adds.map((a) => [a.id, String(a.price / 100)])));
   const [hidden, setHidden] = useState(Boolean(item.hidden));
   const [error, setError] = useState('');
@@ -215,10 +228,20 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
     if (Object.keys(name).length) o.name = name;
     if (desc.trim() !== base.description) o.description = desc.trim();
     const p: NonNullable<ItemOverride['prices']> = {};
-    for (const id of sizes) {
-      const c = toCents(price[id] ?? '');
-      if (c === null) return 'Prices are whole rupees, like 1650.';
-      if (c !== basePrice(id)) p[id as SizeId | 'one'] = c;
+    if (ownShape && !reshaped) {
+      // Same sizes as now: a price change is a change on top of how he added it.
+      rows.forEach((r, i) => {
+        const id = item.variants ? item.variants[i].id : 'one';
+        const c = toCents(r.price);
+        if (c !== null && c !== basePrice(id)) p[id] = c;
+      });
+      if (rows.some((r) => toCents(r.price) === null)) return 'Prices are whole rupees, like 1650.';
+    } else if (!ownShape) {
+      for (const id of sizes) {
+        const c = toCents(price[id] ?? '');
+        if (c === null) return 'Prices are whole rupees, like 1650.';
+        if (c !== basePrice(id)) p[id as SizeId | 'one'] = c;
+      }
     }
     if (Object.keys(p).length) o.prices = p;
     const a: Record<string, Cents> = {};
@@ -232,10 +255,35 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
     return checkOverride(base, o) ?? o;
   };
 
+  /** New sizes for his dish: it is added again with them (same id), its other changes kept. */
+  const reshape = (): NewItem | string => {
+    if (rows.length > 1 && rows.some((r) => !r.label.trim())) return 'Give each price a name, like Half or Full.';
+    const shape = shapeOf(rows);
+    const prices: NewItem['prices'] = {};
+    for (const [i, r] of rows.entries()) {
+      const c = toCents(r.price);
+      if (c === null || c === 0) return `Type a price for ${shape.length ? shape[i].label || 'each size' : 'it'}, in whole rupees, like 450.`;
+      prices[shape.length ? shape[i].id : 'one'] = c;
+    }
+    const { removed: _, ...was } = menuState().added[item.id];
+    const next: NewItem = { ...was, prices, sizes: shape };
+    const bad = checkNewItem(next, MENU, menuState().sections);
+    return bad ? `${bad[0].toUpperCase()}${bad.slice(1)}.` : next;
+  };
+
   const save = (e: FormEvent) => {
     e.preventDefault();
     const o = build();
     if (typeof o === 'string') { setError(o); return; }
+    if (reshaped) {
+      const next = reshape();
+      if (typeof next === 'string') { setError(next); return; }
+      const { removed: _, ...was } = menuState().added[item.id];
+      addItem(item.id, next);
+      const before = record(item.id, o);
+      onSaved(`Saved ${en.trim() || base.name.en}`, () => { record(item.id, before); addItem(item.id, was); });
+      return;
+    }
     const before = record(item.id, o);
     onSaved(`Saved ${en.trim() || base.name.en}`, () => record(item.id, before));
   };
@@ -282,6 +330,38 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
             </div>
           </section>
 
+          {ownShape ? (
+            <section className="group">
+              <h2>{rows.length > 1 ? 'Prices' : 'Price'}</h2>
+              <div className="menued__sizes">
+                {rows.map((r, i) => {
+                  const id = !reshaped ? (item.variants ? item.variants[i].id : 'one') : null;
+                  const was = id ? basePrice(id) : null;
+                  return (
+                    <div className="menued__size" key={i}>
+                      {rows.length > 1 && (
+                        <label>Name<input value={r.label} onChange={(e) => setRow(i, { label: e.target.value })} maxLength={12} aria-label={`Price ${i + 1} name`} /></label>
+                      )}
+                      <label>
+                        Price
+                        <NumberInput decimals={0} value={r.price} onText={(text) => setRow(i, { price: text })}
+                          aria-label={rows.length > 1 ? `${r.label.trim() || `Price ${i + 1}`} price` : 'Price'} />
+                        {was !== null && toCents(r.price) !== was && <span className="menued__was num">Was {fmt(was)}</span>}
+                      </label>
+                      {rows.length > 1 && (
+                        <button type="button" className="linkbtn" onClick={() => removeRow(i)} aria-label={`Remove ${r.label.trim() || `price ${i + 1}`}`}>Remove</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {rows.length < CUSTOM_SIZE_IDS.length && (
+                <button type="button" className="chip menued__addsize" onClick={addRow}>
+                  {rows.length === 1 ? '+ Two prices (Half / Full)' : '+ Another price'}
+                </button>
+              )}
+            </section>
+          ) : (
           <section className="group">
             <h2>Price</h2>
             <div className="menued__grid">
@@ -298,6 +378,7 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
               })}
             </div>
           </section>
+          )}
 
           {base.adds.length > 0 && (
             <section className="group">

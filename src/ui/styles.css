@@ -1176,6 +1176,13 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .menued__wide { grid-column: 1 / -1; }
 .menued__was { color: var(--ink-3); font-size: 12px; font-weight: 400; }
 .menued__note { margin: 12px 0 0; color: var(--ink-3); font-size: 14px; }
+/* A dish's own prices (2026-11-25): a row per size, its name and price, Remove at the end. */
+.menued__sizes { display: flex; flex-direction: column; gap: 12px; }
+.menued__size { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) auto; align-items: end; gap: 14px; }
+.menued__size label { display: flex; flex-direction: column; gap: 6px; color: var(--ink-2); font-size: 14px; font-weight: 500; }
+.menued__size input { min-height: 48px; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--ground); color: var(--ink); font: inherit; font-size: 17px; }
+.menued__size .linkbtn { min-height: 48px; }
+.menued__addsize { margin-top: 14px; }
 .menuv__add { align-self: flex-start; margin-top: -16px; }
 /* + Add to a section, and Change section (SCRUM-241). */
 .menuv__actions { display: flex; flex-wrap: wrap; gap: 8px; align-self: flex-start; margin-top: -16px; }
@@ -2504,6 +2511,8 @@ button.glance__card:disabled { cursor: default; }
 .register .panel, .register .panel--paying { flex: 0 0 var(--panel-w); width: var(--panel-w); }
 .register .menu { padding-top: var(--sp-3); }
 .register .typebar__field input[readonly] { cursor: text; }
+/* The section bar sticks flush to the top, over the padding, so no dish shows above it while scrolling. */
+.register .menu .cats { top: calc(-1 * var(--sp-3)); }
 .register .typebar__field input::placeholder { color: var(--ink-3); }
 
 /* The bar: PAY the largest and the shop's colour; red for the two that take things away. */

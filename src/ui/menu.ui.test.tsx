@@ -196,6 +196,59 @@ test('the owner adds a Kottu section with Full and Normal, then a dish in it: th
   expect(card.getByRole('button', { name: 'Normal 900' })).toBeTruthy();
 });
 
+test('one dish of a one-price section gets two prices he names (Half / Full); the counter offers both; Undo; back to one price', async () => {
+  const user = userEvent.setup();
+  history.replaceState(null, '', '/#menu');
+  render(<Root />);
+  await user.click(await screen.findByRole('button', { name: '+ Section' }));
+  const sec = within(screen.getByRole('dialog', { name: 'New section' }));
+  await user.type(sec.getByLabelText('English'), 'Rice');
+  await user.click(sec.getByRole('button', { name: 'Add section' }));
+  await user.click(screen.getByRole('button', { name: '+ Add to Rice' }));
+  const add = within(screen.getByRole('dialog', { name: 'Add to Rice' }));
+  await user.type(add.getByLabelText('English'), 'Chicken Rice{Enter}');
+  await user.type(add.getByLabelText('Price'), '400');
+  await user.click(add.getByRole('button', { name: 'Add to the menu' }));
+
+  await user.click(screen.getByRole('button', { name: 'Change Chicken Rice' }));
+  const sheet = within(screen.getByRole('dialog', { name: 'Change Chicken Rice' }));
+  await user.click(sheet.getByRole('button', { name: '+ Two prices (Half / Full)' }));
+  expect((sheet.getByLabelText('Half price') as HTMLInputElement).value).toBe('400');
+  await user.type(sheet.getByLabelText('Full price'), '550');
+  await user.click(sheet.getByRole('button', { name: 'Save' }));
+  expect(screen.getByText('Half 400 · Full 550')).toBeTruthy();
+  expect(readAll().filter((x) => x.type === 'menu.item_added').at(-1)).toMatchObject({
+    itemId: 'new-chicken-rice', item: { prices: { x1: 40000, x2: 55000 }, sizes: [{ id: 'x1', label: 'Half' }, { id: 'x2', label: 'Full' }] },
+  });
+
+  // A price change keeps the sizes: on top of how he added it.
+  await user.click(screen.getByRole('button', { name: 'Change Chicken Rice' }));
+  const again = within(screen.getByRole('dialog', { name: 'Change Chicken Rice' }));
+  await user.clear(again.getByLabelText('Full price'));
+  await user.type(again.getByLabelText('Full price'), '600');
+  await user.click(again.getByRole('button', { name: 'Save' }));
+  expect(screen.getByText('Half 400 · Full 600')).toBeTruthy();
+  expect(readAll().filter((x) => x.type === 'menu.item_set').at(-1)).toMatchObject({ after: { prices: { x2: 60000 } } });
+
+  // Back to one price: Remove one of the two; Undo brings both back.
+  await user.click(screen.getByRole('button', { name: 'Change Chicken Rice' }));
+  const one = within(screen.getByRole('dialog', { name: 'Change Chicken Rice' }));
+  await user.click(one.getByRole('button', { name: 'Remove Half' }));
+  expect((one.getByLabelText('Price') as HTMLInputElement).value).toBe('600');
+  await user.click(one.getByRole('button', { name: 'Save' }));
+  expect(screen.queryByText('Half 400 · Full 600')).toBeNull();
+  expect(readAll().filter((x) => x.type === 'menu.item_added').at(-1)).toMatchObject({ item: { prices: { one: 60000 }, sizes: [] } });
+  await user.click(within(screen.getByRole('status')).getByRole('button', { name: 'Undo' }));
+  expect(screen.getByText('Half 400 · Full 600')).toBeTruthy();
+
+  // The counter offers both, each one tap.
+  await user.keyboard('{Escape}');
+  await user.click(await screen.findByRole('button', { name: 'Rice' }));
+  const card = within(screen.getByText('Chicken Rice').closest('.card') as HTMLElement);
+  expect(card.getByRole('button', { name: 'Half 400' })).toBeTruthy();
+  expect(card.getByRole('button', { name: 'Full 600' })).toBeTruthy();
+});
+
 test('the owner renames Burgers and moves it first; Undo puts the printed name back', async () => {
   const user = userEvent.setup();
   history.replaceState(null, '', '/#menu');
