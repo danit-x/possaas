@@ -1194,6 +1194,22 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .menued__foot { display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 16px 80px 24px; }
 /* The main action sized to its words, on the right; Back / Later / Cancel stay quiet on the left. */
 .menued__foot .cta { flex: none; width: auto; min-width: 200px; height: 56px; margin-left: auto; padding: 0 32px; }
+/* An item's sheet in two columns (owner, 2026-11-25: no scrolling): photo left, names/prices/hide right. */
+.menued .sheet__body { padding-top: 32px; gap: 24px; }
+.menued__cols { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 40px; align-items: start; }
+.menued__side { display: flex; flex-direction: column; gap: 12px; }
+.menued__side .photo-slot__frame { width: 100%; aspect-ratio: 1; }
+.menued__side .photo-slot__actions { gap: 8px; }
+.menued__side .photo-slot__actions .chip { flex: 1; padding-left: 12px; padding-right: 12px; white-space: nowrap; }
+.menued__main .menued__addsize { align-self: flex-start; }
+.menued__main { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.menued__names { grid-template-columns: 1.4fr 1fr 1fr; }
+.menued__check { min-height: 40px; }
+@media (max-width: 760px) {
+  .menued__cols { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .menued__side .photo-slot__frame { width: min(100%, 240px); }
+  .menued__names { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+}
 @media (max-width: 640px) {
   .menuv__row { flex-wrap: wrap; }
   .menuv__name { flex-basis: 100%; }

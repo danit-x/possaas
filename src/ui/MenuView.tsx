@@ -141,18 +141,21 @@ function AddDish({ section, onSaved, onClose }: {
           </ol>
 
           {step === 0 && (
-            <section className="group">
-              <div className="menued__grid">
-                <label>English<input value={en} onChange={(e) => { setEn(e.target.value); setError(''); }} maxLength={40} autoFocus /></label>
-                <label>Sinhala<input value={si} onChange={(e) => setSi(e.target.value)} maxLength={60} lang="si" /></label>
-                <label>Tamil<input value={ta} onChange={(e) => setTa(e.target.value)} maxLength={60} lang="ta" /></label>
-                <label className="menued__wide">Description<input value={desc} onChange={(e) => setDesc(e.target.value)} maxLength={160} /></label>
+            <div className="menued__cols">
+              <div className="menued__side">
+                <PhotoSlot name={en.trim() || 'the new item'} url={photo ? photoSrc(photo) : null} onPhoto={setPhotoId}
+                  onRemove={() => setPhotoId(null)} />
               </div>
-            </section>
-          )}
-          {step === 0 && (
-            <PhotoSlot name={en.trim() || 'the new item'} url={photo ? photoSrc(photo) : null} onPhoto={setPhotoId}
-              onRemove={() => setPhotoId(null)} />
+              <section className="group menued__main">
+                <h2>Name</h2>
+                <div className="menued__grid menued__names">
+                  <label>English<input value={en} onChange={(e) => { setEn(e.target.value); setError(''); }} maxLength={40} autoFocus /></label>
+                  <label>Sinhala<input value={si} onChange={(e) => setSi(e.target.value)} maxLength={60} lang="si" /></label>
+                  <label>Tamil<input value={ta} onChange={(e) => setTa(e.target.value)} maxLength={60} lang="ta" /></label>
+                  <label className="menued__wide">Description<input value={desc} onChange={(e) => setDesc(e.target.value)} maxLength={160} /></label>
+                </div>
+              </section>
+            </div>
           )}
 
           {step === 1 && (
@@ -295,6 +298,7 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
         <div className="sheet__body">
           <div className="sheet__title">
             <h1>{item.name.en}</h1>
+            {sectionById(item.category) && <span>{sectionById(item.category)!.label}</span>}
             {item.edited && (
               <button type="button" className="linkbtn" onClick={() => {
                 const before = record(item.id, {});
@@ -311,6 +315,9 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
             )}
           </div>
 
+          {/* Two columns (owner, 2026-11-25: no scrolling): the photo left, everything typed right. */}
+          <div className="menued__cols">
+          <div className="menued__side">
           <PhotoSlot name={item.name.en} url={photoUrl(item.id)}
             onPhoto={(id) => changePhoto(id, 'Photo changed.')} onRemove={() => changePhoto(null, 'Photo removed.')} />
           {photoNote && (
@@ -319,10 +326,12 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
               <button type="button" className="linkbtn" onClick={() => { setPhoto(item.id, photoNote.undo); setPhotoNote(null); }}>Undo</button>
             </p>
           )}
+          </div>
 
+          <div className="menued__main">
           <section className="group">
             <h2>Name</h2>
-            <div className="menued__grid">
+            <div className="menued__grid menued__names">
               <label>English<input value={en} onChange={(e) => setEn(e.target.value)} maxLength={40} required /></label>
               <label>Sinhala<input value={si} onChange={(e) => setSi(e.target.value)} maxLength={60} lang="si" /></label>
               <label>Tamil<input value={ta} onChange={(e) => setTa(e.target.value)} maxLength={60} lang="ta" /></label>
@@ -395,12 +404,14 @@ function Editor({ item, onSaved, onClose }: { item: MenuItem; onSaved: (message:
           )}
 
           <section className="group">
-            <label className="menued__check">
+            <label className="menued__check" title="The counter stops offering it; old orders keep it.">
               <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} />
-              Hide from the menu <span>(the counter stops offering it; old orders keep it)</span>
+              Hide from the menu
             </label>
           </section>
           {error && <p className="reason-msg" role="alert">{error}</p>}
+          </div>
+          </div>
         </div>
         <div className="sheet__foot menued__foot">
           <button type="button" className="linkbtn" onClick={onClose}>Cancel</button>
