@@ -3,6 +3,7 @@ import { menuState, menuVersion, openSectionsKey, setMenuState, subscribeMenu } 
 import { menuStateFromEvents } from '../domain/menuEdits.ts';
 import { readAll, subscribeEvents } from './eventLog.ts';
 import { bataKadeMenuEvents } from '../shop/bataKade.ts';
+import type { SyncEvent } from '../domain/sync.ts';
 
 /**
  * Keeps this screen's menu in step with the shop's menu events (from the event log, which
@@ -13,9 +14,20 @@ let started = false;
  * Bata Kade's menu comes first, under the shop's own menu events (the shop server stores the same
  * events, with the same ids, on the counter's first pull: server/firstMenu.ts), so every screen shows
  * it even before the first sync, and the owner's later changes win. The tests keep the printed menu.
+ * Worked out when asked, so a test can switch the real menu on (vi.stubEnv('MODE', ...)).
  */
-const baseMenu = import.meta.env.MODE === 'test' ? [] : bataKadeMenuEvents('', 0);
-const refresh = () => setMenuState(menuStateFromEvents([...baseMenu, ...readAll().filter((e) => e.type.startsWith('menu.'))]));
+let base: { mode: string; events: SyncEvent[] } | undefined;
+const baseMenu = (): SyncEvent[] => {
+  const mode = import.meta.env.MODE;
+  if (base?.mode !== mode) base = { mode, events: mode === 'test' ? [] : bataKadeMenuEvents('', 0) };
+  return base.events;
+};
+/**
+ * The shop's menu from its menu events, always on top of Bata Kade's: every screen that folds the
+ * menu goes through here (the event log here, the shop's history in ownerData.ts), so none drops it.
+ */
+export const shopMenuState = (menuEvents: SyncEvent[]) => menuStateFromEvents([...baseMenu(), ...menuEvents]);
+const refresh = () => setMenuState(shopMenuState(readAll().filter((e) => e.type.startsWith('menu.'))));
 
 const start = () => {
   if (started) return;
