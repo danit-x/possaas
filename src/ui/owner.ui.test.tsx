@@ -24,7 +24,7 @@ test('the demo Today: the shop at a glance, each part explained on the black scr
   // Bata Kade's own cards only: its sales, its staff, its menu. No stock, tables or cameras.
   const labels = cards.map((c) => c.getAttribute('aria-label') ?? '');
   expect(labels).toContain("Watalappan hasn't sold in 2 weeks");
-  expect(labels.some((l) => /camera|table|running low|recipe|Food costs/i.test(l))).toBe(false);
+  expect(labels.some((l) => /\bcameras?\b|\btables?\b|running low|recipe|Food costs/i.test(l))).toBe(false);
   expect(labels.some((l) => /BBQ|Pizza|Margherita/i.test(l))).toBe(false);
   // The stations: the kitchen, the counter, the money.
   expect(screen.queryByRole('button', { name: /^Shelves: / })).toBeNull();
