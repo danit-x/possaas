@@ -1,7 +1,6 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { label } from './labels.ts';
 import { NumberInput } from './NumberInput.tsx';
-import type { Actor } from '../domain/auth.ts';
 import { lineCookState, type KitchenTicket } from '../domain/kitchen.ts';
 import { DISCOUNT_CHIPS } from '../domain/manager.ts';
 import { itemById } from '../domain/menu.ts';
@@ -54,8 +53,6 @@ export const COOK_LABEL = { waiting: 'Waiting', cooking: 'Cooking', done: 'Done'
 export const TENDER: Record<Tender, string> = { cash: 'Cash', transfer: 'Bank transfer', card: 'Card', qr: 'QR', comp: 'Free', uber: 'Uber Eats' };
 const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-/** Void reasons for a sent line (owner rule: a reason is required). Keys 1-3 pick them. */
-export const VOID_REASONS = ['Customer changed mind', 'Wrong item entered', 'Out of stock'];
 
 /** "150" or "150.50" rupees -> cents, without floating point. null if not a valid amount. */
 export const parseRupees = (raw: string): Cents | null => {
@@ -71,14 +68,14 @@ export function OnlineTag({ order, time = true }: { order: Order; time?: boolean
   return <span className="status status--online" title="Ordered on cheesybeez.com">{label}{time && ` · ${clock(order.online.pickupBy)}`}</span>;
 }
 
-/** Manager mode state and actions, owned by App (which also maps the keys). The selected line is the panel's own `selected`. */
-export interface ManagePanel {
-  actor: Actor;
-  pendingVoid: string | null;
+/**
+ * What the customer pays, for any cashier (owner, 2026-11-25: no manager mode): an order discount or
+ * Free, and money off the selected line. Behind the bill's Discount line, so it is one tap away and
+ * never in the way. Owned by App; every change is audited under the cashier's name.
+ */
+export interface MoneyPanel {
+  /** The line whose "price off" field is open. */
   adjusting: string | null;
-  onEditLine: (line: OrderLine) => void;
-  onAskVoid: (line: OrderLine) => void;
-  onVoid: (lineId: string, reason: string) => void;
   onAskAdjust: (line: OrderLine) => void;
   onAdjust: (lineId: string, cents: Cents) => void;
   onDiscount: (discount: Discount | null) => void;
@@ -120,43 +117,14 @@ function PayLines({ order }: { order: Order }) {
   );
 }
 
-function VoidReasons({ lineId, onVoid }: { lineId: string; onVoid: ManagePanel['onVoid'] }) {
-  const [other, setOther] = useState<string | null>(null);
-  return (
-    <div className="inline" role="group" aria-label="Why void this item?">
-      <span className="inline__label">Why void it?</span>
-      <div className="chips chips--tight">
-        {VOID_REASONS.map((r, i) => (
-          <button key={r} type="button" className="chip chip--solid" onClick={() => onVoid(lineId, r)}>
-            <kbd>{i + 1}</kbd>{r}
-          </button>
-        ))}
-        <button type="button" className="chip" aria-pressed={other !== null} onClick={() => setOther('')}>Other</button>
-      </div>
-      {other !== null && (
-        <input
-          className="note"
-          value={other}
-          onChange={(e) => setOther(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && other.trim()) onVoid(lineId, other.trim()); }}
-          placeholder="Short reason, then Enter"
-          aria-label="Other reason"
-          maxLength={80}
-          autoFocus
-        />
-      )}
-    </div>
-  );
-}
-
-function AdjustField({ line, order, onAdjust }: { line: OrderLine; order: Order; onAdjust: ManagePanel['onAdjust'] }) {
+function AdjustField({ line, order, onAdjust }: { line: OrderLine; order: Order; onAdjust: MoneyPanel['onAdjust'] }) {
   const current = lineAdjustment(order, line);
   const [raw, setRaw] = useState(current ? String(current / 100) : '');
   const cents = parseRupees(raw);
   // Taking it off again is its own button, never "type 0" (SCRUM-137).
   return (
     <div className="inline">
-      <label className="inline__label" htmlFor={`adj-${line.id}`}>Take off this line</label>
+      <label className="inline__label" htmlFor={`adj-${line.id}`}>Take off {lineItemName(line)}</label>
       <NumberInput
         id={`adj-${line.id}`}
         className="note"
@@ -185,8 +153,8 @@ interface Props {
   /** The customer has the food (SCRUM-240): offered once the kitchen has made it. */
   onGive: () => void;
   now: number;
-  /** Present while manager mode is on. */
-  manage: ManagePanel | null;
+  /** Discounts, Free and a line's price (behind the Discount line); absent where nobody changes money. */
+  money?: MoneyPanel;
   /** The highlighted line (index into the order's lines): arrows move it, VOID and +/- act on it. */
   selected: number;
   onSelect: (index: number) => void;
@@ -246,11 +214,14 @@ const dateTime = (at: number) => new Date(at).toLocaleString([], { day: 'numeric
  * line's Edit / Adjust price / Void and the discount chips. No dialogs.
  */
 export function OrderPanel({
-  order, tickets, paid, justPaid = false, onGive, now, manage, selected, onSelect, onEdit, onStep, onRemove, onClearPlatform,
+  order, tickets, paid, justPaid = false, onGive, now, money, selected, onSelect, onEdit, onStep, onRemove, onClearPlatform,
   onUndo, onGiveBack, onDineIn, printState, onReprint, paying, extras, customerBar, edits = [],
 }: Props) {
   const editOf = new Map(edits.map((e) => [e.lineId, e]));
-  const panelClass = `panel${manage ? ' panel--managing' : ''}`;
+  const panelClass = 'panel';
+  /** The Discount line opened: the chips, Free and "price off" show above the totals. */
+  const [moneyOpen, setMoneyOpen] = useState(false);
+  useEffect(() => { setMoneyOpen(false); }, [order.number, paid?.paidAt]); // another bill: closed again
 
   if (extras) {
     return <aside className={`${panelClass} panel--extras`} aria-label="Current order">{extras}</aside>;
@@ -316,6 +287,9 @@ export function OrderPanel({
   const off = t.lineAdjust + t.orderDiscount;
   const boxes = boxesIn(shown.lines);
   const sel = Math.min(selected, shown.lines.length - 1);
+  const selLine: OrderLine | undefined = shown.lines[sel];
+  /** Discounts and prices: a bill with something on it, not yet paid. */
+  const canMoney = money !== undefined && !empty && !paid;
 
   /** One line of the table. `inBox`: a combo's dish, priced with its box. */
   const row = (l: OrderLine, i: number, inBox: boolean) => {
@@ -323,16 +297,16 @@ export function OrderPanel({
     const adj = lineAdjustment(shown, l);
     const isSel = i === sel;
     // − / + work on any line still on the bill, sent ones too (the kitchen is told); a paid order's sent lines change through their sheet.
-    const canStep = !inBox && !manage && !(paid && l.sent);
+    const canStep = !inBox && !(paid && l.sent);
     const edit = editOf.get(l.id);
     const cook = l.sent ? lineCookState(tickets, l.id) : 'waiting';
     const extra = inBox && l.box ? lineNet(shown, l) - l.box.share : 0;
     return [
       <tr key={l.id} className={`bill__line${isSel ? ' bill__line--on' : ''}${l.sent ? ' bill__line--sent' : ''}${inBox ? ' bill__line--dish' : ''}`}
         // A paid bill (SCRUM-251): a tap anywhere on the row opens the item to change, not only its name.
-        aria-selected={isSel} onClick={() => { onSelect(i); if (paid && !manage) onEdit(l); }}>
+        aria-selected={isSel} onClick={() => { onSelect(i); if (paid) onEdit(l); }}>
         <td className="bill__item">
-          <button type="button" className="bill__name" onClick={(e) => { e.stopPropagation(); onSelect(i); if (manage) manage.onEditLine(l); else onEdit(l); }}>
+          <button type="button" className="bill__name" onClick={(e) => { e.stopPropagation(); onSelect(i); onEdit(l); }}>
             <span className="line__name">{name}</span>
             {sub(l) && <span className="line__sub">{sub(l)}</span>}
             {adj > 0 && <span className="line__adj num">−{fmt(adj)} off this line</span>}
@@ -358,24 +332,17 @@ export function OrderPanel({
               An item added after paying and not yet settled (SCRUM-253) is unsent: its ✕ takes it off. */}
           {paid && l.sent ? (
             <button type="button" className="bill__open" aria-label={`${label('changeItem')} ${name}`}
-              onClick={(e) => { e.stopPropagation(); onSelect(i); if (manage) manage.onEditLine(l); else onEdit(l); }}>›</button>
+              onClick={(e) => { e.stopPropagation(); onSelect(i); onEdit(l); }}>›</button>
           ) : !inBox && (
             <button type="button" className="bill__remove" aria-label={`${label('void')} ${name}`}
               onClick={(e) => { e.stopPropagation(); onSelect(i); onRemove(l); }}>✕</button>
           )}
         </td>
       </tr>,
-      manage && isSel && (
-        <tr key={`${l.id}-manage`} className="bill__manage"><td colSpan={5}>
-          {manage.pendingVoid === l.id ? <VoidReasons lineId={l.id} onVoid={manage.onVoid} />
-            : manage.adjusting === l.id ? <AdjustField line={l} order={shown} onAdjust={manage.onAdjust} />
-              : (
-                <div className="mline__actions">
-                  <button type="button" className="chip chip--solid" onClick={() => manage.onEditLine(l)}><kbd>Enter</kbd>Edit</button>
-                  <button type="button" className="chip chip--solid" onClick={() => manage.onAskAdjust(l)}><kbd>P</kbd>Adjust price</button>
-                  <button type="button" className="chip chip--solid chip--danger" onClick={() => manage.onAskVoid(l)}><kbd>Del</kbd>Void</button>
-                </div>
-              )}
+      // Its "price off" field (opened under Discount) sits right under the line it changes.
+      money?.adjusting === l.id && !paid && (
+        <tr key={`${l.id}-adjust`} className="bill__manage"><td colSpan={5}>
+          <AdjustField line={l} order={shown} onAdjust={money.onAdjust} />
         </td></tr>
       ),
     ];
@@ -384,7 +351,7 @@ export function OrderPanel({
   return (
     <aside className={panelClass} aria-label="Current order">
       {header}
-      {!manage && !paid && customerBar}
+      {!paid && customerBar}
       {shown.edited && !paid && <div className="panel__stamp num">Edited by {shown.edited.by}, {clock(shown.edited.at)}</div>}
 
       {paid && (() => {
@@ -484,24 +451,40 @@ export function OrderPanel({
         )}
       </div>
 
-      {manage && !empty && !paid && (
+      {canMoney && moneyOpen && (
         <div className="discounts" role="group" aria-label="Order discount">
           {DISCOUNT_CHIPS.map((c) => {
             const on = JSON.stringify(discount ?? null) === JSON.stringify(c.discount);
             return (
               <button key={c.key} type="button" className={`chip${c.discount.kind === 'comp' ? ' chip--free' : ''}`} aria-pressed={on}
                 aria-label={c.discount.kind === 'comp' ? 'Free (comp the whole order)' : `${c.label} off`}
-                onClick={() => manage.onDiscount(on ? null : c.discount)}>
-                <kbd>{c.key}</kbd>{c.label}
+                onClick={() => money.onDiscount(on ? null : c.discount)}>
+                {c.label}
               </button>
             );
           })}
+          {/* Money off one dish: the selected line (tap a line first to pick another). */}
+          {selLine && !selLine.box && (
+            <button type="button" className="chip chip--line" aria-pressed={money.adjusting === selLine.id}
+              onClick={() => money.onAskAdjust(selLine)}>
+              Price off {lineItemName(selLine)}
+            </button>
+          )}
         </div>
       )}
 
       <dl className="sums num">
         <div><dt>{label('subtotal')}</dt><dd>{fmt(t.subtotal)}</dd></div>
-        <div><dt>{label('discount')}{discount && t.orderDiscount > 0 ? ` · ${discountLabel(discount)}` : ''}</dt><dd>{off > 0 ? `−${fmt(off)}` : fmt(0)}</dd></div>
+        <div>
+          <dt>
+            {canMoney ? (
+              <button type="button" className="linkbtn sums__open" aria-expanded={moneyOpen} onClick={() => setMoneyOpen((o) => !o)}>
+                {label('discount')}{discount && t.orderDiscount > 0 ? ` · ${discountLabel(discount)}` : ''} {moneyOpen ? '▴' : '▾'}
+              </button>
+            ) : <>{label('discount')}{discount && t.orderDiscount > 0 ? ` · ${discountLabel(discount)}` : ''}</>}
+          </dt>
+          <dd>{off > 0 ? `−${fmt(off)}` : fmt(0)}</dd>
+        </div>
         {t.deliveryFee > 0 && <div><dt>{label('delivery')}</dt><dd>+{fmt(t.deliveryFee)}</dd></div>}
         <div className="sums__net"><dt>{label('netAmount')}</dt><dd className="total">{fmt(orderTotal(shown))}</dd></div>
         {/* Changed after paying (SCRUM-253): what was paid, and what is left either way. */}

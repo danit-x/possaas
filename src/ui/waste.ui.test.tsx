@@ -8,7 +8,6 @@ import { appendEvent, readAll } from './eventLog.ts';
 beforeEach(() => localStorage.clear());
 afterEach(cleanup);
 
-const pin = FAKE_STAFF.find((s) => s.actor.role === 'manager')!.pin;
 const wastes = () => readAll().filter((e) => e.type === 'stock.wasted');
 const cashier = FAKE_STAFF.find((s) => s.actor.role === 'cashier')!.actor;
 /** The kitchen made one Margherita Large today: sent, then started. */
@@ -19,14 +18,10 @@ const madeMargherita = () => {
   appendEvent({ type: 'kitchen.started', at: at + 1000, orderNumber: 1001, ticketId: 't1' });
 };
 
-test('manager mode: the bin wastes a dish through its recipe, with Undo', async () => {
+test('the bin (Waste, on the top bar, any cashier) wastes a dish through its recipe, with Undo', async () => {
   madeMargherita();
   const user = userEvent.setup();
   render(<App />);
-  expect(screen.queryByRole('button', { name: /Waste/ })).toBeNull(); // not for the cashier
-
-  await user.keyboard('{Control>}m{/Control}');
-  await user.keyboard(pin);
   await user.click(screen.getByRole('button', { name: /Waste/ }));
 
   const sheet = () => within(screen.getByRole('dialog', { name: 'Waste' }));
@@ -43,7 +38,7 @@ test('manager mode: the bin wastes a dish through its recipe, with Undo', async 
   expect(screen.queryByRole('dialog', { name: 'Waste' })).toBeNull();
   const [w] = wastes();
   expect(w).toMatchObject({ what: { kind: 'dish', itemId: 'margherita', size: 'L' }, name: 'Margherita · Large', qty: 1, reason: 'burnt' });
-  expect('actor' in w && w.actor.role).toBe('manager');
+  expect('actor' in w && w.actor).toMatchObject({ name: cashier.name, role: 'cashier' }); // under whoever is at the counter
 
   const toast = screen.getAllByRole('status').find((el) => el.textContent?.includes('Wasted 1 × Margherita · Large'))!;
   await user.click(within(toast).getByRole('button', { name: 'Undo' }));
@@ -53,9 +48,7 @@ test('manager mode: the bin wastes a dish through its recipe, with Undo', async 
 test('a raw item is wasted in its own unit', async () => {
   const user = userEvent.setup();
   render(<App />);
-  await user.keyboard('{Control>}m{/Control}');
-  await user.keyboard(pin);
-  await user.keyboard('w');
+  await user.click(screen.getByRole('button', { name: /Waste/ }));
   await user.keyboard('flour');
   const option = screen.getAllByRole('option').find((o) => o.textContent?.includes('Raw'))!;
   await user.click(option);
@@ -65,20 +58,10 @@ test('a raw item is wasted in its own unit', async () => {
   expect(wastes()[0]).toMatchObject({ what: { kind: 'stock' }, qty: 500, reason: 'expired' });
 });
 
-test('the bin shows in manager mode even when a cashier is signed in (the PIN is a manager\'s)', async () => {
-  const user = userEvent.setup();
-  render(<App />);
-  await user.keyboard('{Control>}m{/Control}');
-  await user.keyboard(pin);
-  expect(screen.getByRole('button', { name: /Waste/ })).toBeTruthy();
-});
-
 test('raw materials are one tap away, without searching', async () => {
   const user = userEvent.setup();
   render(<App />);
-  await user.keyboard('{Control>}m{/Control}');
-  await user.keyboard(pin);
-  await user.keyboard('w');
+  await user.click(screen.getByRole('button', { name: /Waste/ }));
   await user.click(screen.getByRole('button', { name: 'Raw materials' }));
   const options = screen.getAllByRole('option');
   expect(options.length).toBeGreaterThan(5);
@@ -88,8 +71,6 @@ test('raw materials are one tap away, without searching', async () => {
 test('a dish the kitchen has not made today is not in the bin; one made, binned once, is gone (SCRUM-183)', async () => {
   const user = userEvent.setup();
   render(<App />);
-  await user.keyboard('{Control>}m{/Control}');
-  await user.keyboard(pin);
   await user.click(screen.getByRole('button', { name: /Waste/ }));
   const sheet = () => within(screen.getByRole('dialog', { name: 'Waste' }));
   await user.click(sheet().getByRole('button', { name: 'Finished' }));

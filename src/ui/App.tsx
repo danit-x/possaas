@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { seesTakings } from '../domain/auth.ts';
-import { DISCOUNT_CHIPS, type ManagerChange } from '../domain/manager.ts';
+import type { Discount } from '../domain/types.ts';
 import { comboById, itemById, menuItems } from '../domain/menu.ts';
 import { boxLines } from '../domain/combos.ts';
 import { lineCookState } from '../domain/kitchen.ts';
@@ -13,18 +13,17 @@ import { canPrint, printChangedBill, printDeliveryBill, printPartSlip, printRece
 import { deliveryBill } from '../domain/receipt.ts';
 import { lineGross } from '../domain/totals.ts';
 import { fmt } from '../domain/money.ts';
-import { CommandPalette, type Command } from './CommandPalette.tsx';
 import { ExtrasPanel } from './ExtrasPanel.tsx';
 import { KitchenChip } from './KitchenChip.tsx';
 import { OnlineChip, OnlineSheet, useOnline } from './Online.tsx';
 import { onlineOrders } from '../services/onlineClient.ts';
 import type { OnlineOrder } from '../domain/online.ts';
 import { Menu, menuTabs, type CategoryId } from './Menu.tsx';
-import { OrderPanel, VOID_REASONS, orderSummary, type ManagePanel } from './OrderPanel.tsx';
+import { OrderPanel, orderSummary, type MoneyPanel } from './OrderPanel.tsx';
 import { kitchenWord, railRows } from './OrdersRail.tsx';
 import { BillHistory } from './BillHistory.tsx';
 import { ActionBar, type BarAction } from './ActionBar.tsx';
-import { kitchenScreenOn, setKitchenScreen } from './kitchenScreen.ts';
+import { kitchenScreenOn } from './kitchenScreen.ts';
 import { label } from './labels.ts';
 import { useNow } from './Kitchen.tsx';
 import { crmClient, crmReachable } from '../services/crmClient.ts';
@@ -33,18 +32,14 @@ import { paidEdits } from '../domain/paidEdits.ts';
 import { CustomerBar } from './CustomerBar.tsx';
 import { customerOrders, visitsFromEvents } from '../domain/customers.ts';
 import { usualOrder } from '../domain/usualOrder.ts';
-import { PinSheet } from './PinSheet.tsx';
 import { ShorthandBar, describe } from './ShorthandBar.tsx';
 import { SyncSign } from './SyncSign.tsx';
 import { useKitchenTickets } from './kitchenStore.ts';
-import { setSoundOn, soundOn } from './sound.ts';
-import { useManagerMode } from './useManagerMode.ts';
 import { useRegister } from './useRegister.ts';
 import { BinIcon, WasteSheet } from './WasteSheet.tsx';
 import { MicIcon } from './VoiceKey.tsx';
 import { useMenu } from './menuStore.ts';
-import { THEME_LABEL, applyTheme, setTheme, themeChoice, themeStored, type ThemeChoice } from './theme.ts';
-import { useFleet } from './ShopsView.tsx';
+import { applyTheme, themeStored } from './theme.ts';
 import { lineItemName } from '../domain/halves.ts';
 import { isPlatformId, PLATFORMS } from '../domain/platforms.ts';
 
@@ -52,8 +47,6 @@ type Sheet =
   | { kind: 'extras'; item: MenuItem; size?: SizeId }
   | { kind: 'edit'; line: OrderLine }
   | { kind: 'pay' }
-  /** `voidLine`: the PIN was asked by VOID on a sent line; once given, that line's reasons show. */
-  | { kind: 'pin'; voidLine?: string }
   | { kind: 'online' }
   | { kind: 'waste' }
   | null;
@@ -68,7 +61,6 @@ const isTypingTarget = (el: EventTarget | null): boolean =>
 /** Keys with no button of their own, shown while Alt is held (SCRUM-245). */
 const CASHIER_KEYS = [['A–Z', 'Type an order'], ['Ctrl Enter', 'Send / Pay'], ['Ctrl Z', 'Undo'], ['Esc', 'New order'], ['Alt 1–9', 'Menu tabs']] as const;
 const PAYING_KEYS = [['0–9', 'Cash given'], ['Enter', 'Take'], ['Esc', 'Back to order']] as const;
-const MANAGER_KEYS = [['↑ ↓', 'Pick a line'], ['Enter', 'Change'], ['Del', 'Void'], ['P', 'Price'], ['1–4', 'Discount'], ['Ctrl Z', 'Undo']] as const;
 
 export function App({
   onKitchen,
@@ -91,7 +83,7 @@ export function App({
   // The counter is light unless someone chose otherwise (bright shop, arm's length).
   useEffect(() => { if (!themeStored()) applyTheme('light'); }, []);
   /** The Kitchen view is hidden until the staff are at home with the counter (kitchenScreen.ts). */
-  const [kitchenOn, setKitchenOn] = useState(kitchenScreenOn);
+  const [kitchenOn] = useState(kitchenScreenOn); // switched in Settings › This counter
   const tickets = useKitchenTickets(); // live, so Cooking turns Done the moment the kitchen taps it
   const online = useOnline();
   /** Tells the customer first (with the number this order will get), then sends it to the kitchen. */
@@ -159,13 +151,11 @@ export function App({
   // The bill flies from the right panel to its row on the left as it leaves the panel (SCRUM-246).
   useFlyToRail(reg.paid?.number ?? reg.order.number, Boolean(reg.paid) || reg.order.lines.length > 0);
 
-  // ---------- manager mode ----------
+  // ---------- the selected line, and what the customer pays ----------
   const [selected, setSelected] = useState(0);
-  const [pendingVoid, setPendingVoid] = useState<string | null>(null);
+  /** The line whose "price off" field is open, under Discount. */
   const [adjusting, setAdjusting] = useState<string | null>(null);
-  const [palette, setPalette] = useState(false);
-  const [sound, setSound] = useState(soundOn);
-  /** The last waste or money out, for its Undo (toast and Ctrl+Z) while the toast shows. */
+  /** The last waste, for its Undo (toast and Ctrl+Z) while the toast shows. */
   const [noted, setNoted] = useState<{ id: number; message: string; undo: () => void } | null>(null);
   useEffect(() => {
     if (!noted) return;
@@ -173,24 +163,11 @@ export function App({
     return () => clearTimeout(t);
   }, [noted]);
   const undoNoted = useCallback(() => { noted?.undo(); setNoted(null); }, [noted]);
-  const fleet = useFleet();
-  const { endManagerSession } = reg;
-  const mode = useManagerMode(useCallback(() => {
-    // However manager mode ends (Esc, Exit, 10 s idle), nothing of it stays open.
-    setPalette(false);
-    setPendingVoid(null);
-    setAdjusting(null);
-    setSheet((s) => (s?.kind === 'edit' || s?.kind === 'waste' ? null : s));
-    setNoted(null);
-    endManagerSession();
-  }, [endManagerSession]));
-  const manager = mode.manager;
 
   // Another bill on screen: its last line selected, nothing half-done.
   const lines = (reg.paid ?? reg.order).lines;
   useEffect(() => {
     setSelected(Math.max(0, lines.length - 1));
-    setPendingVoid(null);
     setAdjusting(null);
   }, [reg.order.number, reg.paid?.paidAt]); // eslint-disable-line react-hooks/exhaustive-deps
   // A line added: the selection follows it, so +, − and VOID act on what was just tapped.
@@ -203,30 +180,13 @@ export function App({
   const listing = lines.length === 0;
   const selectedLine: OrderLine | undefined = lines[Math.min(selected, lines.length - 1)];
 
-  const manage = useCallback((change: ManagerChange) => {
-    if (!manager) return;
-    // A sent line the kitchen already made: what it used stays used (waste), whoever changes it.
-    const made = (change.kind === 'edit' || change.kind === 'void')
-      && Boolean(reg.order.lines.find((l) => l.id === change.lineId)?.sent)
-      && lineCookState(tickets, change.lineId) !== 'waiting';
-    reg.manage(manager, made ? { ...change, made } : change);
-    setPendingVoid(null);
-    setAdjusting(null);
-  }, [manager, reg, tickets]);
-
-  const askVoid = useCallback((line: OrderLine) => {
-    setAdjusting(null);
-    // Not sent yet: nothing for the kitchen to know, so it goes at once. Sent: a reason first (owner rule).
-    if (line.sent) setPendingVoid(line.id); else manage({ kind: 'void', lineId: line.id });
-  }, [manage]);
-
-  const askAdjust = useCallback((line: OrderLine) => { setPendingVoid(null); setAdjusting(line.id); }, []);
-  const toggleChip = useCallback((key: string) => {
-    const chip = DISCOUNT_CHIPS.find((c) => c.key === key);
-    if (!chip || listing) return;
-    const on = JSON.stringify(reg.order.adjust?.discount ?? null) === JSON.stringify(chip.discount);
-    manage({ kind: 'discount', discount: on ? null : chip.discount });
-  }, [listing, manage, reg.order.adjust]);
+  /** What the customer pays (owner, 2026-11-25: any cashier, no PIN; each one audited under their name). */
+  const money: MoneyPanel = {
+    adjusting,
+    onAskAdjust: (line) => setAdjusting(line.id),
+    onAdjust: (lineId, cents) => { reg.manage({ kind: 'adjustLine', lineId, cents }); setAdjusting(null); },
+    onDiscount: (discount: Discount | null) => { reg.manage({ kind: 'discount', discount }); },
+  };
 
   // Keep the selection on a real row as lines are voided or restored.
   useEffect(() => {
@@ -235,21 +195,19 @@ export function App({
 
   /**
    * VOID ITEM (F4, Delete, a row's ✕): a line not yet sent comes off at once, with Undo (a combo's
-   * box comes off whole). A sent line is a manager's: the PIN first, then the reason, audited.
+   * box comes off whole). A sent one too (owner, 2026-11-17: customers change their minds, no manager
+   * on shift): no PIN, audited with whether the kitchen had started it, the kitchen told, Undo on the toast.
    */
   const voidLine = useCallback((line: OrderLine | undefined) => {
     // On a paid order only a line added since and not yet settled (SCRUM-253) comes off this way.
     if (!line || (reg.paid && line.sent)) return;
+    const made = (id: string) => lineCookState(tickets, id) !== 'waiting';
     const sent = line.box ? reg.order.lines.some((l) => l.box?.id === line.box!.id && l.sent) : Boolean(line.sent);
-    if (manager) { askVoid(line); return; }
-    // A sent dish (owner, 2026-11-17: customers change their minds, no manager on shift): off at once,
-    // no PIN, audited with whether the kitchen had started it, the kitchen told, Undo on the toast.
-    // A combo box still asks a manager: its dishes go together.
-    if (sent && !line.box) { reg.changeSent({ kind: 'void', lineId: line.id }, lineCookState(tickets, line.id) !== 'waiting'); return; }
-    if (sent) { setTyped(null); setSheet({ kind: 'pin', voidLine: line.id }); return; }
+    if (sent && line.box) { reg.changeSentBox(line.box.id, made); return; }
+    if (sent) { reg.changeSent({ kind: 'void', lineId: line.id }, made(line.id)); return; }
     if (line.box) reg.dropBox(line.box.id, `Removed ${line.box.name}`);
     else reg.dropLine(line.id, `Removed ${lineItemName(line)}`);
-  }, [reg, manager, askVoid, tickets]);
+  }, [reg, tickets]);
 
   /** − and + on a line: an unsent one at once; a sent one as a change the kitchen is told of (one fewer made = waste). */
   const stepLine = useCallback((line: OrderLine, by: 1 | -1) => {
@@ -330,42 +288,14 @@ export function App({
       // The bar's keys. F5 never reloads the page here, even under a sheet.
       if (/^F[2-8]$/.test(e.key) && !e.altKey && !mod) {
         e.preventDefault();
-        if (sheet || palette || adjusting || pendingVoid) return;
+        if (sheet || adjusting) return;
         const a = fkey(e.key);
         if (a && !a.disabled) { setTyped(null); a.run(); }
         return;
       }
 
-      if (manager) {
-        // Esc leaves manager mode from ANY state: palette, sheet, half-done void or adjustment.
-        if (e.key === 'Escape') { e.preventDefault(); mode.exit(); return; }
-        if (mod && key === 'm') { e.preventDefault(); mode.exit(); return; }
-        if (mod && key === 'z') { e.preventDefault(); if (noted) undoNoted(); else reg.undoManager(manager); return; }
-        if (mod && key === 'k') { e.preventDefault(); setPalette(true); return; }
-        if (palette || sheet || adjusting) return; // they own their keys (Enter, typing)
-        if (pendingVoid) {
-          const i = Number(e.key) - 1;
-          if (VOID_REASONS[i] && !isTypingTarget(e.target)) { e.preventDefault(); manage({ kind: 'void', lineId: pendingVoid, reason: VOID_REASONS[i] }); }
-          return;
-        }
-        if (isTypingTarget(e.target) || mod || e.altKey) return;
-        const count = lines.length;
-        if (e.key === 'ArrowDown') { e.preventDefault(); setSelected((s) => Math.min(s + 1, Math.max(0, count - 1))); return; }
-        if (e.key === 'ArrowUp') { e.preventDefault(); setSelected((s) => Math.max(s - 1, 0)); return; }
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          if (selectedLine) setSheet({ kind: 'edit', line: selectedLine });
-          return;
-        }
-        if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLine && !listing) { e.preventDefault(); askVoid(selectedLine); return; }
-        if (key === 'p' && selectedLine && !listing) { e.preventDefault(); askAdjust(selectedLine); return; }
-        if (key === 'w') { e.preventDefault(); setSheet({ kind: 'waste' }); return; }
-        if (/^[1-4]$/.test(e.key)) { e.preventDefault(); toggleChip(e.key); }
-        return;
-      }
-
-      // Cashier mode.
-      if (mod && key === 'm' && !sheet) { e.preventDefault(); setTyped(null); setSheet({ kind: 'pin' }); return; }
+      // A line's "price off" field open: Esc closes it (it never starts a new bill under it).
+      if (adjusting && e.key === 'Escape') { e.preventDefault(); setAdjusting(null); return; }
       if (mod && key === 'z') { e.preventDefault(); if (noted) undoNoted(); else reg.undo(); return; }
       // The dark one of the two buttons: Send while there is something new (or a paid order not sent), else Pay.
       if (mod && e.key === 'Enter' && !sheet) {
@@ -401,8 +331,8 @@ export function App({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [reg, settle, sheet, typed, custTyping, crmOn, hasNew, manager, mode, palette, adjusting, pendingVoid, lines.length,
-    selectedLine, askVoid, askAdjust, toggleChip, manage, noted, undoNoted, tickets, due, kitchenOn, payAction, fkey, stepLine, voidLine]);
+  }, [reg, settle, sheet, typed, custTyping, crmOn, hasNew, adjusting, lines.length,
+    selectedLine, noted, undoNoted, tickets, due, kitchenOn, payAction, fkey, stepLine, voidLine]);
 
   // Paying, and the order has nothing left on it (an Undo took the last line): back to the order.
   const paying = sheet?.kind === 'pay';
@@ -469,18 +399,6 @@ export function App({
     const line = sheet.line;
     const key = `edit-${line.id}`;
     const common = { item: itemById(line.itemId), line, combo: line.box && comboById(line.box.comboId), onClose: closeSheet };
-    if (manager) {
-      // Manager edit: through `manage`, so it is audited. A sent line needs a reason.
-      return (
-        <ExtrasPanel
-          key={key}
-          {...common}
-          manager={Boolean(line.sent)}
-          onSubmit={(spec, reason) => { manage({ kind: 'edit', lineId: line.id, after: spec, reason }); closeSheet(); }}
-          onRemove={(reason) => { manage({ kind: 'void', lineId: line.id, reason }); closeSheet(); }}
-        />
-      );
-    }
     if (line.sent) {
       // The customer changed their mind: the cashier changes the sent line, no PIN, no reason asked.
       // Two ways (SCRUM-242): the kitchen changes the same ticket (nothing wasted), or throws the old
@@ -520,101 +438,40 @@ export function App({
     );
   })();
 
-  const managePanel: ManagePanel | null = manager && {
-    actor: manager, pendingVoid, adjusting,
-    onEditLine: (line) => setSheet({ kind: 'edit', line }),
-    onAskVoid: askVoid,
-    onVoid: (lineId, reason) => manage({ kind: 'void', lineId, reason }),
-    onAskAdjust: askAdjust,
-    onAdjust: (lineId, cents) => manage({ kind: 'adjustLine', lineId, cents }),
-    onDiscount: (discount) => manage({ kind: 'discount', discount }),
-  };
-
-  const commands = useMemo<Command[]>(() => {
-    if (!manager) return [];
-    const list: Command[] = [];
-    if (!listing) {
-      DISCOUNT_CHIPS.forEach((c) => list.push({
-        id: `chip-${c.key}`, label: c.discount.kind === 'comp' ? 'Free (comp the whole order)' : `${c.label} off the order`,
-        hint: c.key, run: () => manage({ kind: 'discount', discount: c.discount }),
-      }));
-      if (reg.order.adjust?.discount) list.push({ id: 'no-discount', label: 'Remove order discount', run: () => manage({ kind: 'discount', discount: null }) });
-      if (selectedLine) {
-        const name = lineItemName(selectedLine);
-        list.push(
-          { id: 'edit', label: `Edit ${name}`, hint: 'Enter', run: () => setSheet({ kind: 'edit', line: selectedLine }) },
-          { id: 'adjust', label: `Adjust price of ${name}`, hint: 'P', run: () => askAdjust(selectedLine) },
-          { id: 'void', label: `Void ${name}`, hint: 'Del', run: () => askVoid(selectedLine) },
-        );
-      }
-    }
-    list.push(
-      // The kitchen comes back once the staff are at home with the counter (kitchenScreen.ts).
-      {
-        id: 'kitchen-screen', label: kitchenOn ? 'Kitchen screen: hide it' : 'Kitchen screen: show it (Send to kitchen, Kitchen key)',
-        run: () => { setKitchenScreen(!kitchenOn); setKitchenOn(!kitchenOn); },
-      },
-      { id: 'owner', label: 'Today: what needs attention', run: () => { location.hash = '#owner'; } },
-      // The developer's laptop only (its server holds the admin password).
-      ...(fleet ? [{ id: 'shops', label: "Shops: every shop's sales (developer)", run: () => { location.hash = '#shops'; } }] : []),
-      { id: 'menu', label: 'Menu (finished items): prices, names, sold out', run: () => { location.hash = '#items/finished'; } },
-      // This screen's look; the current choice says "On".
-      ...(['light', 'dark', 'auto'] as ThemeChoice[]).map((t) => ({
-        id: `theme-${t}`, label: THEME_LABEL[t], hint: themeChoice() === t ? 'On' : undefined, run: () => setTheme(t),
-      })),
-      { id: 'setup', label: "Settings: staff, printer, devices (owner's PIN)", run: () => { location.hash = '#setup'; } },
-      { id: 'undo', label: 'Undo last change', hint: 'Ctrl+Z', run: () => reg.undoManager(manager) },
-      { id: 'sound', label: sound ? 'Turn sound off' : 'Turn sound on', run: () => { setSoundOn(!sound); setSound(!sound); } },
-      { id: 'leave', label: 'Leave manager mode', hint: 'Esc', run: mode.exit },
-    );
-    list.push({ id: 'waste', label: 'Waste: something was thrown away', hint: 'W', run: () => setSheet({ kind: 'waste' }) });
-    list.push({ id: 'cashout', label: 'Cash out: cash taken from the drawer', hint: 'F1', run: () => { location.hash = '#cashout'; } });
-    return list;
-  }, [manager, listing, reg, selectedLine, sound, manage, askAdjust, askVoid, mode.exit, fleet, kitchenOn]);
-
   return (
-    <div className={`register${manager ? ' register--managing' : ''}${paying ? ' register--paying' : ''}${inExtras ? ' register--extras' : ''}`}>
+    <div className={`register${paying ? ' register--paying' : ''}${inExtras ? ' register--extras' : ''}`}>
       {/* Hold Alt: every key shows (SCRUM-245); these are the ones with no button of their own. */}
-      <KeyHints legend={manager ? MANAGER_KEYS : paying ? PAYING_KEYS : CASHIER_KEYS} />
+      <KeyHints legend={paying ? PAYING_KEYS : CASHIER_KEYS} />
       <header className="register__head">
         {/* Every place the counter uses in a day, by name, in one bar: nothing behind a menu. */}
         <nav className="tabs" aria-label="Places">
           <span className="tab tab--on" aria-current="page">Register</span>
-          {!manager && kitchenOn && onKitchen && <KitchenChip tickets={tickets} onOpen={onKitchen} />}
+          {kitchenOn && onKitchen && <KitchenChip tickets={tickets} onOpen={onKitchen} />}
           {/* The owner and managers see their own screen. */}
-          {!manager && onOwner && <button type="button" className="corner__key" onClick={onOwner}>Today <kbd>F10</kbd></button>}
-          {!manager && <button type="button" className="corner__key" onClick={onCashOut ?? (() => { location.hash = '#cashout'; })}>Cash out <kbd>F1</kbd></button>}
+          {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Today <kbd>F10</kbd></button>}
+          <button type="button" className="corner__key" onClick={onCashOut ?? (() => { location.hash = '#cashout'; })}>Cash out <kbd>F1</kbd></button>
+          {/* Food thrown away (anyone at the counter; recorded under their name). */}
+          <button type="button" className="corner__key corner__bin" onClick={() => { setTyped(null); setSheet({ kind: 'waste' }); }}>
+            <BinIcon /> Waste
+          </button>
         </nav>
-        {manager ? (
-          <span className="corner corner--managing" role="status">
-            <span className="corner__who">Managing · {manager.name}</span>
-            {/* Whoever is signed in, manager mode is a manager's PIN: the waste is theirs. */}
-            <button type="button" className="corner__key corner__bin" onClick={() => setSheet({ kind: 'waste' })}>
-              <BinIcon /> Waste <kbd>W</kbd>
+        <span className="corner">
+          <OnlineChip state={online} looking={sheet?.kind === 'online'} onOpen={() => setSheet({ kind: 'online' })} />
+          <SyncSign />
+          {onVoice && (
+            <button type="button" className="corner__key" aria-label="Hold and say which page to open"
+              onPointerDown={(e) => { e.preventDefault(); onVoice.start(); }} onPointerUp={onVoice.stop} onPointerLeave={onVoice.stop}>
+              <MicIcon /> Voice <kbd>F9</kbd>
             </button>
-            <button type="button" className="corner__key" onClick={() => setPalette(true)}>Commands <kbd>Ctrl K</kbd></button>
-            <button type="button" className="corner__key" onClick={mode.exit}>Done <kbd>Esc</kbd></button>
-          </span>
-        ) : (
-          <span className="corner">
-            <OnlineChip state={online} looking={sheet?.kind === 'online'} onOpen={() => setSheet({ kind: 'online' })} />
-            <SyncSign />
-            {onVoice && (
-              <button type="button" className="corner__key" aria-label="Hold and say which page to open"
-                onPointerDown={(e) => { e.preventDefault(); onVoice.start(); }} onPointerUp={onVoice.stop} onPointerLeave={onVoice.stop}>
-                <MicIcon /> Voice <kbd>F9</kbd>
+          )}
+          {onSwitch
+            ? (
+              <button type="button" className="corner__key" onClick={onSwitch} aria-label={`${currentCashier().name}: switch user`}>
+                {currentCashier().name} · Switch user
               </button>
-            )}
-            <button type="button" className="corner__key" onClick={() => setSheet({ kind: 'pin' })}>Manager <kbd>Ctrl M</kbd></button>
-            {onSwitch
-              ? (
-                <button type="button" className="corner__key" onClick={onSwitch} aria-label={`${currentCashier().name}: switch user`}>
-                  {currentCashier().name} · Switch user
-                </button>
-              )
-              : <span className="cashier">{currentCashier().name}</span>}
-          </span>
-        )}
+            )
+            : <span className="cashier">{currentCashier().name}</span>}
+        </span>
       </header>
 
       <div className="register__body">
@@ -628,7 +485,9 @@ export function App({
           onOpen={reg.openOrder}
         />
         <main className="menu" data-keyarea>
-          {manager ? null : typed !== null ? (
+          {/* No search field in sight (owner, 2026-11-25): the menu starts at the top. Typing any letter or
+              digit still opens the order line here ("2 chicken kottu full, egg rice"); Esc closes it. */}
+          {typed !== null && (
             <ShorthandBar
               initial={typed}
               onClose={() => setTyped(null)}
@@ -641,14 +500,6 @@ export function App({
               onSubmit={(specs) =>
                 reg.addSpecs(specs, specs.length === 1 ? `Added ${describe(specs[0])}` : `Added ${specs.length} items`)}
             />
-          ) : (
-            // Always in sight; any letter or digit typed anywhere starts it too.
-            <div className="typebar">
-              <div className="typebar__field">
-                <input readOnly value="" placeholder={label('typeOrSearch')} aria-label={label('typeOrSearch')}
-                  onFocus={() => setTyped('')} onPointerDown={() => setTyped('')} />
-              </div>
-            </div>
           )}
           <Menu
             category={category}
@@ -667,9 +518,9 @@ export function App({
           justPaid={reg.justPaid}
           onGive={() => reg.give()}
           now={now}
-          manage={managePanel}
+          money={money}
           selected={selected}
-          onSelect={(i) => { setSelected(i); setPendingVoid(null); setAdjusting(null); }}
+          onSelect={(i) => { setSelected(i); setAdjusting(null); }}
           onEdit={(line) => setSheet({ kind: 'edit', line })}
           onStep={stepLine}
           onRemove={voidLine}
@@ -703,27 +554,13 @@ export function App({
       <ActionBar actions={barActions} />
 
       {sheet?.kind === 'online' && <OnlineSheet state={online} onAccept={acceptOnline} onOut={outOnline} onClose={closeSheet} />}
-      {sheet?.kind === 'pin' && (
-        <PinSheet
-          onClose={closeSheet}
-          reason={sheet.voidLine ? 'To void an item already sent to the kitchen' : undefined}
-          onUnlock={(actor) => {
-            const lineId = sheet.voidLine;
-            closeSheet();
-            mode.enter(actor);
-            // Asked by VOID: straight on to that line's reasons.
-            if (lineId) { const i = reg.order.lines.findIndex((l) => l.id === lineId); if (i >= 0) setSelected(i); setPendingVoid(lineId); }
-          }}
-        />
-      )}
-      {sheet?.kind === 'waste' && manager && (
+      {sheet?.kind === 'waste' && (
         <WasteSheet
-          actor={manager}
+          actor={currentCashier()}
           onClose={closeSheet}
           onWasted={(message, undo) => { closeSheet(); setNoted({ id: Date.now(), message, undo }); }}
         />
       )}
-      {palette && manager && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
 
       {switching && (
         <div className="toast toast--switch" role="status">
@@ -732,18 +569,16 @@ export function App({
         </div>
       )}
       {/* Hidden under an open sheet: it would cover the sheet's buttons (e.g. Card). */}
-      {noted && !sheet && !palette && !switching && (
+      {noted && !sheet && !switching && (
         <div className="toast" role="status" key={`waste-${noted.id}`}>
           <span>{noted.message}</span>
           <button type="button" onClick={undoNoted}>Undo</button>
         </div>
       )}
-      {reg.toast && !noted && !sheet && !palette && (
+      {reg.toast && !noted && !sheet && (
         <div className="toast" role="status" key={reg.toast.id}>
           <span>{reg.toast.message}</span>
-          {reg.toast.manager
-            ? manager && <button type="button" onClick={() => reg.undoManager(manager)}>Undo</button>
-            : reg.canUndo && <button type="button" onClick={reg.undo}>Undo</button>}
+          {reg.canUndo && <button type="button" onClick={reg.undo}>Undo</button>}
         </div>
       )}
     </div>

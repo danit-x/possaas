@@ -95,9 +95,9 @@ test('every change creates exactly one audit entry with the manager and before/a
   }
 });
 
-test('rules: a manager gives a reason for sent items, cashiers never discount, menu prices never change', () => {
-  assert.deepEqual(applyManagerChange(order(), { kind: 'void', lineId: 'a' }, RAVI, 0), { refused: 'reason-required' });
-  assert.deepEqual(applyManagerChange(order(), { kind: 'discount', discount: { kind: 'comp' } }, NIMAL, 0), { refused: 'not-a-manager' });
+test('rules (owner, 2026-11-25: no manager mode): nobody is asked a reason, a cashier may discount, menu prices never change', () => {
+  assert.equal((apply(order(), { kind: 'void', lineId: 'a' }, RAVI).event as { reason: string }).reason, 'Before it was made');
+  assert.equal(apply(order(), { kind: 'discount', discount: { kind: 'comp' } }, NIMAL).event.type, 'order.comped');
   const unsent: Order = { number: 1, lines: [{ id: 'x', itemId: 'margherita', qty: 1, size: 'M', adds: [], outs: [] }] };
   assert.equal(apply(unsent, { kind: 'void', lineId: 'x' }).event.type, 'order.line_removed'); // not sent: no reason needed
   const adj = apply(order(), { kind: 'adjustLine', lineId: 'c', cents: 999_999 }); // capped at the line's 600
@@ -105,7 +105,7 @@ test('rules: a manager gives a reason for sent items, cashiers never discount, m
   assert.deepEqual(adj.order.lines, order().lines); // line prices untouched
 });
 
-test('a cashier changes or cancels a sent item with no PIN and no reason asked; money stays a manager\'s', () => {
+test('a cashier changes or cancels a sent item, and what the customer pays, with no PIN and no reason asked', () => {
   const KITCHEN: Actor = { id: 'k', name: 'Kitchen', role: 'kitchen' };
   // Before the kitchen made it: the counter's own reason, no waste mark.
   const smaller = apply(order(), { kind: 'edit', lineId: 'a', after: { itemId: 'devilled-chicken', qty: 1, size: 'M', adds: ['full-cheese'], outs: [] } }, NIMAL);
@@ -119,11 +119,14 @@ test('a cashier changes or cancels a sent item with no PIN and no reason asked; 
   assert.deepEqual(thrown.event, { ...thrown.event, type: 'order.item_cancelled', reason: 'Already made', made: true });
   // A reason a cashier passes is ignored: the record says what happened, not a picked chip.
   assert.equal((apply(order(), { kind: 'void', lineId: 'b', reason: 'whatever' }, NIMAL).event as { reason: string }).reason, 'Before it was made');
+  // Money too (owner, 2026-11-25), audited under the cashier's name.
+  assert.deepEqual(apply(order(), { kind: 'discount', discount: { kind: 'percent', pct: 10 } }, NIMAL).event.actor, NIMAL);
+  assert.equal(apply(order(), { kind: 'adjustLine', lineId: 'a', cents: 100 }, NIMAL).event.type, 'order.line_adjusted');
+  // The kitchen screen never changes an order.
   for (const change of [
+    { kind: 'void', lineId: 'a' },
     { kind: 'discount', discount: { kind: 'percent', pct: 10 } },
-    { kind: 'adjustLine', lineId: 'a', cents: 100 },
-  ] as ManagerChange[]) assert.deepEqual(applyManagerChange(order(), change, NIMAL, 0), { refused: 'not-a-manager' });
-  assert.deepEqual(applyManagerChange(order(), { kind: 'void', lineId: 'a' }, KITCHEN, 0), { refused: 'not-a-manager' });
+  ] as ManagerChange[]) assert.deepEqual(applyManagerChange(order(), change, KITCHEN, 0), { refused: 'not-a-manager' });
 });
 
 test('a sent-line void or edit tells the kitchen; discounts do not', () => {

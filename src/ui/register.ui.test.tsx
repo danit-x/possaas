@@ -353,12 +353,16 @@ test('Held bills counts the other bills still going', async () => {
   expect(heldCount(1)).toBeTruthy();
 });
 
-test('the always-visible "Type or search" field opens typed shorthand', async () => {
+test('no search field in sight (owner, 2026-11-25); typing still opens the order line, and Esc closes it', async () => {
   const user = userEvent.setup();
   render(<App />);
-  await user.click(screen.getByLabelText('Type or search… e.g. 2 chicken kottu full'));
+  expect(screen.queryByRole('textbox')).toBeNull(); // the menu starts at the top
   await user.keyboard('2 burger{Enter}');
   expect(within(panel().getByRole('group', { name: 'How many Chicken Burger' })).getByText('2')).toBeTruthy();
+  await user.keyboard('x');
+  expect(screen.getByRole('textbox')).toBeTruthy();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('textbox')).toBeNull();
 });
 
 // These tests are about the kitchen flow: the Kitchen view on (it is off on a new counter).

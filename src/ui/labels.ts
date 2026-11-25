@@ -27,7 +27,6 @@ export const LABELS = {
   discount: { en: 'Discount', si: '', ta: '' },
   delivery: { en: 'Delivery', si: '', ta: '' },
   netAmount: { en: 'Net amount', si: '', ta: '' },
-  typeOrSearch: { en: 'Type or search… e.g. 2 chicken kottu full', si: '', ta: '' },
   emptyBill: { en: 'Tap an item to start the bill', si: '', ta: '' },
   noHeld: { en: 'No held bills', si: '', ta: '' },
   backToBill: { en: 'Back to the bill', si: '', ta: '' },

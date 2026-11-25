@@ -8,6 +8,7 @@ import { currentCashier } from '../services/auth.ts';
 import { appendEvent, readAll } from './eventLog.ts';
 import { Root } from './Root.tsx';
 import { setKitchenScreen } from './kitchenScreen.ts';
+import { heldList } from './testHeld.ts';
 
 beforeEach(() => { localStorage.clear(); history.replaceState(null, '', '/'); setMenuState(EMPTY_MENU_STATE); });
 afterEach(() => { cleanup(); setMenuState(EMPTY_MENU_STATE); });
@@ -98,6 +99,29 @@ test('a manager or the owner builds a combo on Items › Finished; it is one aud
   });
   expect(screen.getByRole('status').textContent).toContain('Saved Lunch One');
   expect(screen.getByText('Lunch One')).toBeTruthy();
+});
+
+test('a box already sent comes off whole with its ✕: no PIN, the kitchen told of every dish, one Undo brings it all back', async () => {
+  const user = userEvent.setup();
+  addFamilyBox();
+  render(<Root />);
+  await user.click(screen.getByRole('button', { name: 'Combos' }));
+  await user.click(screen.getByRole('button', { name: 'Add Family Box, 3,600' }));
+  await user.click(screen.getByRole('button', { name: 'Send to kitchen' }));
+  await user.click(heldList().getByRole('button', { name: /^1001/ }));
+
+  await user.click(panel().getByRole('button', { name: /Family Box$/ })); // the box's ✕
+  expect(panel().queryByRole('rowgroup', { name: 'Family Box' })).toBeNull();
+  expect(screen.queryByLabelText(/PIN/)).toBeNull();
+  const cancelled = readAll().filter((e) => e.type === 'order.item_cancelled');
+  expect(cancelled).toHaveLength(4);
+  expect(cancelled.every((e) => 'reason' in e && e.reason === 'Before it was made')).toBe(true);
+
+  const toast = screen.getAllByRole('status').find((s) => s.textContent?.includes('Removed Family Box'))!;
+  await user.click(within(toast).getByRole('button', { name: 'Undo' }));
+  const box = within(panel().getByRole('rowgroup', { name: 'Family Box' }));
+  expect(box.getAllByText('Chicken Burger')).toHaveLength(2);
+  expect(readAll().filter((e) => e.type === 'order.change_undone')).toHaveLength(4);
 });
 
 // These tests send to the kitchen first: the Kitchen view on (it is off on a new counter).

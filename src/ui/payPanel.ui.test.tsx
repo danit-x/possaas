@@ -265,8 +265,9 @@ test('Alt+1 … Alt+9 pick a menu tab; a digit alone still starts typing an orde
 test('every place the counter uses is on the bar by name: nothing folded behind More', () => {
   render(<App />);
   expect(screen.queryByRole('button', { name: 'More' })).toBeNull();
-  for (const name of [/^Cash out/, /^Manager/]) expect(screen.getByRole('button', { name })).toBeTruthy();
-  for (const name of [/^Receive/, /^Money out/, /^Uber Eats/, /^Tables/]) expect(screen.queryByRole('button', { name })).toBeNull();
+  for (const name of [/^Cash out/, /Waste/]) expect(screen.getByRole('button', { name })).toBeTruthy();
+  // No manager mode at Bata Kade (owner, 2026-11-25), nor the parts it does not use.
+  for (const name of [/^Manager/, /^Receive/, /^Money out/, /^Uber Eats/, /^Tables/]) expect(screen.queryByRole('button', { name })).toBeNull();
 });
 
 // These tests send to the kitchen first: the Kitchen view on (it is off on a new counter).
