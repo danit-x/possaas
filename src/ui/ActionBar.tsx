@@ -27,7 +27,7 @@ const ORDER: BarAction['id'][] = ['pay', 'send', 'void', 'clear', 'new', 'print'
  * The counter's every-day actions in one bar along the bottom (recognition over recall): each a
  * labelled button with its key printed on it, in the same place on every bill. PAY is the largest.
  */
-export function ActionBar({ actions }: { actions: BarAction[] }) {
+export function ActionBar({ actions, shine = 0 }: { actions: BarAction[]; /** Goes up each time an item is added: PAY shines once. */ shine?: number }) {
   const byId = new Map(actions.map((a) => [a.id, a]));
   return (
     <nav className="actbar" aria-label="Bill actions">
@@ -46,6 +46,8 @@ export function ActionBar({ actions }: { actions: BarAction[] }) {
             disabled={a.disabled}
             onClick={a.run}
           >
+            {/* A new key each time restarts the sweep; it sits under the words, never over them. */}
+            {id === 'pay' && shine > 0 && !a.disabled && <span key={shine} className="actbar__shine" aria-hidden="true" />}
             <span className="actbar__text" aria-hidden="true">{text}</span>
             <kbd aria-hidden="true">{w.f}</kbd>
           </button>

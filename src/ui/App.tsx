@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { seesTakings } from '../domain/auth.ts';
 import { DISCOUNT_CHIPS, type ManagerChange } from '../domain/manager.ts';
 import { comboById, itemById, menuItems } from '../domain/menu.ts';
@@ -291,6 +291,16 @@ export function App({
       reg.editLine({ ...after, id: line.id }, `Switched to ${item.name.en}`);
     }
   }, [reg, tickets]);
+
+  // ---------- PAY shines once each time an item goes on this bill (not when another bill opens) ----------
+  const itemCount = reg.order.lines.reduce((n, l) => n + l.qty, 0);
+  const [shine, setShine] = useState(0);
+  const counted = useRef({ number: reg.order.number, items: itemCount });
+  useEffect(() => {
+    const was = counted.current;
+    if (was.number === reg.order.number && itemCount > was.items) setShine((s) => s + 1);
+    counted.current = { number: reg.order.number, items: itemCount };
+  }, [reg.order.number, itemCount]);
 
   // ---------- the bar's actions (always there; greyed when they cannot be done) ----------
   const due = reg.paid ? balanceDue(reg.paid) : 0;
@@ -700,7 +710,7 @@ export function App({
         />
       </div>
 
-      <ActionBar actions={barActions} />
+      <ActionBar actions={barActions} shine={shine} />
 
       {sheet?.kind === 'online' && <OnlineSheet state={online} onAccept={acceptOnline} onOut={outOnline} onClose={closeSheet} />}
       {sheet?.kind === 'pin' && (
