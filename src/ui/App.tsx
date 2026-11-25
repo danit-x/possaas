@@ -36,7 +36,6 @@ import { ShorthandBar, describe } from './ShorthandBar.tsx';
 import { SyncSign } from './SyncSign.tsx';
 import { useKitchenTickets } from './kitchenStore.ts';
 import { useRegister } from './useRegister.ts';
-import { BinIcon, WasteSheet } from './WasteSheet.tsx';
 import { MicIcon } from './VoiceKey.tsx';
 import { useMenu } from './menuStore.ts';
 import { applyTheme, themeStored } from './theme.ts';
@@ -48,7 +47,6 @@ type Sheet =
   | { kind: 'edit'; line: OrderLine }
   | { kind: 'pay' }
   | { kind: 'online' }
-  | { kind: 'waste' }
   | null;
 
 const isTypingTarget = (el: EventTarget | null): boolean =>
@@ -155,14 +153,6 @@ export function App({
   const [selected, setSelected] = useState(0);
   /** The line whose "price off" field is open, under Discount. */
   const [adjusting, setAdjusting] = useState<string | null>(null);
-  /** The last waste, for its Undo (toast and Ctrl+Z) while the toast shows. */
-  const [noted, setNoted] = useState<{ id: number; message: string; undo: () => void } | null>(null);
-  useEffect(() => {
-    if (!noted) return;
-    const t = setTimeout(() => setNoted(null), 6000);
-    return () => clearTimeout(t);
-  }, [noted]);
-  const undoNoted = useCallback(() => { noted?.undo(); setNoted(null); }, [noted]);
 
   // Another bill on screen: its last line selected, nothing half-done.
   const lines = (reg.paid ?? reg.order).lines;
@@ -296,7 +286,7 @@ export function App({
 
       // A line's "price off" field open: Esc closes it (it never starts a new bill under it).
       if (adjusting && e.key === 'Escape') { e.preventDefault(); setAdjusting(null); return; }
-      if (mod && key === 'z') { e.preventDefault(); if (noted) undoNoted(); else reg.undo(); return; }
+      if (mod && key === 'z') { e.preventDefault(); reg.undo(); return; }
       // The dark one of the two buttons: Send while there is something new (or a paid order not sent), else Pay.
       if (mod && e.key === 'Enter' && !sheet) {
         e.preventDefault();
@@ -332,7 +322,7 @@ export function App({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [reg, settle, sheet, typed, custTyping, crmOn, hasNew, adjusting, lines.length,
-    selectedLine, noted, undoNoted, tickets, due, kitchenOn, payAction, fkey, stepLine, voidLine]);
+    selectedLine, tickets, due, kitchenOn, payAction, fkey, stepLine, voidLine]);
 
   // Paying, and the order has nothing left on it (an Undo took the last line): back to the order.
   const paying = sheet?.kind === 'pay';
@@ -450,10 +440,6 @@ export function App({
           {/* The owner and managers see their own screen. */}
           {onOwner && <button type="button" className="corner__key" onClick={onOwner}>Today <kbd>F10</kbd></button>}
           <button type="button" className="corner__key" onClick={onCashOut ?? (() => { location.hash = '#cashout'; })}>Cash out <kbd>F1</kbd></button>
-          {/* Food thrown away (anyone at the counter; recorded under their name). */}
-          <button type="button" className="corner__key corner__bin" onClick={() => { setTyped(null); setSheet({ kind: 'waste' }); }}>
-            <BinIcon /> Waste
-          </button>
         </nav>
         <span className="corner">
           <OnlineChip state={online} looking={sheet?.kind === 'online'} onOpen={() => setSheet({ kind: 'online' })} />
@@ -554,13 +540,6 @@ export function App({
       <ActionBar actions={barActions} />
 
       {sheet?.kind === 'online' && <OnlineSheet state={online} onAccept={acceptOnline} onOut={outOnline} onClose={closeSheet} />}
-      {sheet?.kind === 'waste' && (
-        <WasteSheet
-          actor={currentCashier()}
-          onClose={closeSheet}
-          onWasted={(message, undo) => { closeSheet(); setNoted({ id: Date.now(), message, undo }); }}
-        />
-      )}
 
       {switching && (
         <div className="toast toast--switch" role="status">
@@ -569,13 +548,7 @@ export function App({
         </div>
       )}
       {/* Hidden under an open sheet: it would cover the sheet's buttons (e.g. Card). */}
-      {noted && !sheet && !switching && (
-        <div className="toast" role="status" key={`waste-${noted.id}`}>
-          <span>{noted.message}</span>
-          <button type="button" onClick={undoNoted}>Undo</button>
-        </div>
-      )}
-      {reg.toast && !noted && !sheet && (
+      {reg.toast && !sheet && (
         <div className="toast" role="status" key={reg.toast.id}>
           <span>{reg.toast.message}</span>
           {reg.canUndo && <button type="button" onClick={reg.undo}>Undo</button>}

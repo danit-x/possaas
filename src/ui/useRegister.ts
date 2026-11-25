@@ -543,14 +543,14 @@ export function useRegister() {
 
   /**
    * The cashier changes or cancels a sent line (the customer changed their mind): no reason asked.
-   * `made`: the kitchen had started or finished it (recorded as waste).
+   * `made`: the kitchen had started or finished it (kept in the record; Bata Kade shows no waste).
    */
   const changeSent = useCallback((change: Extract<ManagerChange, { kind: 'edit' | 'void' }>, made: boolean): ManageResult => {
     const line = ref.current.order.lines.find((l) => l.id === change.lineId);
     if (!line) return { refused: 'no-such-line' };
     const name = lineItemName(change.kind === 'edit' ? { ...line, ...change.after } : line);
     return counterChanges([{ ...change, ...(made ? { made } : {}) }], `${change.kind === 'void' ? `Removed ${lineItemName(line)}` : `Changed ${name}`}${
-      change.kind === 'edit' && change.remake ? ' · old one to waste, new ticket' : made ? ' · counted as waste' : ''} · kitchen told`);
+      change.kind === 'edit' && change.remake ? ' · made again, new ticket' : ''} · kitchen told`);
   }, [counterChanges]);
 
   /** A combo box already sent, taken off whole (its dishes go together); `made`: which dishes the kitchen had started. */
