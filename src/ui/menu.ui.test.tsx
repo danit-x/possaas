@@ -72,24 +72,21 @@ test('hidden items leave the counter; back to the printed menu in one tap', asyn
 
 const rowOf = (name: string) => screen.getByText(name, { selector: 'b' }).closest('li')!;
 
-test('the owner adds a pasta and writes its recipe later: names stay unique, every size needs a price, the counter offers it at once', async () => {
+test('the owner adds a pasta, name then price: names stay unique, every size needs a price, the counter offers it at once', async () => {
   const user = userEvent.setup();
   history.replaceState(null, '', '/#menu');
   render(<Root />);
   await user.click(await screen.findByRole('button', { name: 'Pasta' }));
   await user.click(screen.getByRole('button', { name: '+ Add a pasta' }));
   const sheet = within(screen.getByRole('dialog', { name: 'Add a pasta' }));
-  expect(sheet.getByRole('list', { name: 'Steps' }).textContent).toBe('NameWhat goes in itPrice');
+  expect(sheet.getByRole('list', { name: 'Steps' }).textContent).toBe('NamePrice'); // no recipes at Bata Kade
   await user.type(sheet.getByLabelText('English'), 'Italian Pasta');
   await user.click(sheet.getByRole('button', { name: 'Next' }));
   expect(sheet.getByRole('alert').textContent).toContain('Italian Pasta is already on the menu');
 
   await user.clear(sheet.getByLabelText('English'));
   await user.type(sheet.getByLabelText('English'), 'Chicken Alfredo{Enter}');
-  // The recipe opens for him with no PIN; Later skips it.
-  expect(sheet.queryByLabelText('Owner PIN')).toBeNull();
-  await user.click(sheet.getByRole('button', { name: 'Later' }));
-  expect(sheet.getByText(/No recipe yet: until you write it, its sales don't take stock/)).toBeTruthy();
+  expect(sheet.queryByText(/recipe/i)).toBeNull();
   await user.type(sheet.getByLabelText('Single price'), '1100');
   await user.type(sheet.getByLabelText('Medium price'), '2100');
   await user.click(sheet.getByRole('button', { name: 'Add to the menu' }));
@@ -97,9 +94,9 @@ test('the owner adds a pasta and writes its recipe later: names stay unique, eve
   await user.type(sheet.getByLabelText('Large price'), '2900');
   await user.click(sheet.getByRole('button', { name: 'Add to the menu' }));
 
-  expect(screen.getByRole('status').textContent).toContain("Chicken Alfredo is on the counter · no recipe yet, so its sales don't take stock");
+  expect(screen.getByRole('status').textContent).toBe('Chicken Alfredo is on the counterUndo');
   expect(screen.getByText('S 1,100 · M 2,100 · L 2,900')).toBeTruthy();
-  expect(rowOf('Chicken Alfredo').textContent).toContain("No recipe yet: its sales don't take stock.");
+  expect(rowOf('Chicken Alfredo').textContent).not.toMatch(/recipe|cost/i);
   expect(readAll().find((x) => x.type === 'menu.item_added')).toMatchObject({
     itemId: 'new-chicken-alfredo',
     item: { category: 'pasta', name: { en: 'Chicken Alfredo' }, description: '', prices: { S: 110000, M: 210000, L: 290000 } },
@@ -113,7 +110,7 @@ test('the owner adds a pasta and writes its recipe later: names stay unique, eve
   for (const name of ['S 1,100', 'M 2,100', 'L 2,900']) expect(card.getByRole('button', { name })).toBeTruthy();
 });
 
-test('a dish in one flow: name, what goes in it (from a similar dish, no PIN), then the price with its margin; one Undo takes it all back', async () => {
+test('a dish in two steps: nothing is saved before the last one, Back keeps what was typed, one Undo takes it back', async () => {
   const user = userEvent.setup();
   history.replaceState(null, '', '/#menu');
   render(<Root />);
@@ -121,55 +118,18 @@ test('a dish in one flow: name, what goes in it (from a similar dish, no PIN), t
   const sheet = within(screen.getByRole('dialog', { name: 'Add a pizza' }));
   await user.type(sheet.getByLabelText('English'), 'BBQ Prawn{Enter}');
   expect(sheet.getByRole('heading', { name: 'BBQ Prawn' })).toBeTruthy();
-
-  expect(sheet.queryByLabelText('Owner PIN')).toBeNull(); // the recipe is open to him as he is signed in
-
-  // The dishes most like it come first ("BBQ" in the name); one tap fills both sizes.
-  const starts = within(sheet.getByRole('group', { name: 'Start from' }));
-  expect(starts.getAllByRole('button')[0].textContent).toMatch(/^BBQ /);
-  await user.click(starts.getAllByRole('button')[0]);
-  expect((sheet.getByRole('combobox', { name: 'Line 1: what goes in' }) as HTMLSelectElement).value).toBe('10inch Dough Ball');
-  // Each line says quietly where it comes from: his kitchen, or a supplier, with what it costs.
-  const sources = [...document.querySelectorAll('.redit__src')].map((e) => e.textContent);
-  expect(sources[0]).toMatch(/^Made in your kitchen/);
-  expect(sources.some((t) => /^[A-Z][\w /&'-]+ · (Rs [\d,.]+|no price yet)$/.test(t ?? '') && !t!.startsWith('Made'))).toBe(true);
-  await user.click(sheet.getByRole('button', { name: 'Large' }));
-  expect((sheet.getByRole('combobox', { name: 'Line 1: what goes in' }) as HTMLSelectElement).value).toBe('12inch Dough Ball');
+  await user.click(sheet.getByRole('button', { name: 'Back' }));
+  expect(sheet.getByLabelText('English')).toHaveProperty('value', 'BBQ Prawn');
   await user.click(sheet.getByRole('button', { name: 'Next' }));
 
   await user.type(sheet.getByLabelText('Medium price'), '2300');
   await user.type(sheet.getByLabelText('Large price'), '3300');
-  expect(sheet.getAllByText(/^Costs Rs [\d,.]+/).length).toBe(2);
   expect(readAll().some((x) => x.type === 'menu.item_added')).toBe(false); // nothing saved before the last step
   await user.click(sheet.getByRole('button', { name: 'Add to the menu' }));
-
-  expect(screen.getByRole('status').textContent).toMatch(/^BBQ Prawn is on the counter · M (earns \d+%|costs Rs [\d,.]+ so far) · L /);
-  const events = readAll();
-  expect(events.find((x) => x.type === 'menu.item_added')).toMatchObject({ itemId: 'new-bbq-prawn' });
-  for (const size of ['M', 'L']) {
-    expect(events.find((x) => x.type === 'recipe.answer_set' && x.question === `recipe:new-bbq-prawn:${size}`))
-      .toMatchObject({ before: null, after: { kind: 'own' }, actor: { role: 'owner' } });
-  }
-  expect(rowOf('BBQ Prawn').textContent).not.toContain('No recipe yet');
+  expect(readAll().find((x) => x.type === 'menu.item_added')).toMatchObject({ itemId: 'new-bbq-prawn' });
 
   await user.click(screen.getByRole('button', { name: 'Undo' }));
   expect(screen.queryByRole('button', { name: 'Change BBQ Prawn' })).toBeNull();
-  expect(readAll().filter((x) => x.type === 'recipe.answer_set' && x.after === null).length).toBe(2);
-});
-
-test('a dish with no recipe: Write the recipe from its row, no PIN', async () => {
-  const user = userEvent.setup();
-  history.replaceState(null, '', '/#menu');
-  render(<Root />);
-  await screen.findByRole('heading', { name: 'Menu' });
-  await user.click(within(rowOf('Sausages')).getByRole('button', { name: 'Write the recipe' }));
-  const sheet = within(screen.getByRole('dialog', { name: 'Sausages: recipe' }));
-  expect(sheet.queryByLabelText('Owner PIN')).toBeNull();
-  await user.click(within(sheet.getByRole('group', { name: 'Start from' })).getByRole('button', { name: 'BBQ Sausages' }));
-  await user.click(sheet.getByRole('button', { name: 'Save recipe' }));
-  expect(screen.getByRole('status').textContent).toMatch(/^Sausages: recipe saved · M /);
-  expect(readAll().filter((x) => x.type === 'recipe.answer_set').map((x) => x.question)).toEqual(['recipe:sausages:M', 'recipe:sausages:L']);
-  expect(rowOf('Sausages').textContent).not.toContain('No recipe yet');
 });
 
 test('the owner deletes a dish he added (a test, say); Undo brings it back; printed items only hide', async () => {
@@ -179,7 +139,6 @@ test('the owner deletes a dish he added (a test, say); Undo brings it back; prin
   await user.click(await screen.findByRole('button', { name: '+ Add a pizza' }));
   const add = within(screen.getByRole('dialog', { name: 'Add a pizza' }));
   await user.type(add.getByLabelText('English'), 'Test Pizza{Enter}');
-  await user.click(add.getByRole('button', { name: 'Later' }));
   await user.type(add.getByLabelText('Medium price'), '100');
   await user.type(add.getByLabelText('Large price'), '200');
   await user.click(add.getByRole('button', { name: 'Add to the menu' }));
@@ -225,7 +184,6 @@ test('the owner adds a Kottu section with Full and Normal, then a dish in it: th
   await user.click(screen.getByRole('button', { name: '+ Add to Kottu' }));
   const add = within(screen.getByRole('dialog', { name: 'Add to Kottu' }));
   await user.type(add.getByLabelText('English'), 'Chicken Kottu{Enter}');
-  await user.click(add.getByRole('button', { name: 'Later' }));
   await user.type(add.getByLabelText('Full price'), '1200');
   await user.type(add.getByLabelText('Normal price'), '900');
   await user.click(add.getByRole('button', { name: 'Add to the menu' }));
