@@ -10,6 +10,7 @@ import { samplePaid } from './ReceiptPreview.tsx';
 import { restartApp } from './restart.ts';
 import { OwnerNav } from './OwnerNav.tsx';
 import { TestDataTab } from './TestDataTab.tsx';
+import { CounterTab } from './CounterTab.tsx';
 import { SHOP_NAME, PRODUCT_NAME } from '../shop/identity.ts';
 
 /**
@@ -25,8 +26,8 @@ const FIRST: Step[] = ['shop', 'printer', 'staff', 'cloud', 'devices'];
 const TITLES: Record<Step, string> = {
   shop: 'Name your shop', printer: 'Your receipt printer', staff: 'Your staff', cloud: 'Connect to the cloud', devices: 'Connect your devices',
 };
-type Tab = Exclude<Step, 'shop'> | 'updates' | 'testData';
-const TAB_LABEL: Record<Tab, string> = { staff: 'Staff', printer: 'Printer', cloud: 'Cloud', devices: 'Devices', updates: 'Updates', testData: 'Test data' };
+type Tab = Exclude<Step, 'shop'> | 'counter' | 'updates' | 'testData';
+const TAB_LABEL: Record<Tab, string> = { staff: 'Staff', printer: 'Printer', cloud: 'Cloud', devices: 'Devices', counter: 'This counter', updates: 'Updates', testData: 'Test data' };
 const ROLES: { id: Role; label: string }[] = [
   { id: 'cashier', label: 'Cashier' }, { id: 'manager', label: 'Manager' }, { id: 'owner', label: 'Owner' }, { id: 'kitchen', label: 'Kitchen' },
 ];
@@ -472,7 +473,7 @@ export function SetupWizard({ mode, onClose }: { mode: Mode; onClose?: () => voi
     body = (
       <>
         <nav className="cats setup__tabs" aria-label="Shop setup">
-          {(['staff', 'printer', 'cloud', 'devices', 'updates', 'testData'] as const).map((t) => (
+          {(['staff', 'printer', 'cloud', 'devices', 'counter', 'updates', 'testData'] as const).map((t) => (
             <button key={t} type="button" className="pill" aria-pressed={tab === t} onClick={() => setTab(t)}>{TAB_LABEL[t]}</button>
           ))}
         </nav>
@@ -480,6 +481,7 @@ export function SetupWizard({ mode, onClose }: { mode: Mode; onClose?: () => voi
         {tab === 'printer' && <PrinterStep state={state} ownerPin={ownerPin} />}
         {tab === 'cloud' && <CloudStep connected={state.cloud} ownerPin={ownerPin} onConnected={connected} />}
         {tab === 'devices' && <DevicesStep state={state} ownerPin={ownerPin} />}
+        {tab === 'counter' && <CounterTab />}
         {tab === 'updates' && <UpdatesTab ownerPin={ownerPin} />}
         {tab === 'testData' && <TestDataTab ownerPin={ownerPin} />}
       </>

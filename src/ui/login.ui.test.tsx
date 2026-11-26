@@ -155,20 +155,17 @@ test('the screen locks itself after a few quiet minutes', async () => {
   expect(lockScreen()).toBeTruthy();
 });
 
-test('manager mode checks the PIN with the server: a cashier’s PIN does not open it', async () => {
+test('no manager mode (owner, 2026-11-25): Ctrl+M asks no PIN and never calls the server', async () => {
   pair();
   const user = userEvent.setup();
   render(<Root />);
   await user.keyboard('1111');
   await screen.findByRole('button', { name: 'Nimal: switch user' });
+  const calls = server.mock.calls.length;
   await user.keyboard('{Control>}m{/Control}');
-  await user.keyboard('1111');
-  await vi.waitFor(() => expect(server).toHaveBeenLastCalledWith('/api/v1/login', expect.objectContaining({
-    body: JSON.stringify({ pin: '1111', purpose: 'manager' }),
-  })));
-  expect(screen.queryByText(/^Managing/)).toBeNull();
   await user.keyboard('2580');
-  expect(await screen.findByText('Managing · Ravi')).toBeTruthy();
+  expect(server.mock.calls.slice(calls).some(([url]) => url === '/api/v1/login')).toBe(false);
+  expect(screen.queryByText(/^Managing/)).toBeNull();
 });
 
 test('owner view: a cashier typing the address gets the Register; the owner or a manager gets the feed', async () => {

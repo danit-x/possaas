@@ -26,7 +26,7 @@ interface Props {
    * one away and make the new one on a new ticket (picked for them once the kitchen has started).
    */
   cook?: CookState;
-  /** `remake`: the cashier picked "Throw away, make new". */
+  /** `remake`: the cashier picked "Make a new one". */
   onSubmit: (spec: LineSpec, reason: string, remake: boolean) => void;
   onRemove?: (reason: string) => void;
   /** Switch item: the next item tapped on the menu takes this line's place (same quantity). */
@@ -171,10 +171,9 @@ export function ExtrasPanel({ item: start, line, size, manager = false, combo, c
                 <b>Change the ticket</b><span>The kitchen changes the same one</span>
               </button>
               <button type="button" role="radio" aria-checked={remake} className="way" onClick={() => setRemake(true)}>
-                <b>Throw away, make new</b><span>Old one to waste · new ticket</span>
+                <b>Make a new one</b><span>The kitchen makes it again · new ticket</span>
               </button>
             </div>
-            {made && <p className="extras__made">Removing it counts as waste.</p>}
           </div>
         )}
 

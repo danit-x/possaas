@@ -228,7 +228,7 @@ test('totals: Subtotal, Discount and NET AMOUNT in whole cents', async () => {
   await burger(user);
   const sums = within(screen.getByRole('complementary', { name: 'Current order' }).querySelector('.sums') as HTMLElement);
   expect(sums.getByText('Subtotal').nextElementSibling!.textContent).toBe('1,900');
-  expect(sums.getByText('Discount')).toBeTruthy();
+  expect(sums.getByRole('button', { name: /^Discount/ })).toBeTruthy(); // tap it for discounts, Free, price off
   expect(sums.getByText('Net amount').nextElementSibling!.textContent).toBe('1,900');
 });
 

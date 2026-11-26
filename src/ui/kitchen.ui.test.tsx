@@ -174,26 +174,15 @@ test('paying for a ready order hands it over too: it leaves the list in one step
   expect(readAll().map((e) => e.type).slice(-2)).toEqual(['order.paid', 'order.given']);
 });
 
-test('Remake: a burnt pizza is recorded as waste in two taps, and the line stays on the ticket to make again (SCRUM-177)', async () => {
+test('no waste on the kitchen screen (owner, 2026-11-25): a started ticket has no Remake with reasons', async () => {
   const user = userEvent.setup();
   render(<><App /><Kitchen /></>);
   await sendOne(user);
   const ticket = within(kitchen().getByRole('article', { name: 'Order 1001' }));
-  expect(ticket.queryByRole('button', { name: 'Remake Devilled Chicken' })).toBeNull(); // not made yet: nothing to throw away
   await user.click(ticket.getByRole('button', { name: 'Start: Order 1001' }));
-
-  await user.click(ticket.getByRole('button', { name: 'Remake Devilled Chicken' }));
-  await user.click(within(ticket.getByRole('group', { name: 'Why remake Devilled Chicken?' })).getByRole('button', { name: 'Burnt' }));
-  expect(readAll().at(-1)).toMatchObject({
-    type: 'stock.wasted', what: { kind: 'dish', itemId: 'devilled-chicken', size: 'L' }, qty: 1, reason: 'burnt', lineId: expect.any(String), ticketId: expect.any(String),
-  });
-  expect(ticket.getByText('Remake ×1')).toBeTruthy();
-  expect(ticket.getByRole('button', { name: 'Done: Order 1001' })).toBeTruthy(); // still to make
-
-  const toast = screen.getAllByRole('status').find((el) => el.textContent?.includes('remake · Burnt'))!;
-  await user.click(within(toast).getByRole('button', { name: 'Undo' }));
-  expect(readAll().at(-1)).toMatchObject({ type: 'stock.waste_undone' });
-  expect(ticket.queryByText('Remake ×1')).toBeNull();
+  expect(ticket.queryByRole('button', { name: /^Remake/ })).toBeNull();
+  expect(readAll().some((e) => e.type === 'stock.wasted')).toBe(false);
+  expect(ticket.getByRole('button', { name: 'Done: Order 1001' })).toBeTruthy();
 });
 
 // These tests are about the kitchen flow: the Kitchen view on (it is off on a new counter).

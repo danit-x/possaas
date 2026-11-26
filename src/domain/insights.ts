@@ -9,8 +9,6 @@ import type { SyncEvent } from './sync.ts';
 import type { PaidPart } from './events.ts';
 import type { Cents, MenuItem, OrderLine, Tender } from './types.ts';
 import { lineItemName } from './halves.ts';
-import { lineGross } from './totals.ts';
-import { wasteReasonRepeats } from './wasteInsights.ts';
 
 /**
  * The Owner view's brain (CLAUDE.md: "tell the owner what needs attention and
@@ -206,41 +204,6 @@ const voidsToday = (events: readonly SyncEvent[], sales: Sale[], now: number): I
   };
 };
 
-type MadeChange = Extract<SyncEvent, { type: 'order.item_cancelled' | 'order.item_changed' }>;
-
-/**
- * Food the kitchen had made, then changed or cancelled at the counter: the only order change that
- * costs the shop (anything changed before the kitchen starts costs nothing). Shown from the first
- * one on a day that usually has none; an Undo takes it back off.
- */
-const madeThrownToday = (events: readonly SyncEvent[], sales: Sale[], now: number): Insight | null => {
-  const today = startOfDay(now);
-  const undone = new Set(events.flatMap((e) => (e.type === 'order.change_undone' ? [e.undoneEventId] : [])));
-  const thrown = events.filter((e): e is MadeChange =>
-    (e.type === 'order.item_cancelled' || e.type === 'order.item_changed') && e.made === true && !undone.has(e.id));
-  const todays = thrown.filter((e) => e.at >= today && e.at <= now);
-  if (!todays.length) return null;
-  const days = openDays(sales, today, 28);
-  const usual = days.length ? thrown.filter((e) => e.at >= daysBack(today, 28) && e.at < today).length / days.length : 0;
-  if (todays.length < 2 * Math.max(usual, 0.5)) return null;
-  const worth = todays.reduce((n, e) => n + lineGross(e.before), 0);
-  return {
-    id: 'made-thrown',
-    tone: 'attention',
-    title: `${plural(todays.length, 'made item')} thrown away today`,
-    detail: `${rs(worth)} of food. Usually ${usual < 1 ? 'about 1 or none' : `about ${Math.round(usual)}`} a day.`,
-    action: {
-      label: 'See them',
-      items: todays.map((e) => ({
-        primary: `${lineName(e.before)} · order ${e.orderNumber}`,
-        secondary: `${e.actor.name} · ${e.type === 'order.item_cancelled' ? 'cancelled' : `changed to ${lineName(e.after)}`}`,
-        at: e.at,
-        amount: lineGross(e.before),
-      })),
-    },
-  };
-};
-
 const GIVEAWAYS = new Set(['order.discount_set', 'order.comped', 'order.line_adjusted', 'order.change_undone']);
 
 const discountsToday = (events: readonly SyncEvent[], sales: Sale[], now: number): Insight | null => {
@@ -393,10 +356,9 @@ export const rulesSuggestions: SuggestionsService = {
     return [
       salesVsUsual(sales, now),
       voidsToday(events, sales, now),
-      madeThrownToday(events, sales, now),
+      // No waste cards (owner, 2026-11-25): Bata Kade keeps no waste.
       discountsToday(events, sales, now),
       kitchenSlow(events, now),
-      wasteReasonRepeats(events, now),
       notSelling(events, sales, now),
       bestSeller(events, now),
       campaignReach(events, now),

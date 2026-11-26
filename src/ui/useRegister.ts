@@ -53,11 +53,9 @@ interface Snapshot {
 export interface Toast {
   id: number;
   message: string;
-  /** A manager change: its Undo belongs to manager mode, not to the cashier's Undo. */
-  manager?: boolean;
 }
 
-/** One applied manager change, kept so Ctrl+Z / the Undo bar can reverse it exactly. */
+/** One applied audited change (applyManagerChange), kept so Ctrl+Z / the Undo bar can reverse it exactly. */
 interface ManagerRecord {
   orderNumber: number;
   /** The order right after the change, in case it has since left the screen (e.g. every line voided). */
@@ -214,12 +212,10 @@ export function useRegister() {
    * before it is dropped, and only a manager can change what was sent.
    */
   const sendOpen = useRef(false);
-  /** Manager changes made in the current manager session, newest last. Cleared when the session ends. */
-  const managerStack = useRef<ManagerRecord[]>([]);
-  /** The cashier's last change to a sent line, while its Undo toast shows. */
-  const [counterChange, setCounterChange] = useState<ManagerRecord | null>(null);
-  const counterRef = useRef<ManagerRecord | null>(null);
-  const setCounter = useCallback((r: ManagerRecord | null) => { counterRef.current = r; setCounterChange(r); }, []);
+  /** The cashier's last audited change (a sent line, a discount, a price; a whole box is several), while its Undo toast shows. */
+  const [counterChange, setCounterChange] = useState<ManagerRecord[] | null>(null);
+  const counterRef = useRef<ManagerRecord[] | null>(null);
+  const setCounter = useCallback((r: ManagerRecord[] | null) => { counterRef.current = r; setCounterChange(r); }, []);
 
   const setHistory = useCallback((p: Snapshot[]) => {
     pastRef.current = p;
@@ -466,7 +462,7 @@ export function useRegister() {
     appendEvent({ type: 'order.given', at, actor: currentCashier(), orderNumber: n });
   }, [commit]);
 
-  const toastFor = useCallback((message: string) => setToast({ id: ++toastSeq.current, message, manager: true }), []);
+  const toastFor = useCallback((message: string) => setToast({ id: ++toastSeq.current, message }), []);
 
   const undoRecord = useCallback((actor: Actor, record: ManagerRecord) => {
     const s = ref.current;
@@ -494,95 +490,86 @@ export function useRegister() {
   }, [toastFor]);
 
 
-  /**
-   * THE entry point for every manager change (void, edit, line adjustment,
-   * discount, Free). Applies it to the order on screen, writes exactly one
-   * audit event, tells the kitchen when a sent line changed, and returns the
-   * Undo. Clears the cashier's Undo: a cashier must not step back over it.
-   */
-  const manage = useCallback((actor: Actor, change: ManagerChange): ManageResult => {
-    const s = ref.current;
-    const at = Date.now();
-    const r = applyManagerChange(s.order, change, actor, at);
-    if (isRefusal(r)) return r;
-
-    const next = withOrder(s, r.order);
-    sendOpen.current = false;
-    setHistory([]);
-    ref.current = next;
-    setSnap(next);
-
-    const event = appendEvent(r.event); // the kitchen shows the change from this event
-    const record: ManagerRecord = {
-      orderNumber: s.order.number, orderAfter: r.order, inverse: r.inverse,
-      eventId: event.id, eventType: event.type,
-    };
-    managerStack.current.push(record);
-
-    const name = (id: string) => lineItemName(s.order.lines.find((l) => l.id === id)!);
-    toastFor(
-      change.kind === 'discount' ? (change.discount ? discountLabel(change.discount) : 'Discount removed')
-        : change.kind === 'void' ? `Voided ${name(change.lineId)}`
-          : change.kind === 'edit' ? `Changed ${name(change.lineId)}`
-            : `Adjusted ${name(change.lineId)} · −${fmt(change.cents)}`,
-    );
-    if (navigator.vibrate) navigator.vibrate(8);
-
-    const undo = () => {
-      const i = managerStack.current.indexOf(record);
-      if (i < 0) return; // already undone, or the manager session ended
-      managerStack.current.splice(i, 1);
-      undoRecord(actor, record);
-    };
-    return { applied: r, undo };
-  }, [setHistory, undoRecord]);
-
-  /** Undo of the cashier's last sent-line change (the toast's Undo, Ctrl+Z). */
+  /** Undo of the cashier's last audited change (the toast's Undo, Ctrl+Z); a whole box comes back whole. */
   const undoCounter = useCallback((): boolean => {
-    const record = counterRef.current;
-    if (!record) return false;
+    const records = counterRef.current;
+    if (!records) return false;
     setCounter(null);
-    undoRecord(currentCashier(), record);
+    for (const record of [...records].reverse()) undoRecord(currentCashier(), record);
     setToast({ id: ++toastSeq.current, message: 'Undone' });
     return true;
   }, [setCounter, undoRecord]);
 
   /**
-   * The cashier changes or cancels a sent line (the customer changed their mind): no PIN, no
-   * reason asked. Audited like a manager change, the kitchen is told, and the cashier's own
-   * Undo (toast, Ctrl+Z) reverses it until anything else is done or the toast goes.
-   * `made`: the kitchen had started or finished it (recorded as waste).
+   * THE entry point for every audited change at the counter (a sent line changed or taken off, a
+   * discount, Free, a line's price): no PIN, no manager mode (owner, 2026-11-25: Bata Kade has no
+   * manager on shift). Applies the changes as the cashier, writes one audit event each (who, when,
+   * before/after), tells the kitchen when a sent line changed, and gives the cashier's own Undo
+   * (toast, Ctrl+Z) until anything else is done or the toast goes. A paid order on screen (SCRUM-242):
+   * the change is to that sale; the difference is settled after.
    */
-  const changeSent = useCallback((change: Extract<ManagerChange, { kind: 'edit' | 'void' }>, made: boolean): ManageResult => {
+  const counterChanges = useCallback((changes: ManagerChange[], message: string): ManageResult => {
     const s = ref.current;
     const actor = currentCashier();
     const at = Date.now();
-    // A paid order on screen (SCRUM-242): the change is to that sale; the difference is settled after.
     const onPaid = s.paid && s.paid.number === s.order.number ? s.paid : null;
-    const r = applyManagerChange(onPaid ?? s.order, { ...change, ...(made ? { made } : {}), ...(onPaid ? { afterPay: true } : {}) }, actor, at);
-    if (isRefusal(r)) return r;
+    let order: Order = onPaid ?? s.order;
+    const applied: Applied[] = [];
+    for (const change of changes) {
+      const c = onPaid && (change.kind === 'edit' || change.kind === 'void') ? { ...change, afterPay: true as const } : change;
+      const r = applyManagerChange(order, c, actor, at);
+      if (isRefusal(r)) return r;
+      applied.push(r);
+      order = r.order;
+    }
+    if (!applied.length) return { refused: 'no-change' };
 
     seal(); // a send's Undo window ends here: it must not step back over this change
     setHistory([]);
-    const next = onPaid ? withPaid(s, r.order as PaidOrder) : withOrder(s, r.order);
+    const next = onPaid ? withPaid(s, order as PaidOrder) : withOrder(s, order);
     ref.current = next;
     setSnap(next);
-    const event = appendEvent(r.event);
-    const record: ManagerRecord = {
-      orderNumber: s.order.number, orderAfter: r.order, inverse: r.inverse, eventId: event.id, eventType: event.type,
-      ...(onPaid ? { paidAt: onPaid.paidAt } : {}),
-    };
-    setCounter(record);
-    const line = s.order.lines.find((l) => l.id === change.lineId)!;
-    const name = lineItemName(change.kind === 'edit' ? { ...line, ...change.after } : line);
-    setToast({
-      id: ++toastSeq.current,
-      message: `${change.kind === 'void' ? `Removed ${lineItemName(line)}` : `Changed ${name}`}${
-        change.kind === 'edit' && change.remake ? ' · old one to waste, new ticket' : made ? ' · counted as waste' : ''} · kitchen told`,
-    });
+    setCounter(applied.map((r) => {
+      const event = appendEvent(r.event); // the kitchen shows the change from this event
+      return {
+        orderNumber: s.order.number, orderAfter: r.order, inverse: r.inverse, eventId: event.id, eventType: event.type,
+        ...(onPaid ? { paidAt: onPaid.paidAt } : {}),
+      };
+    }));
+    toastFor(message);
     if (navigator.vibrate) navigator.vibrate(8);
-    return { applied: r, undo: undoCounter };
-  }, [seal, setHistory, setCounter, undoCounter]);
+    return { applied: applied[applied.length - 1], undo: undoCounter };
+  }, [seal, setHistory, setCounter, toastFor, undoCounter]);
+
+  /**
+   * The cashier changes or cancels a sent line (the customer changed their mind): no reason asked.
+   * `made`: the kitchen had started or finished it (kept in the record; Bata Kade shows no waste).
+   */
+  const changeSent = useCallback((change: Extract<ManagerChange, { kind: 'edit' | 'void' }>, made: boolean): ManageResult => {
+    const line = ref.current.order.lines.find((l) => l.id === change.lineId);
+    if (!line) return { refused: 'no-such-line' };
+    const name = lineItemName(change.kind === 'edit' ? { ...line, ...change.after } : line);
+    return counterChanges([{ ...change, ...(made ? { made } : {}) }], `${change.kind === 'void' ? `Removed ${lineItemName(line)}` : `Changed ${name}`}${
+      change.kind === 'edit' && change.remake ? ' · made again, new ticket' : ''} · kitchen told`);
+  }, [counterChanges]);
+
+  /** A combo box already sent, taken off whole (its dishes go together); `made`: which dishes the kitchen had started. */
+  const changeSentBox = useCallback((boxId: string, made: (lineId: string) => boolean): ManageResult => {
+    const dishes = ref.current.order.lines.filter((l) => l.box?.id === boxId);
+    if (!dishes.length) return { refused: 'no-such-line' };
+    return counterChanges(
+      dishes.map((l) => (l.sent ? { kind: 'void' as const, lineId: l.id, ...(made(l.id) ? { made: true } : {}) } : { kind: 'void' as const, lineId: l.id })),
+      `Removed ${dishes[0].box!.name} · kitchen told`,
+    );
+  }, [counterChanges]);
+
+  /** What the customer pays: an order discount, Free, or money off one line. Any cashier, audited. */
+  const manage = useCallback((change: Extract<ManagerChange, { kind: 'discount' | 'adjustLine' }>): ManageResult => {
+    const line = change.kind === 'adjustLine' ? ref.current.order.lines.find((l) => l.id === change.lineId) : undefined;
+    return counterChanges([change], change.kind === 'discount'
+      ? (change.discount ? discountLabel(change.discount) : 'Discount removed')
+      : change.cents > 0 ? `${line ? lineItemName(line) : 'Item'} · ${fmt(change.cents)} off` : `${line ? lineItemName(line) : 'Item'} · full price`);
+  }, [counterChanges]);
 
   /**
    * Split bill (split.ts): one person pays for the units picked. Picking everything left is the
@@ -645,19 +632,6 @@ export function useRegister() {
     return { number: p.number, amount, tender: how, tendered: given, total: orderTotal(done), changes, paid: done };
   }, [seal, setHistory]);
 
-  /** Ctrl+Z in manager mode: reverse the newest manager change of this session. */
-  const undoManager = useCallback((actor: Actor) => {
-    const record = managerStack.current.pop();
-    if (record) undoRecord(actor, record);
-    return Boolean(record);
-  }, [undoRecord]);
-
-  /** Leaving manager mode: its changes can no longer be undone from the counter. */
-  const endManagerSession = useCallback(() => {
-    managerStack.current = [];
-    setToast((t) => (t?.manager ? null : t));
-  }, []);
-
   /**
    * Brings an order from the list on screen: one not paid (to add to, send or pay), or one paid
    * today and not yet made (to send it, or see it). The order that was on screen waits on the list.
@@ -675,7 +649,7 @@ export function useRegister() {
 
   /**
    * Clear bill: every line off the order on screen at once, with Undo (no dialog). Only while none
-   * of it has gone to the kitchen: a sent line is a manager's void.
+   * of it has gone to the kitchen: a sent line comes off on its own, so the kitchen is told.
    */
   const clear = useCallback(() => {
     const s = ref.current;
@@ -743,9 +717,8 @@ export function useRegister() {
     justPaid: Boolean(snap.paid && snap.justPaid),
     toast,
     canUndo: past.length > 0 || counterChange !== null,
-    canUndoManager: () => managerStack.current.length > 0,
     /** The number the next order (or accepted online order) gets. */
     nextNumber: snap.nextNumber,
-    addSpec, addSpecs, editLine, dropLine, dropBox, clear, setDineIn, changeSent, settle, send, give, acceptOnline, setPlatform, setCustomer, pay, payPart, manage, undoManager, endManagerSession, openOrder, startNew, undo,
+    addSpec, addSpecs, editLine, dropLine, dropBox, clear, setDineIn, changeSent, changeSentBox, settle, send, give, acceptOnline, setPlatform, setCustomer, pay, payPart, manage, openOrder, startNew, undo,
   };
 }

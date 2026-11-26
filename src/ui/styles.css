@@ -232,6 +232,8 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .discounts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: var(--sp-3) var(--sp-5) 0; animation: rise 180ms var(--ease); }
 .discounts .chip { min-width: 0; padding: 0 6px; min-height: 52px; justify-content: center; display: inline-flex; align-items: center; font-size: 15px; white-space: nowrap; }
 .discounts .chip kbd { margin-right: 6px; }
+/* "Price off <dish>": its own full row under the four discounts; a long name ends in "…". */
+.discounts .chip--line { grid-column: 1 / -1; display: block; overflow: hidden; text-overflow: ellipsis; line-height: 52px; }
 /* Free is the dangerous one: when it is on, it is red (wins over the generic pressed chip). */
 .discounts .chip--free[aria-pressed='true'] { background: var(--bad); border-color: var(--bad); color: #fff; }
 .breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 14px; color: var(--ink-2); }

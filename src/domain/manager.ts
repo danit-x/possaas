@@ -6,7 +6,8 @@ import { lineGross, totals } from './totals.ts';
 import type { Cents, Discount, LineSpec, Order, OrderLine } from './types.ts';
 
 /**
- * Manager mode, as pure functions. EVERY manager change goes through
+ * Audited changes to an order, as pure functions (once "manager mode"; the counter has none since
+ * 2026-11-25, the cashier makes them). EVERY such change goes through
  * `applyManagerChange`: it returns the new order, exactly one audit event,
  * and the inverse that Undo applies. Undo is itself a change with its own
  * audit event: the log is append-only, nothing is rewritten.
@@ -15,8 +16,8 @@ import type { Cents, Discount, LineSpec, Order, OrderLine } from './types.ts';
  */
 export type ManagerChange =
   /**
-   * Remove a line. A manager gives a reason for a sent line; a cashier is never asked (the
-   * counter's own reason is recorded). `made`: the kitchen had started or finished it.
+   * Remove a line. Nobody is asked a reason for a sent line: the counter's own is recorded
+   * (whether it was made). `made`: the kitchen had started or finished it.
    */
   | { kind: 'void'; lineId: string; reason?: string; made?: boolean; afterPay?: boolean }
   /**
@@ -84,22 +85,21 @@ export const applyInverse = (order: Order, inv: Inverse): Order => {
 };
 
 /**
- * What the counter may change without a manager: what the customer eats (a sent line's size,
- * extras, quantity, or the line itself), never what they pay (discounts, line prices: a PIN).
- * The owner, 2026-11-14: CheesyBeez has no manager on shift, and customers change their minds.
+ * What the counter may change: everything, with no manager and no PIN. What the customer eats (a
+ * sent line's size, extras, quantity, or the line itself; owner, 2026-11-14: customers change their
+ * minds) and what they pay (discounts, Free, a line's price; owner, 2026-11-25: Bata Kade has no
+ * manager mode). Every change is still audited under the cashier's own name.
  */
-export const cashierMay = (change: ManagerChange): boolean => change.kind === 'edit' || change.kind === 'void';
+export const cashierMay = (_change: ManagerChange): boolean => true;
 
 /** The reason recorded when a cashier changes a sent line: what the owner needs to know is whether food was wasted. */
 export const counterReason = (made: boolean, remake = false): string =>
   (remake ? 'Thrown away, made again' : made ? 'Already made' : 'Before it was made');
 
 export function applyManagerChange(order: Order, change: ManagerChange, actor: Actor, at: number): Applied | Refusal {
-  const manager = canManage(actor);
-  if (!manager && (actor.role === 'kitchen' || actor.role === 'vision' || !cashierMay(change))) return { refused: 'not-a-manager' };
-  /** A sent line's reason: the manager's, or the counter's own. */
-  const reasonFor = (c: { reason?: string; made?: boolean; remake?: boolean }): string =>
-    manager ? c.reason?.trim() ?? '' : counterReason(Boolean(c.made || c.remake), Boolean(c.remake));
+  if (!canManage(actor) && (actor.role === 'kitchen' || actor.role === 'vision' || !cashierMay(change))) return { refused: 'not-a-manager' };
+  /** A sent line's reason: what happened (was it made?), never a picked chip, whoever changes it. */
+  const reasonFor = (c: { made?: boolean; remake?: boolean }): string => counterReason(Boolean(c.made || c.remake), Boolean(c.remake));
   const madeMark = (c: { made?: boolean; remake?: boolean; afterPay?: boolean }) => ({
     ...(c.made || c.remake ? { made: true } : {}),
     ...(c.remake ? { remake: true as const } : {}),
@@ -193,7 +193,7 @@ export function undoManagerChange(
 
 export const isRefusal = (r: Applied | Refusal): r is Refusal => 'refused' in r;
 
-/** Chip keys 1-4 in manager mode. */
+/** The bill's discount chips (under Discount), in this order. */
 export const DISCOUNT_CHIPS: { key: string; discount: Discount; label: string }[] = [
   { key: '1', discount: { kind: 'percent', pct: 10 }, label: '10%' },
   { key: '2', discount: { kind: 'percent', pct: 20 }, label: '20%' },
