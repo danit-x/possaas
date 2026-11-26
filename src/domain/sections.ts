@@ -126,6 +126,15 @@ export const newSectionId = (en: string, taken: Iterable<string>): `sec-${string
 
 const isText = (v: unknown, max: number) => v === undefined || (typeof v === 'string' && v.length <= max);
 
+/** Sizes he names, ids x1.. in order, each name short and different (a section's or one dish's own). */
+export const checkSizes = (sizes: readonly unknown[]): string | null => {
+  if (sizes.some((z, i) => typeof z !== 'object' || z === null || (z as { id?: unknown }).id !== CUSTOM_SIZE_IDS[i] || Object.keys(z).some((k) => k !== 'id' && k !== 'label'))) return 'that is not a size';
+  const labels = sizes.map((z) => (z as { label?: unknown }).label);
+  if (labels.some((l) => typeof l !== 'string' || !l.trim() || l.length > 12)) return 'each size needs a short name (up to 12 letters)';
+  if (new Set(labels.map((l) => (l as string).trim().toLowerCase())).size !== sizes.length) return 'two sizes have the same name';
+  return null;
+};
+
 /** Is this a setting the shop can take for this section? `before` is what it was (null: new). */
 export const checkSection = (id: string, s: SectionSetting, before: SectionSetting | null = null): string | null => {
   const printed = PRINTED_SECTIONS.some((p) => p.id === id);
@@ -151,9 +160,8 @@ export const checkSection = (id: string, s: SectionSetting, before: SectionSetti
   }
   if (s.sizes !== undefined) {
     if (!Array.isArray(s.sizes) || s.sizes.length < 2 || s.sizes.length > CUSTOM_SIZE_IDS.length) return 'a section has one price, or 2 or 3 sizes';
-    if (s.sizes.some((z, i) => typeof z !== 'object' || z === null || z.id !== CUSTOM_SIZE_IDS[i] || Object.keys(z).some((k) => k !== 'id' && k !== 'label'))) return 'that is not a size';
-    if (s.sizes.some((z) => typeof z.label !== 'string' || !z.label.trim() || z.label.length > 12)) return 'each size needs a short name (up to 12 letters)';
-    if (new Set(s.sizes.map((z) => z.label.trim().toLowerCase())).size !== s.sizes.length) return 'two sizes have the same name';
+    const bad = checkSizes(s.sizes);
+    if (bad) return bad;
   }
   // Its dishes are priced per size, so the sizes stay as they were made; only their names change.
   if (before && (before.sizes?.length ?? 0) !== (s.sizes?.length ?? 0)) return 'a section keeps the sizes it was made with';

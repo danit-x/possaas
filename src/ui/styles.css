@@ -1176,6 +1176,13 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .menued__wide { grid-column: 1 / -1; }
 .menued__was { color: var(--ink-3); font-size: 12px; font-weight: 400; }
 .menued__note { margin: 12px 0 0; color: var(--ink-3); font-size: 14px; }
+/* A dish's own prices (2026-11-25): a row per size, its name and price, Remove at the end. */
+.menued__sizes { display: flex; flex-direction: column; gap: 12px; }
+.menued__size { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) auto; align-items: end; gap: 14px; }
+.menued__size label { display: flex; flex-direction: column; gap: 6px; color: var(--ink-2); font-size: 14px; font-weight: 500; }
+.menued__size input { min-height: 48px; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--ground); color: var(--ink); font: inherit; font-size: 17px; }
+.menued__size .linkbtn { min-height: 48px; }
+.menued__addsize { margin-top: 14px; }
 .menuv__add { align-self: flex-start; margin-top: -16px; }
 /* + Add to a section, and Change section (SCRUM-241). */
 .menuv__actions { display: flex; flex-wrap: wrap; gap: 8px; align-self: flex-start; margin-top: -16px; }
@@ -1187,6 +1194,22 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .menued__foot { display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 16px 80px 24px; }
 /* The main action sized to its words, on the right; Back / Later / Cancel stay quiet on the left. */
 .menued__foot .cta { flex: none; width: auto; min-width: 200px; height: 56px; margin-left: auto; padding: 0 32px; }
+/* An item's sheet in two columns (owner, 2026-11-25: no scrolling): photo left, names/prices/hide right. */
+.menued .sheet__body { padding-top: 32px; gap: 24px; }
+.menued__cols { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 40px; align-items: start; }
+.menued__side { display: flex; flex-direction: column; gap: 12px; }
+.menued__side .photo-slot__frame { width: 100%; aspect-ratio: 1; }
+.menued__side .photo-slot__actions { gap: 8px; }
+.menued__side .photo-slot__actions .chip { flex: 1; padding-left: 12px; padding-right: 12px; white-space: nowrap; }
+.menued__main .menued__addsize { align-self: flex-start; }
+.menued__main { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.menued__names { grid-template-columns: 1.4fr 1fr 1fr; }
+.menued__check { min-height: 40px; }
+@media (max-width: 760px) {
+  .menued__cols { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .menued__side .photo-slot__frame { width: min(100%, 240px); }
+  .menued__names { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+}
 @media (max-width: 640px) {
   .menuv__row { flex-wrap: wrap; }
   .menuv__name { flex-basis: 100%; }
@@ -2504,6 +2527,8 @@ button.glance__card:disabled { cursor: default; }
 .register .panel, .register .panel--paying { flex: 0 0 var(--panel-w); width: var(--panel-w); }
 .register .menu { padding-top: var(--sp-3); }
 .register .typebar__field input[readonly] { cursor: text; }
+/* The section bar sticks flush to the top, over the padding, so no dish shows above it while scrolling. */
+.register .menu .cats { top: calc(-1 * var(--sp-3)); }
 .register .typebar__field input::placeholder { color: var(--ink-3); }
 
 /* The bar: PAY the largest and the shop's colour; red for the two that take things away. */
@@ -2518,7 +2543,21 @@ button.glance__card:disabled { cursor: default; }
 .actbar__btn:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 .actbar__btn kbd { font-size: var(--fs-xs); font-weight: 600; padding: 2px 6px; border-radius: 6px; border: 1px solid currentColor; opacity: 0.7; text-transform: none; }
 .actbar__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.actbar__btn--pay { background: var(--pay); color: var(--on-pay); font-size: var(--fs-xl); font-weight: 700; }
+.actbar__btn--pay { background: var(--pay); color: var(--on-pay); font-size: var(--fs-xl); font-weight: 700; position: relative; overflow: hidden; isolation: isolate; }
+.actbar__btn--pay > :not(.actbar__shine) { position: relative; z-index: 1; }
+/* Each item added: one pale-gold sheen sweeps across PAY with a soft warm glow (800 ms), then it is still again. */
+.actbar__shine { position: absolute; inset: 0; z-index: 0; pointer-events: none; border-radius: inherit;
+  animation: pay-glow 800ms var(--ease) both; }
+.actbar__shine::before { content: ''; position: absolute; top: -20%; bottom: -20%; left: 0; width: 45%;
+  background: linear-gradient(105deg, transparent 0%, rgba(255, 246, 214, 0) 15%, rgba(255, 246, 214, 0.75) 48%, rgba(255, 255, 255, 0.9) 52%, rgba(255, 246, 214, 0) 85%, transparent 100%);
+  transform: translateX(-120%) skewX(-12deg); animation: pay-sheen 800ms cubic-bezier(0.45, 0, 0.35, 1) both; }
+@keyframes pay-sheen { to { transform: translateX(330%) skewX(-12deg); } }
+@keyframes pay-glow {
+  0% { box-shadow: inset 0 0 0 0 rgba(255, 236, 170, 0); }
+  35% { box-shadow: inset 0 0 0 2px rgba(255, 240, 190, 0.85), inset 0 0 18px rgba(255, 214, 120, 0.55); }
+  100% { box-shadow: inset 0 0 0 0 rgba(255, 236, 170, 0); }
+}
+@media (prefers-reduced-motion: reduce) { .actbar__shine, .actbar__shine::before { animation: none; display: none; } }
 .actbar__btn--main { background: var(--primary); color: var(--on-primary); }
 .actbar__btn--danger { background: var(--bad); color: #fff; }
 .actbar__btn--danger-line { background: none; color: var(--bad); box-shadow: inset 0 0 0 2px var(--bad); }
