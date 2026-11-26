@@ -3,6 +3,7 @@ import { MENU_PHOTO_HEIGHT, MENU_PHOTO_WIDTH, photoChoice } from '../domain/menu
 import { storageKey } from '../ui/storage.ts';
 import { syncToken } from './pairing.ts';
 import { PHOTOS } from '../order/photos.ts';
+import { SHOP_PHOTOS } from '../shop/photos.ts';
 
 /**
  * Menu photos in the browser (src/domain/menuPhotos.ts). With the shop server, a photo is sent to it
@@ -33,7 +34,8 @@ export const photoSrc = (id: string): string => local.get(id) ?? `/api/v1/menu-p
  */
 export const photoUrl = (itemId: string): string | null => {
   const choice = photoChoice(menuState(), itemId);
-  if (choice === undefined) return PHOTOS[itemId] ?? null;
+  // Bata Kade's dishes show their stock photo (src/shop/photos.ts) until the owner sets his own.
+  if (choice === undefined) return PHOTOS[itemId] ?? SHOP_PHOTOS[itemId] ?? null;
   return choice ? photoSrc(choice) : null;
 };
 

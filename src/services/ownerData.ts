@@ -1,5 +1,5 @@
 import { setMenuState } from '../domain/menu.ts';
-import { menuStateFromEvents } from '../domain/menuEdits.ts';
+import { shopMenuState } from '../ui/menuStore.ts';
 import { useSyncExternalStore } from 'react';
 import type { PullResponse, SyncEvent } from '../domain/sync.ts';
 import { demoHistory } from '../fake/history.ts';
@@ -114,7 +114,9 @@ const start = () => {
       const events = withoutTestData(shared.raw); // test data the owner cleared (freshStart.ts)
       shared.cursor = got.cursor;
       // The owner's own names and prices, wherever this view runs (the phone has no event log).
-      setMenuState(menuStateFromEvents(events.filter((e) => e.type.startsWith('menu.'))));
+      // On top of Bata Kade's menu, like every screen's (menuStore.ts): without it, Cash out and the
+      // owner's screens put the printed menu back and the Register could not find the shop's dishes.
+      setMenuState(shopMenuState(events.filter((e) => e.type.startsWith('menu.'))));
       publish({ state: 'ready', events, at: Date.now() });
     } catch (e) {
       if (!alive) return;

@@ -3,7 +3,7 @@ import { POPULAR_IDS, comboEntries, menuItems, menuSections, soldNow } from '../
 import { openAt, sizeShort } from '../domain/sections.ts';
 import { fmt } from '../domain/money.ts';
 import type { Category, Combo, MenuItem, SizeId } from '../domain/types.ts';
-import { photoUrl, shopHasPhotos } from '../services/menuPhotos.ts';
+import { photoUrl } from '../services/menuPhotos.ts';
 import { useMenu } from './menuStore.ts';
 
 export type CategoryId = 'popular' | Category | 'combos';
@@ -86,8 +86,6 @@ export function Menu({ category, onCategory, onQuickAdd, onCustomise, onAddCombo
   // A tab that went away (no combos left, a section hidden) falls back to Popular.
   const showing = tabs.some((t) => t.id === category) ? category : 'popular';
   const items = menuItems();
-  // Photos on the tiles once the shop has any; an item without one keeps a blank, so the grid stays even.
-  const photos = shopHasPhotos();
   /** A tap on the photo: the first size, or the item's only price; more sizes than buttons open the item. */
   const photoTap = (item: MenuItem) => {
     if (item.variants && item.variants.length <= BUTTONS && item.variants[0]) onQuickAdd(item, item.variants[0].id);
@@ -140,13 +138,13 @@ export function Menu({ category, onCategory, onQuickAdd, onCustomise, onAddCombo
       ) : (
         <div className="grid">
           {visible(showing).map((item) => (
-            <div key={item.id} className={`card${photos ? ' card--photo' : ''}${item.soldOut ? ' card--soldout' : ''}`}>
-              {photos && (
-                // The same as the price buttons below, for the hand: no second stop for the keyboard.
-                <button type="button" className="card__photo" tabIndex={-1} aria-hidden="true" disabled={item.soldOut} onClick={() => photoTap(item)}>
-                  {photoUrl(item.id) && <img src={photoUrl(item.id)!} alt="" loading="lazy" decoding="async" draggable={false} />}
-                </button>
-              )}
+            // Every tile has its photo square left of the name, the price under both (Bata Kade, 2026-11-25):
+            // an item without a photo yet keeps a blank square, so the grid stays even.
+            <div key={item.id} className={`card card--photo${item.soldOut ? ' card--soldout' : ''}`}>
+              {/* The same as the price buttons below, for the hand: no second stop for the keyboard. */}
+              <button type="button" className="card__photo" tabIndex={-1} aria-hidden="true" disabled={item.soldOut} onClick={() => photoTap(item)}>
+                {photoUrl(item.id) && <img src={photoUrl(item.id)!} alt="" loading="lazy" decoding="async" draggable={false} />}
+              </button>
               {item.soldOut && <span className="card__soldout">Sold out</span>}
               <button type="button" className="card__title" disabled={item.soldOut} onClick={() => onCustomise(item)}>
                 <span className="card__name">

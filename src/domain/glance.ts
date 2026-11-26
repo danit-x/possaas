@@ -1,6 +1,5 @@
 import { businessDayStart, cashOutsBetween } from './cashOut.ts';
-import { salesFrom, ticketTimes, type Insight } from './insights.ts';
-import { queue, ticketsFromEvents } from './kitchen.ts';
+import { salesFrom, type Insight } from './insights.ts';
 import { fmt } from './money.ts';
 import { OUT_TOO_LONG_MS } from './online.ts';
 import type { SyncEvent } from './sync.ts';
@@ -15,7 +14,7 @@ import type { Cents, Tender } from './types.ts';
  * "Usual" is the same weekday over the last 4 weeks, days the shop was open only; with fewer
  * than 2 such days there is no usual yet, and the screen says so instead of guessing.
  */
-export type StationId = 'kitchen' | 'counter' | 'money';
+export type StationId = 'counter' | 'money';
 export type StationTone = 'ok' | 'warn';
 
 export interface Station {
@@ -118,23 +117,7 @@ export const glanceOf = (events: readonly SyncEvent[], insights: readonly Insigh
     hours.push({ hour: h, label: hourLabel(h), today: t, usual: u, explain: lines.join('\n') });
   }
 
-  // ----- the stations: the kitchen, the counter, the money -----
-  const times = ticketTimes(events);
-  const mins = (xs: { minutes: number }[]) => (xs.length ? xs.reduce((n, t) => n + t.minutes, 0) / xs.length : null);
-  const kitchenToday = mins(times.filter((t) => t.sentAt >= today && t.sentAt <= now));
-  const kitchenUsual = mins(times.filter((t) => t.sentAt < today && t.sentAt >= today - 28 * DAY));
-  const open = queue(ticketsFromEvents(events, now)).filter((t) => !t.prep);
-  const oldest = open.length ? Math.round((now - Math.min(...open.map((t) => t.firedAt))) / 60_000) : 0;
-  const slow = insights.some((i) => i.id === 'kitchen-slow');
-  const kitchen: Station = {
-    id: 'kitchen', label: 'Kitchen', value: kitchenToday === null ? '–' : `${Math.round(kitchenToday)} min`, tone: slow ? 'warn' : 'ok', badge: 0, href: null,
-    explain: [
-      kitchenToday === null ? 'Kitchen: nothing marked Done yet today.' : `Kitchen: ${Math.round(kitchenToday)} min from Send to Done on average today.`,
-      ...(kitchenUsual !== null ? [`Usual: ${Math.round(kitchenUsual)} min (the last 4 weeks).`] : []),
-      open.length ? `${plural(open.length, 'order')} in the kitchen now; the oldest is ${oldest} min in.` : 'Nothing in the kitchen now.',
-    ].join('\n'),
-  };
-
+  // ----- the stations: the counter, the money -----
   const voids = insights.find((i) => i.id === 'voids');
   const discounts = insights.find((i) => i.id === 'discounts');
   const voidCount = events.filter((e) => (e.type === 'order.item_cancelled' || e.type === 'order.line_removed') && e.at >= today && e.at <= now).length;
@@ -199,7 +182,7 @@ export const glanceOf = (events: readonly SyncEvent[], insights: readonly Insigh
 
   return {
     sales: total, orders: todays.length, usualDay, share, ringExplain,
-    stations: [kitchen, counter, money],
+    stations: [counter, money],
     hours,
     summary,
   };
