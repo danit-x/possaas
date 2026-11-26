@@ -82,7 +82,6 @@ test('a new dish gets its photo with it, only once it is added; Undo takes both 
   await user.upload(sheet.getByLabelText('Photo file'), picture());
   expect(await sheet.findByRole('img', { name: 'Photo of Test Pizza' })).toBeTruthy();
   await user.click(sheet.getByRole('button', { name: 'Next' }));
-  await user.click(sheet.getByRole('button', { name: 'Later' }));
   expect(photoEvents()).toHaveLength(0); // not until it is added
   await user.type(sheet.getByLabelText('Medium price'), '100');
   await user.type(sheet.getByLabelText('Large price'), '200');

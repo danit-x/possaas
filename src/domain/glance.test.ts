@@ -57,8 +57,8 @@ test('Money splits what was taken by how it was paid', () => {
   assert.match(money.explain, /Cash: Rs 3,000\nBank transfer: Rs 1,000/);
 });
 
-test('the stations are the kitchen, the counter and the money: no deliveries or shelves', () => {
-  assert.deepEqual(glance(todays).stations.map((s) => s.id), ['kitchen', 'counter', 'money']);
+test('the stations are the counter and the money: no kitchen, deliveries or shelves', () => {
+  assert.deepEqual(glance(todays).stations.map((s) => s.id), ['counter', 'money']);
 });
 
 test('Money: cash still to come from deliveries, and a delivery long past its time', () => {

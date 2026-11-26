@@ -53,7 +53,8 @@ const validNewItem = (value: unknown): boolean =>
   value === null || (isObj(value) && isObj(value.name) && isObj(value.prices) &&
     Object.entries(value.name).every(([key, name]) => ['en', 'si', 'ta'].includes(key) && typeof name === 'string') &&
     Object.values(value.prices).every((price) => typeof price === 'number') &&
-    Object.keys(value).every((key) => ['category', 'name', 'description', 'prices'].includes(key)) &&
+    // `sizes`: one dish's own sizes in his own section (2026-11-25); checkNewItem checks them.
+    Object.keys(value).every((key) => ['category', 'name', 'description', 'prices', 'sizes'].includes(key)) &&
     checkNewItem(value as unknown as NewItem, MENU) === null);
 /** A section's setting, or null (none / taken back); its sizes keep their count from `before`. */
 const validSection = (id: string, value: unknown, before: unknown): boolean =>

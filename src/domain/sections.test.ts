@@ -75,6 +75,28 @@ test('a new item in his section: its sizes and whole-rupee prices; the server, n
   assert.ok(checkNewItem({ ...ok, prices: { x1: 50050, x2: 100 } }, MENU));
 });
 
+test('one dish can have its own sizes in his section: Half / Full on a one-price section, or one price in a sized one', () => {
+  const sections = { 'sec-kottu': kottu, 'sec-drinks': drinks } as never;
+  const halfFull = [{ id: 'x1', label: 'Half' }, { id: 'x2', label: 'Full' }] as NewItem['sizes'];
+  const rice: NewItem = { category: 'sec-drinks', name: { en: 'Chicken Rice' }, description: '', prices: { x1: 30000, x2: 45000 }, sizes: halfFull };
+  const plain: NewItem = { category: 'sec-kottu', name: { en: 'Plain Kottu' }, description: '', prices: { one: 50000 }, sizes: [] };
+  assert.equal(checkNewItem(rice, MENU, sections), null);
+  assert.equal(checkNewItem(rice, MENU), null);
+  assert.equal(checkNewItem(plain, MENU, sections), null);
+  assert.match(checkNewItem({ ...rice, prices: { x1: 30000 } }, MENU, sections)!, /whole rupees/);
+  assert.match(checkNewItem({ ...rice, prices: { one: 30000 } }, MENU, sections)!, /size/);
+  assert.match(checkNewItem({ ...rice, sizes: [{ id: 'x1', label: 'Half' }] }, MENU, sections)!, /one price, or 2 or 3/);
+  assert.match(checkNewItem({ ...rice, sizes: [{ id: 'x1', label: 'Half' }, { id: 'x2', label: 'half' }] }, MENU, sections)!, /same name/);
+  assert.match(checkNewItem({ ...rice, category: 'burger' }, MENU, sections)!, /keep their sizes/);
+
+  const menu = effectiveMenu(MENU, menuStateFromEvents([section('sec-kottu', kottu), section('sec-drinks', drinks),
+    ev('menu.item_added', 'new-chicken-rice', { item: rice }), ev('menu.item_added', 'new-plain-kottu', { item: plain })]), 0);
+  assert.deepEqual(menu.find((m) => m.id === 'new-chicken-rice')!.variants?.map((v) => [v.id, v.label, v.price]), [['x1', 'Half', 30000], ['x2', 'Full', 45000]]);
+  const p = menu.find((m) => m.id === 'new-plain-kottu')!;
+  assert.equal(p.variants, undefined);
+  assert.equal(p.price, 50000);
+});
+
 test('a section setting: a name, 2 or 3 named sizes or one price, a cook time; printed ones keep their sizes', () => {
   assert.equal(checkSection('sec-kottu', kottu as never), null);
   assert.equal(checkSection('sec-drinks', drinks), null);
