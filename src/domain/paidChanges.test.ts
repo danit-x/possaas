@@ -38,20 +38,21 @@ test('the CHANGED BILL: same number, the bill now, paid before, PAID NOW, a date
   const blocks = changeBlocks(events, paid);
   assert.deepEqual(blocks, [{ at: 120, entries: [{ text: 'Margherita: + Full cheese', amount: 60000 }], amount: 60000, tender: 'cash', tendered: 100000 }]);
   const lines = changedBill(paid, blocks, { cashier: 'Kasun' });
-  assert.deepEqual(lines.find((l) => l.invert), { text: 'CHANGED BILL', center: true, bold: true, big: true, invert: true });
+  assert.deepEqual(lines[1], { text: 'CHANGED BILL', center: true, bold: true }, 'under the header, no black band');
+  assert.equal(lines.filter((l) => l.big).length, 1, 'TOTAL the only big line');
   const text = receiptText(lines);
-  assert.match(text, /Order 1001/);
+  assert.match(text, /Bill 1001 +Take Away/);
+  assert.doesNotMatch(text, /Kasun/, 'no cashier');
   assert.match(text, /1 x Margherita Medium +2,050/);
   assert.match(text, /\+ Full cheese/);
   assert.match(text, /T O T A L .*R s   2 , 5 0 0/);
   assert.match(text, /Paid before +1,900/);
-  assert.match(text, /P A I D   N O W .*R s   6 0 0/);
-  assert.match(text, /Cash +1,000/);
-  assert.match(text, /Change +400/);
+  assert.match(text, /Paid now +Rs 600/);
+  assert.match(text, /Cash 1,000 +Change 400/);
   assert.match(text, /Changed .*\n  Margherita: \+ Full cheese +\+600/);
-  // A reprint says COPY; the invert band survives as ESC/POS GS B 1.
+  // A reprint says COPY; nothing prints white on black.
   assert.match(receiptText(changedBill(paid, blocks, { cashier: 'Kasun', copy: true })), /COPY/);
-  assert.ok(Buffer.from(escpos(lines)).includes(Buffer.from([0x1d, 0x42, 0x01])));
+  assert.ok(!Buffer.from(escpos(lines)).includes(Buffer.from([0x1d, 0x42, 0x01])));
 });
 
 test('two changes paid at two times: two blocks; the first says how its money went, money back says so', () => {
@@ -68,6 +69,6 @@ test('two changes paid at two times: two blocks; the first says how its money we
   assert.match(text, /\+ 1 x Chicken Burger +\+450\n  Paid 450 more/);
   assert.match(text, /- 1 x Chicken Burger +-450/);
   assert.match(text, /Paid before +2,350/);
-  assert.match(text, /G I V E N   B A C K .*R s   9 0 0/);
+  assert.match(text, /Given back +Rs 900/);
   assert.match(text, /By bank transfer/);
 });

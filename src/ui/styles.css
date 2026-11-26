@@ -1054,6 +1054,11 @@ kbd { font: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding:
 .rpreview__papers { display: flex; flex-wrap: wrap; gap: 24px; justify-content: center; align-items: flex-start; width: 100%; }
 /* The logo: 384 of the paper's 576 dots, so two thirds of the line. */
 .paper__logo { display: block; width: 66.7%; height: auto; margin: 0 auto 0.4em; image-rendering: pixelated; }
+/* The bill's header (owner, 2026-11-26): the logo small (96 of 576 dots) with the shop's lines beside it, centred. */
+.paper__head { display: flex; justify-content: center; align-items: center; gap: 1ch; white-space: pre; }
+.paper__head > span { display: flex; flex-direction: column; text-align: left; }
+.paper__smalllogo { width: 16.7%; height: auto; image-rendering: auto; flex: none; }
+.paper__solid { border: 0; border-top: 2px solid #111; margin: 0.3em 0; }
 /* Where the printer draws the offers QR code: small, about 1.3 cm square on the paper. */
 .paper__qr { display: grid; place-items: center; width: 4.5em; height: 4.5em; margin: 0.6em auto; border: 2px dashed currentColor; font-weight: 700; opacity: 0.6; white-space: normal; }
 

@@ -11,7 +11,6 @@ import type { DeliveryPin } from './online.ts';
 import { lineItemName } from './halves.ts';
 import { RECEIPT_LOGO } from './receiptLogo.ts';
 import { COMB } from './receiptComb.ts';
-import { SHOP_NAME } from '../shop/identity.ts';
 
 /**
  * The customer receipt for the Xprinter XP-80T (80 mm, ESC/POS), in two
@@ -29,15 +28,24 @@ export interface ShopHeader {
   name: string;
   /** The logo's tagline, printed as text under the logo (SCRUM-254) so it stays sharp. */
   tagline?: string;
-  /** Lines under the name. Only what the owner has confirmed; phone etc. come from the owner. */
+  /** Where the shop is, a line each. Only what the owner has confirmed. */
   lines: string[];
+  /** The shop's phone, printed "Tel ..." under the address. */
+  phone?: string;
   footer: string;
   /** false: no logo yet, the name prints large as text. */
   logo?: boolean;
 }
 
-/** Bata Kade: its logo on top (receiptLogo.ts; its tagline is part of the picture), then the footer. */
-export const SHOP_HEADER: ShopHeader = { name: SHOP_NAME, tagline: '', lines: [], footer: 'Thank you!' };
+/**
+ * Bata Kade's bill (owner, 2026-11-26: less paper): its logo small, with the name the shop trades
+ * under, its address and phone beside it, all centred. The logo is Bata Kade's; the name on the
+ * bill is Dhanuja Cafe, while the screens keep SHOP_NAME (identity.ts).
+ */
+export const SHOP_HEADER: ShopHeader = {
+  name: 'Dhanuja Cafe', tagline: '', lines: ['Arachchikanda, Hapugala,', 'Wakwella, Galle'], phone: '076 714 2873',
+  footer: 'Thank you! Come again.',
+};
 
 export interface ReceiptLine {
   text: string;
@@ -45,6 +53,13 @@ export interface ReceiptLine {
   bold?: boolean;
   /** Print the shop's logo (receiptLogo.ts) instead of the text; the text stays for plain-text views. */
   logo?: boolean;
+  /**
+   * The bill's header: the logo small (SMALL_LOGO) with these lines beside it, the first bold, the
+   * whole block centred. `text` is the shop's name, for plain-text views.
+   */
+  badge?: string[];
+  /** A solid line across the paper (a thin picture); dashes in plain-text views. */
+  solid?: boolean;
   /** Double width and height: the shop name and the total. Half as many characters fit. */
   big?: boolean;
   /** A QR code of this, printed above the line's text (the text stays, for whoever cannot scan). */
@@ -74,6 +89,11 @@ const TENDER_LABEL: Record<Tender, string> = {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const pad2 = (n: number) => String(n).padStart(2, '0');
+/** "26/11/26 13:12": the bill's short date and time, in the device's local time. */
+export const billTime = (at: number): string => {
+  const d = new Date(at);
+  return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${pad2(d.getFullYear() % 100)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
 /** "12 Oct 2026 19:42", in the device's local time. */
 export const receiptTime = (at: number): string => {
   const d = new Date(at);
@@ -105,12 +125,27 @@ export const wrap = (text: string, width: number): string[] => {
 /** A rule: plain dashes (Bata Kade: no honeycomb strip). */
 const rule = (width: number): ReceiptLine => ({ text: '-'.repeat(width) });
 
-/** The top of a bill (SCRUM-254): the logo, its tagline, then where the shop is. */
-const billTop = (shop: ShopHeader): ReceiptLine[] => [
-  { text: shop.name, center: true, ...(shop.logo === false ? { big: true } : { logo: true }) },
-  ...(shop.tagline ? [{ text: shop.tagline, center: true }] : []),
-  ...shop.lines.map((text) => ({ text, center: true })),
-];
+/** Left, middle and right on one line, the middle half way between. */
+export const threeCols = (left: string, mid: string, right: string, width = RECEIPT_WIDTH): string => {
+  const gap = Math.max(2, width - left.length - mid.length - right.length);
+  const a = Math.floor(gap / 2);
+  return (left + ' '.repeat(a) + mid + ' '.repeat(gap - a) + right).slice(0, width);
+};
+
+/** Bill / Take Away / date on one thin line, under the header's solid line. */
+const billLine = (o: Order, at: number, width: number): ReceiptLine =>
+  ({ text: threeCols(`Bill ${o.number}`, o.dineIn ? 'Dine In' : 'Take Away', billTime(at), width) });
+const solidRule = (width: number): ReceiptLine => ({ text: '-'.repeat(width), solid: true });
+
+/**
+ * The top of a bill (SCRUM-254; owner 2026-11-26): the logo small with the shop's name, tagline,
+ * address and phone beside it. A shop without a logo prints its name large, the rest under it.
+ */
+const billTop = (shop: ShopHeader): ReceiptLine[] => {
+  const words = [...(shop.tagline ? [shop.tagline] : []), ...shop.lines, ...(shop.phone ? [`Tel ${shop.phone}`] : [])];
+  if (shop.logo === false) return [{ text: shop.name, center: true, big: true }, ...words.map((text) => ({ text, center: true }))];
+  return [{ text: shop.name, center: true, badge: [shop.name.toUpperCase(), ...words] }];
+};
 const minus = (cents: number) => `-${fmt(cents)}`;
 
 export function receipt(
@@ -121,15 +156,16 @@ export function receipt(
     madeIn?: number | null;
   },
 ): ReceiptLine[] {
-  const { cashier, shop = SHOP_HEADER, width = RECEIPT_WIDTH, copy = false, offers = null, madeIn = null } = opts;
+  // The cashier is not printed (owner, 2026-11-26: less paper); the other bills still print it.
+  const { shop = SHOP_HEADER, width = RECEIPT_WIDTH, copy = false, offers = null, madeIn = null } = opts;
   const boxes = boxesIn(paid.lines);
+  // The short bill (owner, 2026-11-26): header, a solid line, Bill / Take Away / date on one line.
   const out: ReceiptLine[] = [
     ...billTop(shop),
     // A reprint says so, so one sale can never look like two.
     ...(copy ? [{ text: 'COPY', center: true, bold: true }] : []),
-    rule(width),
-    { text: twoCols(`Order ${paid.number}`, receiptTime(paid.paidAt), width) },
-    { text: `Cashier: ${cashier}` },
+    solidRule(width),
+    billLine(paid, paid.paidAt, width),
     ...(paid.online ? [{ text: paid.online.delivery ? 'Online order: delivered' : 'Online order: collected' }] : []),
     rule(width),
   ];
@@ -143,15 +179,15 @@ export function receipt(
       if (p.tender === 'cash' && p.tendered > p.amount) out.push({ text: twoCols('  Cash / change', `${fmt(p.tendered)} / ${fmt(p.tendered - p.amount)}`, width) });
     }
   } else if (paid.tender === 'cash') {
-    out.push({ text: twoCols('Cash', fmt(paid.tendered), width) });
-    out.push({ text: twoCols('Change', fmt(paid.change), width), bold: true });
+    out.push({ text: twoCols(`Cash ${fmt(paid.tendered)}`, `Change ${fmt(paid.change)}`, width) });
   } else if (paid.tender !== 'comp') { // Free already has its own line above
     out.push({ text: twoCols('Paid by', TENDER_LABEL[paid.tender], width) });
   }
   for (const box of boxes.values()) {
     if (box.saved > 0) out.push({ text: `You saved Rs ${fmt(box.saved)} with the ${box.name}` });
   }
-  out.push(rule(width));
+  // Straight on to the thank-you; a rule only when something is printed in between.
+  if (madeIn || (!copy && (offers || APP_URL))) out.push(rule(width));
   // What people talk about (SCRUM-256): how fast it was made, and the owner's line of the day.
   if (madeIn) out.push({ text: `MADE FRESH IN ${madeIn} MIN`, center: true, bold: true, invert: true });
   if (madeIn) out.push(rule(width));
@@ -328,42 +364,38 @@ export function changedBill(
   paid: PaidOrder, blocks: ChangeBlock[],
   opts: { cashier: string; shop?: ShopHeader; width?: number; copy?: boolean },
 ): ReceiptLine[] {
-  const { cashier, shop = SHOP_HEADER, width = RECEIPT_WIDTH, copy = false } = opts;
+  const { shop = SHOP_HEADER, width = RECEIPT_WIDTH, copy = false } = opts;
   const now = blocks.at(-1);
   const before = paid.total + blocks.slice(0, -1).reduce((n, b) => n + b.amount, 0);
+  // The short bill's layout (owner, 2026-11-26): no black band, no cashier, one big line (TOTAL).
   const out: ReceiptLine[] = [
     ...billTop(shop),
     ...(copy ? [{ text: 'COPY', center: true, bold: true }] : []),
-    { text: 'CHANGED BILL', center: true, bold: true, big: true, invert: true },
-    rule(width),
-    { text: twoCols(`Order ${paid.number}`, receiptTime(now?.at ?? paid.paidAt), width) },
-    { text: `Cashier: ${cashier}` },
+    { text: 'CHANGED BILL', center: true, bold: true },
+    solidRule(width),
+    billLine(paid, now?.at ?? paid.paidAt, width),
     rule(width),
     ...billBody(paid, width),
     { text: twoCols('TOTAL', `Rs ${fmt(orderTotal(paid))}`, width / 2), bold: true, big: true },
     { text: twoCols('Paid before', fmt(before), width) },
-    { text: `  ${paid.parts?.length ? 'Split' : TENDER_LABEL[paid.tender]} at ${receiptTime(paid.paidAt)}` },
   ];
   if (now) {
     const back = now.amount < 0;
-    out.push({ text: twoCols(back ? 'GIVEN BACK' : 'PAID NOW', `Rs ${fmt(Math.abs(now.amount))}`, width / 2), bold: true, big: true });
+    out.push({ text: twoCols(back ? 'Given back' : 'Paid now', `Rs ${fmt(Math.abs(now.amount))}`, width), bold: true });
     if (back) out.push({ text: now.tender === 'transfer' ? 'By bank transfer' : 'Cash from the drawer' });
-    else {
-      out.push({ text: twoCols(TENDER_LABEL[now.tender], fmt(now.tendered), width) });
-      if (now.tender === 'cash' && now.tendered > now.amount) out.push({ text: twoCols('Change', fmt(now.tendered - now.amount), width), bold: true });
-    }
+    else if (now.tender === 'cash' && now.tendered > now.amount) out.push({ text: twoCols(`Cash ${fmt(now.tendered)}`, `Change ${fmt(now.tendered - now.amount)}`, width) });
+    else out.push({ text: twoCols('Paid by', TENDER_LABEL[now.tender], width) });
   }
-  out.push(rule(width));
+  if (blocks.length) out.push(rule(width));
   for (const [i, b] of blocks.entries()) {
-    out.push({ text: `Changed ${receiptTime(b.at)}`, bold: true });
+    out.push({ text: `Changed ${billTime(b.at)}` });
     for (const e of b.entries) {
       const [head, ...rest] = wrap(e.text, width - 12);
       out.push({ text: twoCols(`  ${head}`, signed(e.amount), width) }, ...rest.map((text) => ({ text: `    ${text}` })));
     }
-    // An earlier change: how its money went (this one's is above, in large type).
+    // An earlier change: how its money went (this one's is above).
     if (i < blocks.length - 1) out.push({ text: `  ${b.amount < 0 ? `Gave back ${fmt(-b.amount)}` : `Paid ${fmt(b.amount)} more`}` });
   }
-  if (blocks.length) out.push(rule(width));
   out.push({ text: shop.footer, center: true });
   return out;
 }
@@ -371,6 +403,7 @@ export function changedBill(
 /** Plain text, for the preview and dry-run files. Big lines are shown at half width, as on paper. */
 export const receiptText = (lines: ReceiptLine[], width = RECEIPT_WIDTH): string =>
   lines.map((l) => {
+    if (l.badge) return l.badge.map((t) => ' '.repeat(Math.max(0, Math.floor((width - t.length) / 2))) + t).join('\n');
     const text = l.big ? l.text.split('').join(' ') : l.text;
     return l.center ? ' '.repeat(Math.max(0, Math.floor((width - text.length) / 2))) + text : text;
   }).join('\n');
@@ -391,6 +424,8 @@ export const CMD = {
   normal: [GS, 0x21, 0x00],
   invertOn: [GS, 0x42, 0x01],
   invertOff: [GS, 0x42, 0x00],
+  /** Lines 24 dots apart (3 mm; the printer's own is 30): a shorter bill (owner, 2026-11-26). */
+  spacing: [ESC, 0x33, 24],
   /** Feed 4 lines past the tear bar, then a partial cut. */
   feedCut: [GS, 0x56, 0x42, 0x04],
 } as const;
@@ -434,14 +469,101 @@ const ascii = (s: string): number[] =>
   [...s.replace(/×/g, 'x').replace(/[·•]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"')]
     .map((c) => { const n = c.charCodeAt(0); return n >= 0x20 && n < 0x7f ? n : 0x3f; });
 
+/** The paper's printed width in dots (72 mm at 8 dots a mm): 48 characters of 12 dots. */
+const PAPER_DOTS = RECEIPT_WIDTH * 12;
+
+/**
+ * A square part of a picture fitted to `size` dots: each new dot is black when at least `share` of
+ * the dots it covers are (and `keep` lets them through). Same format as RECEIPT_LOGO.
+ */
+export const fitDots = (
+  big: { width: number; height: number; bits: string }, box: { x: number; y: number; side: number }, size: number, share: number,
+  keep: (x: number, y: number) => boolean = () => true,
+) => {
+  const raw = atob(big.bits);
+  const rowIn = Math.ceil(big.width / 8);
+  const at = (x: number, y: number) => (x >= 0 && y >= 0 && x < big.width && y < big.height && keep(x, y)
+    ? (raw.charCodeAt(y * rowIn + (x >> 3)) >> (7 - (x & 7))) & 1 : 0);
+  const step = box.side / size, row = Math.ceil(size / 8);
+  const out = new Uint8Array(row * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let n = 0, all = 0;
+      for (let sy = Math.floor(box.y + y * step); sy < Math.ceil(box.y + (y + 1) * step); sy++) {
+        for (let sx = Math.floor(box.x + x * step); sx < Math.ceil(box.x + (x + 1) * step); sx++) { n += at(sx, sy); all++; }
+      }
+      if (n / all >= share) out[y * row + (x >> 3)] |= 0x80 >> (x & 7);
+    }
+  }
+  return { width: size, height: size, bits: btoa(String.fromCharCode(...out)) };
+};
+
+/**
+ * The logo for the bill's header, 96 dots (12 mm): Bata Kade's badge without its dotted outer ring
+ * (radius 144 of the 288-dot logo) and its tagline (rows 218-231), which turn to specks this small;
+ * the solid ring (radius 122-125) and the letters stay.
+ */
+const RING = 126;
+export const SMALL_LOGO = fitDots(
+  RECEIPT_LOGO, { x: RECEIPT_LOGO.width / 2 - RING, y: RECEIPT_LOGO.height / 2 - RING, side: 2 * RING }, 96, 0.3,
+  (x, y) => {
+    const r = Math.hypot(x + 0.5 - RECEIPT_LOGO.width / 2, y + 0.5 - RECEIPT_LOGO.height / 2);
+    return r <= RING && !(y >= 218 && y <= 231 && r < 120);
+  },
+);
+
+/** The solid line under the header: 2 dots thick, 3 blank rows each side, the paper's width. */
+export const SOLID_LINE = (() => {
+  const row = PAPER_DOTS / 8;
+  const bytes = new Uint8Array(row * 8);
+  bytes.fill(0xff, row * 3, row * 5);
+  return { width: PAPER_DOTS, height: 8, bits: btoa(String.fromCharCode(...bytes)) };
+})();
+
+/**
+ * The header block: the small logo in 24-dot bands (ESC * 33 prints a picture inside a line of text),
+ * each band followed by one of `words` in the printer's own font, so the address stays sharp text and
+ * changes without a new picture. Centred with spaces; lines are 24 dots apart, so the bands meet.
+ */
+export const badgeBytes = (words: string[]): number[] => {
+  const logo = SMALL_LOGO;
+  const raw = atob(logo.bits);
+  const rowIn = Math.ceil(logo.width / 8);
+  const at = (x: number, y: number) => (y < logo.height ? (raw.charCodeAt(y * rowIn + (x >> 3)) >> (7 - (x & 7))) & 1 : 0);
+  const longest = Math.max(0, ...words.map((w) => w.length));
+  const pad = ' '.repeat(Math.max(0, Math.floor((PAPER_DOTS - logo.width - 12 - longest * 12) / 2 / 12)));
+  const bands = Math.ceil(logo.height / 24);
+  const out: number[] = [];
+  for (let b = 0; b < Math.max(bands, words.length); b++) {
+    out.push(...ascii(pad));
+    if (b < bands) {
+      out.push(ESC, 0x2a, 33, logo.width & 0xff, logo.width >> 8);
+      for (let x = 0; x < logo.width; x++) {
+        for (let k = 0; k < 3; k++) {
+          let byte = 0;
+          for (let bit = 0; bit < 8; bit++) if (at(x, b * 24 + k * 8 + bit)) byte |= 0x80 >> bit;
+          out.push(byte);
+        }
+      }
+    } else out.push(...ascii(' '.repeat(logo.width / 12)));
+    const word = words[b] ?? '';
+    if (b === 0) out.push(0x20, ...CMD.boldOn, ...ascii(word), ...CMD.boldOff);
+    else out.push(0x20, ...ascii(word));
+    out.push(0x0a);
+  }
+  return out;
+};
+
 /**
  * Printer bytes for a receipt. The drawer (cash only) opens first, so the
  * cashier can count change while the paper prints.
  */
 export const escpos = (lines: ReceiptLine[], { openDrawer = false } = {}): Uint8Array => {
-  const out: number[] = [...CMD.init];
+  const out: number[] = [...CMD.init, ...CMD.spacing];
   if (openDrawer) out.push(...CMD.kick);
   for (const l of lines) {
+    if (l.badge) { out.push(...CMD.left, ...badgeBytes(l.badge)); continue; }
+    if (l.solid) { out.push(...CMD.left, ...rasterBytes(SOLID_LINE)); continue; }
     out.push(...(l.center ? CMD.center : CMD.left));
     if (l.logo) { out.push(...rasterBytes(RECEIPT_LOGO)); continue; }
     if (l.comb) { out.push(...rasterBytes(COMB)); continue; }

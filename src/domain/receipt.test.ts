@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CMD, OFFERS_URL, APP_URL, RECEIPT_WIDTH, SHOP_HEADER, deliveryBill, escpos, opensDrawer, qrBytes, rasterBytes, receipt, receiptText, twoCols, wrap } from './receipt.ts';
+import { CMD, OFFERS_URL, APP_URL, RECEIPT_WIDTH, SHOP_HEADER, SMALL_LOGO, SOLID_LINE, badgeBytes, deliveryBill, escpos, fitDots, opensDrawer, qrBytes, rasterBytes, receipt, receiptText, threeCols, twoCols, wrap } from './receipt.ts';
 import { RECEIPT_LOGO } from './receiptLogo.ts';
 import { fmt } from './money.ts';
 import { totals } from './totals.ts';
@@ -27,10 +27,12 @@ const busy: Order = {
 test('the receipt as it prints: items, adjustments, discount, cash and change', () => {
   const text = receiptText(receipt(pay(busy, 'cash', 1000000), { cashier: 'Nimal' }));
   assert.equal(text, [
-    '                   Bata Kade',
+    '                  DHANUJA CAFE',
+    '            Arachchikanda, Hapugala,',
+    '                Wakwella, Galle',
+    '                Tel 076 714 2873',
     '------------------------------------------------',
-    'Order 1043                     12 Oct 2026 19:42',
-    'Cashier: Nimal',
+    'Bill 1043        Take Away        12/10/26 19:42',
     '------------------------------------------------',
     '2 x Margherita Medium                      4,100',
     '    + Full cheese',
@@ -41,12 +43,17 @@ test('the receipt as it prints: items, adjustments, discount, cash and change', 
     'Subtotal                                   7,050',
     '10% off                                     -705',
     'T O T A L                       R s   6 , 3 4 5',
-    'Cash                                      10,000',
-    'Change                                     3,655',
-    '------------------------------------------------',
-    '                   Thank you!',
+    'Cash 10,000                         Change 3,655',
+    '             Thank you! Come again.',
   ].join('\n'));
   assert.ok(!text.includes('No onion') && !text.includes('extra hot'), 'kitchen details stay off the receipt');
+  assert.ok(!text.includes('Nimal'), 'no cashier on the short bill (owner, 2026-11-26)');
+});
+
+test('dine in says so on the bill line; three columns keep their ends', () => {
+  assert.match(receiptText(receipt(pay({ ...busy, dineIn: true }, 'cash'), { cashier: 'N' })), /\nBill 1043 +Dine In +12\/10\/26 19:42\n/);
+  assert.ok(!receipt(pay(busy, 'cash'), { cashier: 'N' }).find((l) => l.text.startsWith('Bill'))!.bold, 'a thin line');
+  assert.equal(threeCols('a', 'b', 'c', 9), 'a   b   c');
 });
 
 test('every line fits the paper', () => {
@@ -75,34 +82,53 @@ test('only cash opens the drawer', () => {
 test('ESC/POS bytes: init, drawer first, styles reset, ASCII only, then feed and cut', () => {
   const bytes = [...escpos([{ text: 'Hi', center: true, bold: true, big: true }, { text: '2 × Pizza · ok' }], { openDrawer: true })];
   assert.deepEqual(bytes, [
-    ...CMD.init, ...CMD.kick,
+    ...CMD.init, ...CMD.spacing, ...CMD.kick,
     ...CMD.center, ...CMD.boldOn, ...CMD.big, 0x48, 0x69, 0x0a, ...CMD.normal, ...CMD.boldOff,
     ...CMD.left, ...[...'2 x Pizza - ok'].map((c) => c.charCodeAt(0)), 0x0a,
     ...CMD.left, ...CMD.feedCut,
   ]);
   assert.ok(![...escpos([{ text: 'x' }])].some((b, i, a) => b === 0x1b && a[i + 1] === 0x70), 'no drawer kick unless asked');
-  assert.deepEqual([...escpos([{ text: 'අ' }])].slice(5, 6), [0x3f], 'non-ASCII prints as ? rather than garbage');
+  assert.deepEqual([...escpos([{ text: 'අ' }])].slice(8, 9), [0x3f], 'non-ASCII prints as ? rather than garbage');
 });
 
-test("the bill starts with Bata Kade's logo; plain-text views say the name", () => {
+test("the bill starts with the small logo and the shop's lines beside it; plain-text views say them", () => {
   const lines = receipt(pay(busy, 'cash'), { cashier: 'Nimal' });
-  assert.deepEqual(lines[0], { text: 'Bata Kade', center: true, logo: true });
-  assert.equal(lines.filter((l) => l.logo).length, 1);
-  assert.match(receiptText(lines), /^\s+Bata Kade\n/);
-  // A shop without a logo yet prints its name large instead.
-  assert.deepEqual(receipt(pay(busy, 'cash'), { cashier: 'N', shop: { ...SHOP_HEADER, logo: false } })[0], { text: 'Bata Kade', center: true, big: true });
-  // A shop with a logo (ERP's CheesyBeez) still prints it, then its tagline and place (SCRUM-254).
-  const withLogo = receipt(pay(busy, 'cash'), { cashier: 'Nimal', shop: { name: 'CheesyBeez', tagline: 'A taste worth finding', lines: ['Thalwila'], footer: 'Thank you!' } });
-  assert.deepEqual(withLogo.slice(0, 3), [
-    { text: 'CheesyBeez', center: true, logo: true },
-    { text: 'A taste worth finding', center: true },
-    { text: 'Thalwila', center: true },
+  assert.deepEqual(lines[0], { text: 'Dhanuja Cafe', center: true, badge: ['DHANUJA CAFE', 'Arachchikanda, Hapugala,', 'Wakwella, Galle', 'Tel 076 714 2873'] });
+  assert.deepEqual(lines[1], { text: '-'.repeat(RECEIPT_WIDTH), solid: true }, 'then the solid line');
+  assert.equal(lines.filter((l) => l.badge || l.logo).length, 1);
+  // A shop without a logo yet prints its name large instead, the rest under it.
+  assert.deepEqual(receipt(pay(busy, 'cash'), { cashier: 'N', shop: { ...SHOP_HEADER, logo: false } }).slice(0, 2), [
+    { text: 'Dhanuja Cafe', center: true, big: true },
+    { text: 'Arachchikanda, Hapugala,', center: true },
   ]);
+  // A tagline goes beside the logo, under the name.
+  const tag = receipt(pay(busy, 'cash'), { cashier: 'N', shop: { name: 'CheesyBeez', tagline: 'A taste worth finding', lines: ['Thalwila'], footer: 'Thank you!' } });
+  assert.deepEqual(tag[0].badge, ['CHEESYBEEZ', 'A taste worth finding', 'Thalwila']);
   assert.equal(deliveryBill(
     { orderNumber: 7, name: 'A', phone: '0771234567', address: null, pin: null, note: '', lines: [], deliveryFee: 0, distanceKm: null, total: 0 },
     [], { at },
-  )[0].text, 'Bata Kade', 'the delivery bill too');
-  assert.ok(!receipt(pay(busy, 'cash'), { cashier: 'N', shop: { ...SHOP_HEADER, tagline: undefined } }).some((l) => l.text === 'A taste worth finding'));
+  )[0].text, 'Dhanuja Cafe', 'the delivery bill too');
+});
+
+test('the header prints the small logo in 24-dot bands with a line of text beside each, centred', () => {
+  assert.deepEqual([SMALL_LOGO.width, SMALL_LOGO.height], [96, 96]);
+  // 2x2 blocks, black when at least half are; `keep` drops dots first.
+  const four = { width: 4, height: 4, bits: btoa('\xc0\x10\x00\x00') };
+  assert.deepEqual(fitDots(four, { x: 0, y: 0, side: 4 }, 2, 0.5), { width: 2, height: 2, bits: btoa('\x80\x00') });
+  assert.deepEqual(fitDots(four, { x: 0, y: 0, side: 4 }, 2, 0.5, (x) => x > 0), { width: 2, height: 2, bits: btoa('\x00\x00') });
+  const words = ['NAME', 'Street', 'Town', 'Tel 1', 'Extra'];
+  const b = badgeBytes(words);
+  const bands = SMALL_LOGO.height / 24;
+  const pad = Math.floor((576 - SMALL_LOGO.width - 12 - 6 * 12) / 2 / 12);
+  const band = [0x1b, 0x2a, 33, SMALL_LOGO.width, 0];
+  const starts = b.flatMap((_, i) => (b.slice(i, i + 5).every((y, k) => y === band[k]) ? [i] : []));
+  assert.equal(starts.length, bands, 'one picture band a line');
+  assert.deepEqual(b.slice(0, pad), Array(pad).fill(0x20), 'centred with spaces');
+  const first = starts[0] + 5 + SMALL_LOGO.width * 3;
+  assert.deepEqual(b.slice(first, first + 1 + CMD.boldOn.length + 4), [0x20, ...CMD.boldOn, ...[...'NAME'].map((c) => c.charCodeAt(0))], 'the name bold beside the logo');
+  assert.equal(b.filter((x) => x === 0x0a).length, Math.max(bands, words.length), 'a line each, the fifth beside no logo');
+  const printed = [...escpos([{ text: 'x', center: true, badge: words }, { text: '-', solid: true }])];
+  assert.deepEqual(printed, [...CMD.init, ...CMD.spacing, ...CMD.left, ...b, ...CMD.left, ...rasterBytes(SOLID_LINE), ...CMD.left, ...CMD.feedCut]);
 });
 
 test('the logo prints as GS v 0 bands of at most 64 rows, every dot once, instead of its text', () => {
@@ -115,7 +141,7 @@ test('the logo prints as GS v 0 bands of at most 64 rows, every dot once, instea
   // A 9-dot-wide, 2-row picture: rows round up to whole bytes.
   assert.deepEqual(rasterBytes({ width: 9, height: 2, bits: btoa('\x80\x00\x01\x80') }), [0x1d, 0x76, 0x30, 0x00, 2, 0, 2, 0, 0x80, 0x00, 0x01, 0x80]);
   const printed = [...escpos([{ text: 'CheesyBeez', center: true, logo: true }])];
-  assert.deepEqual(printed, [...CMD.init, ...CMD.center, ...bytes, ...CMD.left, ...CMD.feedCut]);
+  assert.deepEqual(printed, [...CMD.init, ...CMD.spacing, ...CMD.center, ...bytes, ...CMD.left, ...CMD.feedCut]);
 });
 
 test('with the CRM on: the owner\'s words, the QR code with its link as text, "No app needed"; never on a reprint, never without', () => {
@@ -129,7 +155,7 @@ test('with the CRM on: the owner\'s words, the QR code with its link as text, "N
     ['No app needed', false, false],
   ]);
   assert.equal(lines[qr].qr, OFFERS_URL);
-  assert.equal(lines.at(-1)!.text, 'Thank you!', 'the footer stays last');
+  assert.equal(lines.at(-1)!.text, 'Thank you! Come again.', 'the footer stays last');
   assert.ok(lines.every((l) => l.text.length <= RECEIPT_WIDTH));
   // No second line: none printed.
   const one = receipt(pay(busy, 'cash'), { cashier: 'Nimal', offers: { ...offers, line: '' } });
@@ -169,7 +195,7 @@ test('two columns and wrapping', () => {
 test('a reprint is marked COPY', () => {
   const plain: Order = { number: 1, lines: [busy.lines[2]] };
   const lines = receiptText(receipt(pay(plain, 'cash'), { cashier: 'Nimal', copy: true })).split('\n');
-  assert.equal(lines[1].trim(), 'COPY');
+  assert.equal(lines[4].trim(), 'COPY', 'under the header');
   assert.ok(!receiptText(receipt(pay(plain, 'cash'), { cashier: 'Nimal' })).includes('COPY'));
 });
 

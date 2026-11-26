@@ -6,6 +6,7 @@ import {
   clockText, normalisePhone, onlineLineTotal, onlineTotal, statusText, type DeliveryPin, type DeliveryQuote, type OnlineKind, type OnlineLine,
 } from '../domain/online.ts';
 import { SHOP_HEADER } from '../domain/receipt.ts';
+import { SHOP_NAME } from '../shop/identity.ts';
 import type { Category, MenuItem, MenuTag, SizeId } from '../domain/types.ts';
 import { useInstall } from '../services/ownerApp.ts';
 import { AppInstall, fromBill } from './AppInstall.tsx';
@@ -393,8 +394,8 @@ const phoneText = (p: string) => `${p.slice(0, 3)} ${p.slice(3, 6)} ${p.slice(6)
  */
 /** Where to collect: the owner's address once given (ORDER_ADDRESS), else the town, and a Maps search for it. */
 const pickupPlace = (shop: ShopInfo | null) => {
-  const place = shop?.address ?? SHOP_HEADER.lines.join(', ');
-  return { place, maps: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${SHOP_HEADER.name} ${place}`)}` };
+  const place = shop?.address ?? SHOP_HEADER.lines.join(' ');
+  return { place, maps: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${SHOP_NAME} ${place}`)}` };
 };
 
 function PickupInfo({ shop }: { shop: ShopInfo | null }) {
@@ -404,7 +405,7 @@ function PickupInfo({ shop }: { shop: ShopInfo | null }) {
     <section className="o-panel o-info" aria-label="Pickup info">
       <h2 className="o-panel__title">Pickup info</h2>
       <ul className="o-info__rows">
-        <li><MapPin aria-hidden /><span>{SHOP_HEADER.name}, {place}<br /><a href={maps} target="_blank" rel="noopener noreferrer">Open in Maps</a></span></li>
+        <li><MapPin aria-hidden /><span>{SHOP_NAME}, {place}<br /><a href={maps} target="_blank" rel="noopener noreferrer">Open in Maps</a></span></li>
         {shop?.hours && <li><Clock aria-hidden /><span>Daily {clockText(shop.hours.opens)} – {clockText(shop.hours.closes)}</span></li>}
         <li><Banknote aria-hidden /><span>Pay when you collect: cash or bank transfer</span></li>
       </ul>
@@ -830,7 +831,7 @@ export function OrderSite() {
           </main>
           <MoodStrip id="end">
             <p className="o-strip__meta">
-              {SHOP_HEADER.name}, {pickupPlace(shop).place}
+              {SHOP_NAME}, {pickupPlace(shop).place}
               {shop?.hours && <> · Daily {clockText(shop.hours.opens)} – {clockText(shop.hours.closes)}</>}
               {' · '}<a href={pickupPlace(shop).maps} target="_blank" rel="noopener noreferrer">Open in Maps</a>
             </p>
@@ -880,7 +881,7 @@ function Header({ taking, shop, onRetry, onSeeOrder, account, onAccount }: {
     <header className="o-head">
       <div className="o-wrap o-head__in">
         <span className="o-brand">
-          <img src="/icons/icon-192.png" alt="" width={32} height={32} />{SHOP_HEADER.name}
+          <img src="/icons/icon-192.png" alt="" width={32} height={32} />{SHOP_NAME}
         </span>
         <span className="o-head__end">
         {/* The offers this phone received (CRM): a bell, only once offers are on. */}
