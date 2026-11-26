@@ -12,10 +12,9 @@ import type { Category, MenuItem } from '../domain/types.ts';
  * running that code. ERP gives a section one set of sizes and no extras, so an item with its own
  * kinds is one card per kind ("Water (1 L)") and an extra is its own item ("Bread extra: Egg").
  *
- * Every item is sold all day except rice & curry, which has a breakfast price and a lunch & dinner
- * price: two sections of the same name, each sold at its own hours (section hours), so the counter shows
- * one Rice & Curry whose prices change with the time. The HOURS ARE PLACEHOLDERS until the owner gives them
- * (he changes them on the Menu screen). ERP has one kitchen: everything goes to it.
+ * Every item is sold all day. Rice & curry has a breakfast price and a lunch & dinner price: two
+ * sections, Breakfast and Lunch, two tabs the cashier picks from (MEAL_TABS). ERP has one kitchen:
+ * everything goes to it.
  */
 
 /** Who added the menu: the POS itself, not a person (it shows in the audit as this). */
@@ -23,10 +22,19 @@ export const MENU_INSTALLER: Actor = { id: 'lume-pos', name: 'Lume POS', role: '
 
 const PORTIONS: SectionSetting['sizes'] = [{ id: 'x1', label: 'Half' }, { id: 'x2', label: 'Full' }];
 
-const at = (h: number) => h * 60;
+/**
+ * Rice & curry's two prices are two tabs, Breakfast and Lunch, both all day: the cashier opens the
+ * one he needs (2026-11-26; before, one "Rice & Curry" tab changed with the clock). No Sinhala name
+ * until the owner gives one.
+ */
+const MEAL_TABS: Record<'sec-rice-morning' | 'sec-rice', SectionSetting> = {
+  'sec-rice-morning': { name: { en: 'Breakfast' }, cookMinutes: 3 },
+  'sec-rice': { name: { en: 'Lunch' }, cookMinutes: 3 },
+};
+
 const SECTIONS: { id: `sec-${string}`; setting: SectionSetting }[] = [
-  { id: 'sec-rice-morning', setting: { name: { en: 'Rice & Curry', si: 'බත් සහ කරි' }, cookMinutes: 3, hours: { from: at(5), to: at(11) } } },
-  { id: 'sec-rice', setting: { name: { en: 'Rice & Curry', si: 'බත් සහ කරි' }, cookMinutes: 3, hours: { from: at(11), to: at(5) } } },
+  { id: 'sec-rice-morning', setting: MEAL_TABS['sec-rice-morning'] },
+  { id: 'sec-rice', setting: MEAL_TABS['sec-rice'] },
   { id: 'sec-fried-rice', setting: { name: { en: 'Fried Rice', si: 'ෆ්‍රයිඩ් රයිස්' }, cookMinutes: 8, sizes: PORTIONS } },
   { id: 'sec-kottu', setting: { name: { en: 'Kottu', si: 'කොත්තු' }, cookMinutes: 8, sizes: PORTIONS } },
   { id: 'sec-meals', setting: { name: { en: 'Meals', si: 'ආහාර' }, cookMinutes: 3 } },
@@ -126,6 +134,9 @@ export const bataKadeMenuEvents = (shopId: string, at: number, actor: Actor = ME
     // CheesyBeez' printed pizzas, burgers and pastas: hidden (kept, so nothing old breaks).
     ...MENU.map((m): MenuEvent => ({ ...base, id: `bk-menu-hide-${m.id}`, type: 'menu.item_set', itemId: m.id, before: {}, after: { hidden: true } })),
     { ...base, id: 'bk-menu-order', type: 'menu.sections_ordered', itemId: 'sections', before: [], after: [...SECTIONS.map((s) => s.id), 'pizza', 'burger', 'pasta'] },
+    // A shop that already stored the timed "Rice & Curry" sections (same ids above, kept once) gets the
+    // two all-day tabs from these, stored after them, so they win; the owner's later changes still win.
+    ...Object.entries(MEAL_TABS).map(([id, setting]): MenuEvent => ({ ...base, id: `bk-menu-tabs-${id}`, type: 'menu.section_set', itemId: id, before: null, after: setting })),
   ];
 };
 

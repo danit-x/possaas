@@ -28,8 +28,13 @@ const visible = (c: CategoryId): MenuItem[] => {
   const on = (m: MenuItem) => !m.hidden && soldNow(m, now);
   if (c !== 'popular') return menuItems().filter((m) => m.category === c && on(m));
   const popular = POPULAR_IDS.map((id) => menuItems().find((m) => m.id === id)!).filter((m) => m && on(m));
+  if (popular.length) return popular;
   // A shop whose menu is its own (Bata Kade: the printed CheesyBeez items hidden): Popular is its menu, in its order.
-  return popular.length ? popular : menuItems().filter(on).slice(0, 12);
+  // A dish with two prices under one name (Bata Kade's Breakfast and Lunch rice & curry) stays in its own tab:
+  // side by side here, the two would look the same.
+  const items = menuItems().filter(on);
+  const twice = new Set(items.filter((m, i) => items.findIndex((x) => x.name.en === m.name.en) !== i).map((m) => m.name.en));
+  return items.filter((m) => !twice.has(m.name.en)).slice(0, 12);
 };
 
 /** Combos on offer, in the order they were made. */

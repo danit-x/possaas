@@ -27,8 +27,12 @@ test("Cash out, then the Register: still Bata Kade's menu (the shop's history ne
   expect(await screen.findByPlaceholderText(/fish 4500/)).toBeTruthy();
   await act(async () => { await new Promise((r) => setTimeout(r, 50)); }); // the shop's history has loaded
   await go('');
-  expect(await screen.findByText('Special Rice')).toBeTruthy();
+  expect(await screen.findByText('Biriyani')).toBeTruthy();
   expect(screen.queryByText('Margherita')).toBeNull();
+  // Rice & curry is two tabs, Breakfast and Lunch, all day; Popular leaves out its look-alike pairs.
+  const tabs = screen.getAllByRole('button').filter((b) => b.closest('nav[aria-label="Menu"]')).map((b) => b.textContent);
+  expect(tabs.slice(0, 3)).toEqual(['Popular', 'Breakfast', 'Lunch']);
+  expect(screen.queryByText('Special Rice')).toBeNull();
 });
 
 test("the Menu screen is Bata Kade's: its own sections only, no CheesyBeez, no stock, recipes or costs", async () => {
