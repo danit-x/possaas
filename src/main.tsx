@@ -4,34 +4,34 @@ import '@fontsource/dm-sans/600.css';
 import './ui/styles.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { EMPTY_START } from './domain/menuEdits.ts';
-import { SAMPLE_START, setStartingMenu } from './domain/menu.ts';
 import { httpTransport, pairFromUrl, startSync, syncToken } from './services/syncClient.ts';
-import { FAKE_RICE_START } from './fake/data.ts';
-import { isDemo, isRiceDemo } from './ui/storage.ts';
+import { startPhotoSync } from './services/photos.ts';
+import { startManagerPhone } from './services/managerPhone.ts';
+import { isManagerPhone, phoneToken } from './services/pairing.ts';
 import { setUpOwnerApp } from './services/ownerApp.ts';
-import { loadShopDetails } from './services/shop.ts';
+import { numbersLocally } from './services/auth.ts';
+import { startLocalScheduler } from './services/inventoryStore.ts';
+import { CrashScreen } from './ui/CrashScreen.tsx';
 import { Root } from './ui/Root.tsx';
 import { UpdateScreen } from './ui/UpdateScreen.tsx';
 import { applyTheme } from './ui/theme.ts';
 
 applyTheme(); // light, dark, or following the system: this screen's own choice
-// A shop starts with an empty menu and builds its own, on the counter and in the cloud (the owner's phone,
-// /admin): its own menu events are its whole menu. Only the demos use a ready menu.
-setStartingMenu(isRiceDemo() ? FAKE_RICE_START : isDemo() ? SAMPLE_START : EMPTY_START);
 
 // Sync starts only on a paired device (docs/server-setup.md); otherwise the app works on its own, as before.
 pairFromUrl();
 setUpOwnerApp(); // after pairing: the owner's key goes into the phone app's description
 const token = syncToken();
 if (token) startSync(httpTransport(token));
-void loadShopDetails(); // the shop's own name for the corner and the receipt
-// Again every half minute: the parts of the POS can change from the cloud's /admin while the shop sells.
-setInterval(() => { void loadShopDetails(); }, 30_000);
+// The phone apps (SCRUM-94/95): what they record, and the manager's shelf photos, go to the cloud.
+if (phoneToken()) startManagerPhone(); // the owner's OK / Ask too (SCRUM-95)
+if (isManagerPhone()) startPhotoSync();
+// No shop server here (the demo): this device sends held batches to the kitchen itself.
+if (numbersLocally()) startLocalScheduler();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Root />
+    <CrashScreen><Root /></CrashScreen>
     <UpdateScreen />
   </StrictMode>,
 );

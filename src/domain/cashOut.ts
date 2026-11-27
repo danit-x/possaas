@@ -7,10 +7,19 @@ import type { Cents } from './types.ts';
  * at the counter who has just paid someone from the drawer: they know who and how much; the
  * single next thing is to write it down, as fast as on paper ("fish 4500", Enter).
  *
- * Everything is `cash.*` events (who, when, cents), never edited. Taking a line off is a
- * `cash.out_undone`, and so is putting it back (an undone undo): the newest word wins.
- * Close the day expects that much less cash in the drawer.
+ * Everything is `cash.*` events (who, when, cents), never edited, synced like sales (shop server,
+ * cloud, the owner's phone). Taking a line off is a `cash.out_undone`, and so is putting it back
+ * (an undone undo): the newest word wins.
  */
+
+/** The shop's day runs 5 am to 5 am: a late-night line belongs to the day that is closing. */
+export const DAY_STARTS_HOUR = 5;
+export const businessDayStart = (now: number): number => {
+  const d = new Date(now);
+  if (d.getHours() < DAY_STARTS_HOUR) d.setDate(d.getDate() - 1);
+  d.setHours(DAY_STARTS_HOUR, 0, 0, 0);
+  return d.getTime();
+};
 
 interface Base {
   id: string;
@@ -32,6 +41,16 @@ export const CASH_EVENT_TYPES = ['cash.out', 'cash.out_undone'] as const satisfi
 export const MAX_NAME = 40;
 /** Rs 10,000,000: anything bigger is a typing slip. */
 export const MAX_CASH_OUT: Cents = 1_000_000_000;
+
+/** Why a cash event is not acceptable (the shop server and the cloud ask), or null. */
+export const checkCashOut = (e: Record<string, unknown>): string | null => {
+  if (e.orderNumber !== 0) return 'not an order';
+  if (e.type === 'cash.out_undone') return typeof e.undoneEventId === 'string' && e.undoneEventId.length > 0 && e.undoneEventId.length <= 64 ? null : 'no line';
+  const amount = e.amount;
+  if (typeof e.name !== 'string' || e.name.trim().length === 0 || e.name.length > MAX_NAME) return 'no name';
+  if (!Number.isSafeInteger(amount) || (amount as number) <= 0 || (amount as number) >= MAX_CASH_OUT) return 'no amount';
+  return null;
+};
 
 /** Which events stand: an undo cancels its target, unless that undo is itself undone. */
 const standingIds = (events: readonly { type: string }[]): ((id: string) => boolean) => {

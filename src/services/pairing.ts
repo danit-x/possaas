@@ -1,4 +1,3 @@
-import type { Station } from '../domain/types.ts';
 import { isDemo } from '../ui/storage.ts';
 
 /**
@@ -11,11 +10,10 @@ const TOKEN = 'cb.sync.token';
 const KIND = 'cb.sync.kind';
 const SHOP = 'cb.sync.shop';
 const OWNER = 'cb.owner.token';
-const STATION = 'cb.kitchen.station';
+const MANAGER = 'cb.manager.token';
 
 const get = (k: string): string | null => { try { return localStorage.getItem(k); } catch { return null; } };
 const set = (k: string, v: string): void => { try { localStorage.setItem(k, v); } catch { /* blocked */ } };
-const remove = (k: string): void => { try { localStorage.removeItem(k); } catch { /* blocked */ } };
 
 export const pairFromUrl = (): void => {
   const url = new URL(location.href);
@@ -24,16 +22,14 @@ export const pairFromUrl = (): void => {
   if (owner) {
     set(OWNER, owner);
     url.searchParams.delete('owner');
-    history.replaceState(null, '', url.pathname + url.search + url.hash);
+    history.replaceState(history.state, '', url.pathname + url.search + url.hash);
   }
-  // A shop with two kitchens: `&station=left|right` makes this screen that kitchen's (also without
-  // pairing, to try it in the demo); `&station=all` or a pairing link without it shows every kitchen again.
-  const station = url.searchParams.get('station');
-  if (station === 'left' || station === 'right') set(STATION, station);
-  else if (station !== null || url.searchParams.has('pair')) remove(STATION);
-  if (url.searchParams.has('station')) {
-    url.searchParams.delete('station');
-    history.replaceState(null, '', url.pathname + url.search + url.hash);
+  // A manager's phone: `?manager=<token>` from Shop setup → Devices (SCRUM-94).
+  const manager = url.searchParams.get('manager');
+  if (manager) {
+    set(MANAGER, manager);
+    url.searchParams.delete('manager');
+    history.replaceState(history.state, '', url.pathname + url.search + url.hash);
   }
   const token = url.searchParams.get('pair');
   if (!token) return;
@@ -44,7 +40,7 @@ export const pairFromUrl = (): void => {
   url.searchParams.delete('pair');
   url.searchParams.delete('as');
   url.searchParams.delete('shop');
-  history.replaceState(null, '', url.pathname + url.search + url.hash);
+  history.replaceState(history.state, '', url.pathname + url.search + url.hash);
 };
 
 export const syncToken = (): string | null => (isDemo() ? null : get(TOKEN));
@@ -55,21 +51,27 @@ export const pairedShop = (): string | null => get(SHOP);
 /** A kitchen device shows the kitchen and nothing else, with no login (the server enforces the same). */
 export const isKitchenDevice = (): boolean => syncToken() !== null && get(KIND) === 'kitchen';
 
-/** The kitchen this screen is, in a shop with two; null = it shows every kitchen's orders. */
-export const kitchenStation = (): Station | null => {
-  const s = get(STATION);
-  return s === 'left' || s === 'right' ? s : null;
-};
-
 
 /** The owner's phone token for the cloud copy (read-only), if this device has one. */
 export const ownerToken = (): string | null => (isDemo() ? null : get(OWNER));
+
+/** A manager's phone app's key (SCRUM-94), if this device has one. */
+export const managerToken = (): string | null => (isDemo() ? null : get(MANAGER));
 
 /**
  * The cloud build (`npm run build:cloud`, served by the cloud Worker) holds only
  * the Owner view: nobody on the internet reaches a register there.
  */
 export const isCloudSite = (): boolean => import.meta.env.VITE_SITE === 'cloud';
+
+/**
+ * The manager's phone app (SCRUM-94): the cloud site opened from a manager's QR code.
+ * Manager and Inventory only, signed by the person the phone was made for.
+ */
+export const isManagerPhone = (): boolean => isCloudSite() && managerToken() !== null;
+
+/** A phone app of the shop (a manager's, or the owner's): it records through the cloud (SCRUM-95). */
+export const phoneToken = (): string | null => (isCloudSite() ? managerToken() ?? ownerToken() : null);
 
 /** The Shops screen's shop on the developer's laptop (`#shops/<id>`, read through the local server). */
 export const fleetShop = (): string | null => /^#shops\/([a-z0-9-]{1,64})$/.exec(location.hash)?.[1] ?? null;

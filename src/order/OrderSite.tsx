@@ -1,25 +1,35 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { menuItems, setMenuState } from '../domain/menu.ts';
+import { menuItems, menuSections, setMenuState } from '../domain/menu.ts';
 import { fmt } from '../domain/money.ts';
-import { Banknote, Clock, Hamburger, MapPin, MessageCircle, Phone, Pizza, Plus, ShoppingBag, Soup } from 'lucide-react';
-import { clockText, normalisePhone, onlineLineTotal, onlineTotal, statusText, type OnlineLine } from '../domain/online.ts';
+import { Banknote, Bike, Clock, Hamburger, LocateFixed, MapPin, MessageCircle, Phone, Pizza, Plus, ShoppingBag, Soup, UtensilsCrossed } from 'lucide-react';
+import {
+  clockText, normalisePhone, onlineLineTotal, onlineTotal, statusText, type DeliveryPin, type DeliveryQuote, type OnlineKind, type OnlineLine,
+} from '../domain/online.ts';
+import { SHOP_HEADER } from '../domain/receipt.ts';
+import { SHOP_NAME } from '../shop/identity.ts';
 import type { Category, MenuItem, MenuTag, SizeId } from '../domain/types.ts';
 import { useInstall } from '../services/ownerApp.ts';
+import { AppInstall, fromBill } from './AppInstall.tsx';
+import { AccountButton, AccountSheet, useAccount, type AccountState } from './Account.tsx';
+import { Offers } from './Offers.tsx';
+import { OffersBell } from './OffersInbox.tsx';
+import type { Account } from '../domain/accounts.ts';
 import { api, remembered, type MyOrder, type Placed, type ShopInfo } from './api.ts';
 import { HERO, PHOTOS, STRIPS, type StripId } from './photos.ts';
-
 import { isOrderAppHost, setUpOrderApp } from './pwa.ts';
 
 /**
- * The shop's ordering page (/order on its cloud): order ahead, collect it hot, pay at the shop.
+ * cheesybeez.com: order ahead, collect it hot and pay at the shop, or have it delivered and
+ * pay the rider in cash (once the owner has set a delivery fee, SCRUM-193).
  * Serves the customer at home on their phone: hungry, knows what they like, and
  * wants one thing next: their order placed in under a minute, then to know when it
- * is ready. So: the menu, a basket, name and phone, and a live status. No account.
+ * is ready. So: the menu, a basket, name and phone (and an address), and a live status. An account
+ * (Sign in with Google) is optional: it fills the details in and keeps past orders (Account.tsx).
  */
 const rs = (cents: number) => `Rs ${fmt(cents)}`;
-const SECTIONS: { id: Category; label: string }[] = [
-  { id: 'pizza', label: 'Pizza' }, { id: 'burger', label: 'Burgers' }, { id: 'pasta', label: 'Pasta' },
-];
+/** The shop's sections in the owner's order (SCRUM-241): the ones on offer that have a dish to order. */
+const onlineSections = (): { id: Category; label: string }[] =>
+  menuSections().filter((s) => !s.hidden && menuItems().some((m) => m.category === s.id && !m.hidden)).map((s) => ({ id: s.id, label: s.label }));
 const itemOf = (id: string) => {
   const item = menuItems().find((entry) => entry.id === id);
   if (!item) throw new Error(`Unknown menu item: ${id}`);
@@ -54,7 +64,8 @@ const smooth = (): ScrollBehavior => (window.matchMedia?.('(prefers-reduced-moti
  * the accent, a tap scrolls smoothly there. Plain links underneath, so they work without script.
  */
 function SectionTabs() {
-  const [active, setActive] = useState<Category>(SECTIONS[0].id);
+  const SECTIONS = onlineSections();
+  const [active, setActive] = useState<Category>(SECTIONS[0]?.id ?? 'pizza');
   /** While a tap's smooth scroll runs, the sections it passes do not take the highlight. */
   const jumping = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -94,7 +105,8 @@ function SectionTabs() {
       line?.disconnect(); end.disconnect(); window.removeEventListener('resize', watchLine);
       if (jumping.current) clearTimeout(jumping.current);
     };
-  }, []);
+    // Again when the shop's sections arrive or change (its menu comes with the shop's status).
+  }, [SECTIONS.map((sec) => sec.id).join(' ')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const go = (e: React.MouseEvent, id: Category) => {
     const el = document.getElementById(id);
@@ -116,7 +128,7 @@ function SectionTabs() {
   );
 }
 
-const PLACEHOLDER: Record<Category, typeof Pizza> = { pizza: Pizza, burger: Hamburger, pasta: Soup };
+const PLACEHOLDER: Partial<Record<Category, typeof Pizza>> = { pizza: Pizza, burger: Hamburger, pasta: Soup };
 const TAG_LABEL: Record<MenuTag, string> = { popular: 'Popular', veg: 'Veg' };
 
 /**
@@ -125,7 +137,7 @@ const TAG_LABEL: Record<MenuTag, string> = { popular: 'Popular', veg: 'Veg' };
  */
 function ItemCard({ item, closed, onOpen, onQuickAdd }: { item: MenuItem; closed: boolean; onOpen: () => void; onQuickAdd: () => void }) {
   const photo = PHOTOS[item.id];
-  const Icon = PLACEHOLDER[item.category];
+  const Icon = PLACEHOLDER[item.category] ?? UtensilsCrossed;
   return (<>
     <button type="button" className={`o-item${item.soldOut ? ' o-item--out' : ''}`} disabled={item.soldOut} onClick={onOpen}>
       <span className="o-item__photo">
@@ -175,6 +187,28 @@ function useEscape(onClose: () => void) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+}
+
+/**
+ * The phone's Back closes what is open instead of leaving the site: anything open on top of the menu
+ * holds one history entry, and closing it any other way takes that entry off again.
+ */
+function useBackCloses(layer: boolean, close: () => void) {
+  const latest = useRef({ layer, close });
+  latest.current = { layer, close };
+  useEffect(() => {
+    if (layer) { if (!history.state?.oLayer) history.pushState({ oLayer: true }, ''); }
+    else if (history.state?.oLayer) history.back();
+  }, [layer]);
+  useEffect(() => {
+    const onPop = () => {
+      if (!history.state?.oLayer) latest.current.close();
+      // Forward onto an entry whose sheet is gone: nothing to show there.
+      else if (!latest.current.layer) history.back();
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 }
 
 function Sheet({ label, onClose, children }: { label: string; onClose: () => void; children: React.ReactNode }) {
@@ -309,7 +343,7 @@ function CartPanel({ basket, onChange, onCheckout }: { basket: OnlineLine[]; onC
 /** The line on each mood strip: white, then the amber part. */
 const STRIP_LINES: Record<StripId, [string, string]> = {
   pizza: ['Stone-baked.', 'Straight from the fire.'],
-  end: ['Order ahead.', 'Collect it hot.'],
+  end: ['Thalwila.', 'Collect it hot.'],
 };
 
 /**
@@ -358,10 +392,10 @@ const phoneText = (p: string) => `${p.slice(0, 3)} ${p.slice(3, 6)} ${p.slice(6)
  * Desktop, under the order: where to collect, when, how to pay, and a way to ask. Only what the
  * owner has given (the cloud's ORDER_PHONE / ORDER_ADDRESS / ORDER_HOURS); a missing one is left out.
  */
-/** Where to collect: the shop's name and the owner's address once given (ORDER_ADDRESS), and a Maps search for it. */
+/** Where to collect: the owner's address once given (ORDER_ADDRESS), else the town, and a Maps search for it. */
 const pickupPlace = (shop: ShopInfo | null) => {
-  const place = [shop?.name, shop?.address].filter(Boolean).join(', ');
-  return { place, maps: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place)}` };
+  const place = shop?.address ?? SHOP_HEADER.lines.join(' ');
+  return { place, maps: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${SHOP_NAME} ${place}`)}` };
 };
 
 function PickupInfo({ shop }: { shop: ShopInfo | null }) {
@@ -371,7 +405,7 @@ function PickupInfo({ shop }: { shop: ShopInfo | null }) {
     <section className="o-panel o-info" aria-label="Pickup info">
       <h2 className="o-panel__title">Pickup info</h2>
       <ul className="o-info__rows">
-        <li><MapPin aria-hidden /><span>{place}<br /><a href={maps} target="_blank" rel="noopener noreferrer">Open in Maps</a></span></li>
+        <li><MapPin aria-hidden /><span>{SHOP_NAME}, {place}<br /><a href={maps} target="_blank" rel="noopener noreferrer">Open in Maps</a></span></li>
         {shop?.hours && <li><Clock aria-hidden /><span>Daily {clockText(shop.hours.opens)} – {clockText(shop.hours.closes)}</span></li>}
         <li><Banknote aria-hidden /><span>Pay when you collect: cash or bank transfer</span></li>
       </ul>
@@ -386,15 +420,73 @@ function PickupInfo({ shop }: { shop: ShopInfo | null }) {
   );
 }
 
-function Checkout({ basket, taking, onRetry, onChange, onPlaced, onClose }: {
-  basket: OnlineLine[]; taking: Taking; onRetry: () => void; onChange: (b: OnlineLine[]) => void; onPlaced: (p: Placed) => void; onClose: () => void;
+/**
+ * Asks the phone where it is when the customer taps the button, then the cloud what delivery there
+ * costs (by road from the shop). The fee shown is the fee charged: the cloud works it out again.
+ */
+function useLocation() {
+  const [pin, setPin] = useState<DeliveryPin | null>(null);
+  const [quote, setQuote] = useState<DeliveryQuote | null>(null);
+  const [state, setState] = useState<'idle' | 'asking' | 'failed'>('idle');
+  /** A saved address's pin: priced the same way, without asking the phone. */
+  const use = useCallback((at: DeliveryPin | null) => {
+    setPin(at);
+    setQuote(null);
+    if (!at) return;
+    setState('asking');
+    api.quote(at).then((q) => { setQuote(q); setState('idle'); }, () => setState('failed'));
+  }, []);
+  const ask = () => {
+    if (!navigator.geolocation) { setState('failed'); return; }
+    setState('asking');
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        const at = { lat: p.coords.latitude, lng: p.coords.longitude };
+        api.quote(at).then((q) => { setPin(at); setQuote(q); setState('idle'); }, () => setState('failed'));
+      },
+      () => setState('failed'),
+      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 60_000 },
+    );
+  };
+  return { pin, quote, state, ask, use };
+}
+
+/** What the form starts with: the account's details when signed in (its newest address first), else what this phone remembers. */
+const startingMe = (account: Account | null) => {
+  const here = remembered.me();
+  if (!account) return here;
+  return {
+    name: account.profile.name || here.name,
+    phone: account.profile.phone || here.phone,
+    address: account.addresses[0]?.address ?? here.address,
+  };
+};
+
+function Checkout({ basket, shop, taking, account, onRetry, onChange, onPlaced, onClose }: {
+  basket: OnlineLine[]; shop: ShopInfo | null; taking: Taking; account: Account | null; onRetry: () => void;
+  onChange: (b: OnlineLine[]) => void; onPlaced: (p: Placed) => void; onClose: () => void;
 }) {
-  const [me, setMe] = useState(remembered.me);
+  const [me, setMe] = useState(() => startingMe(account));
+  const rules = shop?.delivery ?? null;
+  const [chosen, setChosen] = useState<OnlineKind>(remembered.kind);
+  const kind: OnlineKind = rules === null ? 'pickup' : chosen;
+  const delivery = kind === 'delivery';
+  const where = useLocation();
+  const saved = account?.addresses ?? [];
+  // Signed in with a saved address: its pin prices the delivery at once, no location asked.
+  const firstPin = saved[0]?.pin ?? null;
+  const usePin = where.use;
+  useEffect(() => { if (delivery && firstPin && !where.pin) usePin(firstPin); }, [delivery, firstPin]); // eslint-disable-line react-hooks/exhaustive-deps
+  const priced = where.quote && 'fee' in where.quote ? where.quote : null;
+  const fee = priced?.fee ?? 0;
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
   const phoneOk = normalisePhone(me.phone) !== null;
-  const ready = me.name.trim() !== '' && phoneOk && basket.length > 0 && taking === 'open' && !sending;
+  const addressOk = !delivery || (me.address.trim() !== '' && priced !== null);
+  const ready = me.name.trim() !== '' && phoneOk && addressOk && basket.length > 0 && taking === 'open' && !sending;
+  const total = onlineTotal(basket) + (delivery ? fee : 0);
+  const choose = (k: OnlineKind) => { setChosen(k); remembered.setKind(k); };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -403,7 +495,10 @@ function Checkout({ basket, taking, onRetry, onChange, onPlaced, onClose }: {
     setError('');
     try {
       remembered.setMe(me);
-      onPlaced(await api.place({ name: me.name, phone: me.phone, note, lines: basket }));
+      onPlaced(await api.place({
+        kind, name: me.name, phone: me.phone, note, lines: basket,
+        ...(delivery ? { address: me.address, pin: where.pin } : {}),
+      }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSending(false);
@@ -415,7 +510,16 @@ function Checkout({ basket, taking, onRetry, onChange, onPlaced, onClose }: {
       <h2 className="o-sheet__title">Your order</h2>
       <BasketLines basket={basket} onChange={onChange} />
       {basket.length === 0 && <p className="o-muted">Your order is empty.</p>}
-      <div className="o-total"><span>Total</span><b className="num">{rs(onlineTotal(basket))}</b></div>
+      {rules !== null && (
+        <div className="o-kind" role="radiogroup" aria-label="Pickup or delivery">
+          <button type="button" role="radio" aria-checked={!delivery} onClick={() => choose('pickup')}><ShoppingBag aria-hidden />Pickup</button>
+          <button type="button" role="radio" aria-checked={delivery} onClick={() => choose('delivery')}>
+            <Bike aria-hidden />Delivery<span className="num o-kind__fee">{rs(rules.perKm)}/km</span>
+          </button>
+        </div>
+      )}
+      {delivery && priced && <div className="o-fee"><span>Delivery · <span className="num">{priced.km} km</span></span><span className="num">{rs(priced.fee)}</span></div>}
+      <div className="o-total"><span>Total</span><b className="num">{rs(total)}</b></div>
 
       <form className="o-form" onSubmit={(e) => void submit(e)}>
         <label>Your name
@@ -425,25 +529,63 @@ function Checkout({ basket, taking, onRetry, onChange, onPlaced, onClose }: {
           <input value={me.phone} onChange={(e) => setMe({ ...me, phone: e.target.value })} type="tel" inputMode="tel" autoComplete="tel" placeholder="077 123 4567" required />
           {me.phone && !phoneOk && <span className="o-hint">A Sri Lankan number, like 077 123 4567</span>}
         </label>
+        {delivery && (<>
+          {saved.length > 0 && (
+            <div className="o-chips o-saved" role="group" aria-label="Your saved addresses">
+              {saved.map((a) => (
+                <button key={a.id} type="button" className="o-chip" aria-pressed={me.address === a.address}
+                  onClick={() => { setMe({ ...me, address: a.address }); where.use(a.pin); }}>
+                  {a.label || (a.address.length > 24 ? `${a.address.slice(0, 23)}…` : a.address)}
+                </button>
+              ))}
+            </div>
+          )}
+          <label>Delivery address
+            <textarea
+              value={me.address} onChange={(e) => setMe({ ...me, address: e.target.value })} rows={2} maxLength={200}
+              autoComplete="street-address" placeholder="House number, road, and a landmark" required
+            />
+          </label>
+          <div className="o-locate">
+            {priced ? (<>
+              <span className="o-locate__ok"><LocateFixed aria-hidden />Location added · <span className="num">{priced.km} km</span></span>
+              <button type="button" className="o-link" onClick={where.ask}>Update</button>
+            </>) : (
+              <button type="button" className="o-btn" onClick={where.ask} disabled={where.state === 'asking'}>
+                <LocateFixed aria-hidden />{where.state === 'asking' ? 'Finding you…' : 'Share my location'}
+              </button>
+            )}
+            {!priced && where.state === 'idle' && !where.quote && (
+              <span className="o-muted">Delivery is {rs(rules?.perKm ?? 0)} a km, up to {rules?.maxKm} km: we need your location to price it.</span>
+            )}
+            {where.quote && 'reason' in where.quote && <span className="o-hint">Sorry, {where.quote.reason}.</span>}
+            {where.state === 'failed' && (
+              <span className="o-hint">We couldn&apos;t get your location. Allow it in your browser, choose pickup, or call the shop.</span>
+            )}
+          </div>
+        </>)}
         <label><span>Note for the shop <span className="o-muted">(optional)</span></span>
           <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={140} placeholder="Extra spicy, cut in 8…" />
         </label>
         {error && <p className="o-error" role="alert">{error}</p>}
         <TakingNote taking={taking} onRetry={onRetry} closed="The shop is not taking online orders right now." />
         <button type="submit" className="o-primary o-primary--wide" disabled={!ready}>
-          {sending ? 'Sending…' : `Place order · ${rs(onlineTotal(basket))}`}
+          {sending ? 'Sending…' : `Place order · ${rs(total)}`}
         </button>
-        <p className="o-muted o-center">Pickup at the shop. Pay when you collect: cash or bank transfer.</p>
+        <p className="o-muted o-center">
+          {delivery ? 'We bring it to you. Pay the rider in cash.' : 'Pickup at the shop. Pay when you collect: cash or bank transfer.'}
+        </p>
       </form>
     </Sheet>
   );
 }
 
 const STEPS = ['Sent', 'Accepted', 'Ready'] as const;
+const DELIVERY_STEPS = ['Sent', 'Accepted', 'On the way'] as const;
 const at = (ms: number) => new Date(ms).toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
 
 /** The order after it is placed: one big line saying where it is, and the number to say at the counter. */
-function Status({ placed, onDone, onAgain }: { placed: Placed; onDone: () => void; onAgain: () => void }) {
+function Status({ placed, onDone, onAgain, onBack }: { placed: Placed; onDone: () => void; onAgain: () => void; onBack: () => void }) {
   const [order, setOrder] = useState<MyOrder | null>(null);
   const [lost, setLost] = useState(false);
   useEffect(() => {
@@ -458,8 +600,12 @@ function Status({ placed, onDone, onAgain }: { placed: Placed; onDone: () => voi
     return () => { stop = true; clearTimeout(timer); };
   }, [placed]);
 
-  const step = !order ? 0 : order.status === 'new' ? 0 : order.status === 'accepted' ? 1 : order.status === 'ready' || order.status === 'collected' ? 2 : -1;
-  const ended = order && ['declined', 'expired', 'collected'].includes(order.status);
+  const delivery = order?.kind === 'delivery';
+  const step = !order ? 0 : order.status === 'new' ? 0
+    : order.status === 'accepted' || (delivery && order.status === 'ready') ? 1
+      : ['ready', 'collected', 'out', 'delivered'].includes(order.status) ? 2 : -1;
+  const ended = order && ['declined', 'expired', 'collected', 'delivered'].includes(order.status);
+  const steps = delivery ? DELIVERY_STEPS : STEPS;
 
   return (
     <main className="o-status" aria-label="Your order">
@@ -467,26 +613,40 @@ function Status({ placed, onDone, onAgain }: { placed: Placed; onDone: () => voi
         <>
           {step >= 0 && (
             <ol className="o-steps" aria-label="Progress">
-              {STEPS.map((s, i) => <li key={s} className={i <= step ? 'is-done' : ''} aria-current={i === step ? 'step' : undefined}>{s}</li>)}
+              {steps.map((s, i) => <li key={s} className={i <= step ? 'is-done' : ''} aria-current={i === step ? 'step' : undefined}>{s}</li>)}
             </ol>
           )}
           {order.status === 'new' && (<>
             <h1>Sent to the shop</h1>
             <p className="o-lead">Waiting for them to accept it. This usually takes a few minutes; keep this page open.</p>
           </>)}
-          {order.status === 'accepted' && (<>
+          {delivery && (order.status === 'accepted' || order.status === 'ready') && (<>
+            <p className="o-kicker">Your order number</p>
+            <h1 className="o-number num">{order.orderNumber}</h1>
+            <p className="o-lead">Accepted. With you around <b>{order.readyBy ? at(order.readyBy) : 'soon'}</b>. We&apos;ll bring it to {order.address}.</p>
+          </>)}
+          {order.status === 'out' && (<>
+            <p className="o-kicker">On the way</p>
+            <h1 className="o-number num">{order.orderNumber}</h1>
+            <p className="o-lead">Our rider is bringing it now. Please have <b>{rs(order.total)}</b> in cash ready.</p>
+          </>)}
+          {order.status === 'delivered' && (<>
+            <h1>Enjoy your meal</h1>
+            <p className="o-lead">Thank you for ordering from CheesyBeez.</p>
+          </>)}
+          {!delivery && order.status === 'accepted' && (<>
             <p className="o-kicker">Your order number</p>
             <h1 className="o-number num">{order.orderNumber}</h1>
             <p className="o-lead">Accepted. Ready around <b>{order.readyBy ? at(order.readyBy) : 'soon'}</b>. Say your number at the counter.</p>
           </>)}
-          {order.status === 'ready' && (<>
+          {!delivery && order.status === 'ready' && (<>
             <p className="o-kicker">Ready for pickup</p>
             <h1 className="o-number num">{order.orderNumber}</h1>
             <p className="o-lead">It’s hot and waiting. Say your number at the counter and pay there.</p>
           </>)}
           {order.status === 'collected' && (<>
             <h1>Enjoy your meal</h1>
-            <p className="o-lead">Thank you for ordering with us.</p>
+            <p className="o-lead">Thank you for ordering from CheesyBeez.</p>
           </>)}
           {order.status === 'declined' && (<>
             <h1>Sorry, the shop couldn’t take this order</h1>
@@ -499,8 +659,11 @@ function Status({ placed, onDone, onAgain }: { placed: Placed; onDone: () => voi
           {lost && <p className="o-muted" role="status">No connection: trying again…</p>}
 
           <section className="o-receipt" aria-label="What you ordered">
-            <ul>{order.lines.map((l, i) => <li key={i}><span>{lineText(l)}</span><span className="num">{fmt(onlineLineTotal(l))}</span></li>)}</ul>
-            <div className="o-total"><span>To pay at the shop</span><b className="num">{rs(order.total)}</b></div>
+            <ul>
+              {order.lines.map((l, i) => <li key={i}><span>{lineText(l)}</span><span className="num">{fmt(onlineLineTotal(l))}</span></li>)}
+              {delivery && <li><span>Delivery{order.distanceKm !== null && ` · ${order.distanceKm} km`}</span><span className="num">{fmt(order.deliveryFee)}</span></li>}
+            </ul>
+            <div className="o-total"><span>{delivery ? 'To pay the rider' : 'To pay at the shop'}</span><b className="num">{rs(order.total)}</b></div>
           </section>
           {ended && (
             <div className="o-actions">
@@ -509,6 +672,12 @@ function Status({ placed, onDone, onAgain }: { placed: Placed; onDone: () => voi
             </div>
           )}
         </>
+      )}
+      {/* Still going: the order stays remembered, and the menu offers the way back to it. */}
+      {!ended && (
+        <div className="o-actions">
+          <button type="button" className="o-link" onClick={onBack}>Back to the menu</button>
+        </div>
       )}
     </main>
   );
@@ -525,6 +694,14 @@ export function OrderSite() {
   const [open, setOpen] = useState<MenuItem | null>(null);
   const [sizeFor, setSizeFor] = useState<MenuItem | null>(null);
   const [checkout, setCheckout] = useState(false);
+  const account = useAccount();
+  const [accountOpen, setAccountOpen] = useState(false);
+  /** The status page is showing; false once the customer went back to the menu with an order still going. */
+  const [seeing, setSeeing] = useState(true);
+  const onStatus = placed !== null && seeing;
+  useBackCloses(open !== null || sizeFor !== null || checkout || accountOpen || onStatus, () => {
+    setOpen(null); setSizeFor(null); setCheckout(false); setAccountOpen(false); setSeeing(false);
+  });
   /** Bumps on every add: replays the bar's pop and the toast. */
   const [added, setAdded] = useState(0);
   const [toast, setToast] = useState(false);
@@ -568,26 +745,40 @@ export function OrderSite() {
     else add({ itemId: m.id, qty: 1, ...(m.variants ? { size: m.variants[0].id } : {}), adds: [], outs: [] });
   };
   const count = useMemo(() => basket.reduce((n, l) => n + l.qty, 0), [basket]);
-  useReveal(placed);
+  useReveal(onStatus);
 
-  if (placed) {
+  const accountSheet = accountOpen && (
+    <AccountSheet
+      state={account} describe={lineText} onClose={() => setAccountOpen(false)}
+      onAgain={(lines) => { setBasket(lines); setAccountOpen(false); setCheckout(true); }}
+    />
+  );
+
+  if (onStatus) {
     return (
       <div className="o-page">
-        <Header taking={taking} shop={shop} onRetry={retry} />
+        <Header taking={taking} shop={shop} onRetry={retry} account={account} onAccount={() => setAccountOpen(true)} />
         <div className="o-wrap o-wrap--narrow">
           <Status
             placed={placed}
             onDone={() => { remembered.setCurrent(null); setPlaced(null); }}
             onAgain={() => { setBasket(remembered.last()); remembered.setCurrent(null); setPlaced(null); setCheckout(true); }}
+            onBack={() => setSeeing(false)}
           />
         </div>
+        {accountSheet}
       </div>
     );
   }
 
   return (
     <div className="o-page">
-      <Header taking={taking} shop={shop} onRetry={retry} />
+      <Header
+        taking={taking} shop={shop} onRetry={retry} onSeeOrder={placed ? () => setSeeing(true) : undefined}
+        account={account} onAccount={() => setAccountOpen(true)}
+      />
+      {/* From the QR code on the bill: how to put the app on this phone, first thing (SCRUM-257). */}
+      <AppInstall />
       {/* Edge to edge; the headline stays in the centred container. */}
       <section className="o-hero">
         <picture>
@@ -597,10 +788,11 @@ export function OrderSite() {
         <div className="o-wrap o-hero__text">
           <h1>Order ahead.<br /><span>Collect it hot.</span></h1>
           <p>Order here, collect at the shop.</p>
-          {install.kind === 'button' && (
+          {/* From the bill (#app) the install card above says it already. */}
+          {install.kind === 'button' && !fromBill() && (
             <button type="button" className="o-install" onClick={install.install}>Install app</button>
           )}
-          {canInstall && install.kind === 'iphone' && (
+          {canInstall && install.kind === 'iphone' && !fromBill() && (
             <p className="o-install-help">Install: tap Share, then Add to Home Screen.</p>
           )}
         </div>
@@ -608,20 +800,25 @@ export function OrderSite() {
       <div className="o-wrap o-layout">
         <div className="o-col">
           <ul className="o-trust">
-            <li><ShoppingBag aria-hidden />Pickup only</li>
-            <li><Banknote aria-hidden />Pay when you collect</li>
+            {shop?.delivery ? (<>
+              <li><Bike aria-hidden />Pickup or delivery</li>
+              <li><Banknote aria-hidden />Pay when you get it</li>
+            </>) : (<>
+              <li><ShoppingBag aria-hidden />Pickup only</li>
+              <li><Banknote aria-hidden />Pay when you collect</li>
+            </>)}
             <li><Clock aria-hidden />We confirm your ready time</li>
           </ul>
 
           <SectionTabs />
 
           <main className="o-menu">
-            {SECTIONS.map((s) => (
+            {onlineSections().map((s) => (
               <Fragment key={s.id}>
                 <section id={s.id} className="o-section" aria-labelledby={`h-${s.id}`}>
                   <h2 id={`h-${s.id}`} className="o-reveal">{s.label}</h2>
                   <ul className="o-items">
-                    {menuItems().filter((m) => m.category === s.id && !m.hidden && !m.offHours).map((m) => (
+                    {menuItems().filter((m) => m.category === s.id && !m.hidden).map((m) => (
                       <li key={m.id} className="o-reveal">
                         <ItemCard item={m} closed={taking === 'closed'} onOpen={() => setOpen(m)} onQuickAdd={() => quickAdd(m)} />
                       </li>
@@ -634,12 +831,13 @@ export function OrderSite() {
           </main>
           <MoodStrip id="end">
             <p className="o-strip__meta">
-              {pickupPlace(shop).place}
+              {SHOP_NAME}, {pickupPlace(shop).place}
               {shop?.hours && <> · Daily {clockText(shop.hours.opens)} – {clockText(shop.hours.closes)}</>}
               {' · '}<a href={pickupPlace(shop).maps} target="_blank" rel="noopener noreferrer">Open in Maps</a>
             </p>
           </MoodStrip>
-          <footer className="o-foot">{shop?.name}</footer>
+          <Offers />
+          <footer className="o-foot">CheesyBeez · Pizza, burgers and pasta</footer>
         </div>
         <aside className="o-side" aria-label="Your order and pickup">
           <CartPanel basket={basket} onChange={setBasket} onCheckout={() => setCheckout(true)} />
@@ -660,10 +858,14 @@ export function OrderSite() {
       {open && <ItemSheet item={open} closed={taking === 'closed'} onAdd={add} onClose={() => setOpen(null)} />}
       {checkout && (
         <Checkout
-          basket={basket} taking={taking} onRetry={retry} onChange={setBasket} onClose={() => setCheckout(false)}
-          onPlaced={(p) => { remembered.setLast(basket); remembered.setCurrent(p); setBasket([]); setCheckout(false); setPlaced(p); }}
+          basket={basket} shop={shop} taking={taking} account={account.account} onRetry={retry} onChange={setBasket} onClose={() => setCheckout(false)}
+          onPlaced={(p) => {
+            remembered.setLast(basket); remembered.setCurrent(p); setBasket([]); setCheckout(false); setPlaced(p); setSeeing(true);
+            if (account.account) account.refresh(); // the order filled the account (its address, its list)
+          }}
         />
       )}
+      {accountSheet}
     </div>
   );
 }
@@ -672,24 +874,34 @@ export function OrderSite() {
  * Logo left, the shop's state right: the only place the page says whether it takes orders.
  * Loading is a quiet placeholder; a failed check offers Retry and never claims closed.
  */
-function Header({ taking, shop, onRetry }: { taking: Taking; shop: ShopInfo | null; onRetry: () => void }) {
+function Header({ taking, shop, onRetry, onSeeOrder, account, onAccount }: {
+  taking: Taking; shop: ShopInfo | null; onRetry: () => void; onSeeOrder?: () => void; account?: AccountState; onAccount?: () => void;
+}) {
   return (
     <header className="o-head">
       <div className="o-wrap o-head__in">
         <span className="o-brand">
-          <img src="/icons/icon-192.png" alt="" width={32} height={32} />{shop?.name}
+          <img src="/icons/icon-192.png" alt="" width={32} height={32} />{SHOP_NAME}
         </span>
-        {taking === 'loading' && <span className="o-pill o-pill--loading" aria-hidden />}
-        {(taking === 'open' || taking === 'closed') && (
+        <span className="o-head__end">
+        {/* The offers this phone received (CRM): a bell, only once offers are on. */}
+        <OffersBell />
+        {/* Sign in, or the customer's initials: only once the cloud has accounts on. */}
+        {account && onAccount && <AccountButton state={account} onOpen={onAccount} />}
+        {/* An order still going takes the pill's place: always on screen, and the header keeps its height. */}
+        {onSeeOrder && <button type="button" className="o-link" onClick={onSeeOrder}>See your order</button>}
+        {!onSeeOrder && taking === 'loading' && <span className="o-pill o-pill--loading" aria-hidden />}
+        {!onSeeOrder && (taking === 'open' || taking === 'closed') && (
           <span className={`o-pill o-pill--${taking}`} role="status">
-            {statusText(taking === 'open', shop?.hours ?? null, Date.now())}
+            {statusText(taking === 'open', shop?.hours ?? null, Date.now(), Boolean(shop?.delivery))}
           </span>
         )}
-        {taking === 'failed' && (
+        {!onSeeOrder && taking === 'failed' && (
           <button type="button" className="o-pill o-pill--retry" onClick={onRetry} aria-label="We couldn't check if we're open. Retry">
             Couldn&apos;t check · <u>Retry</u>
           </button>
         )}
+        </span>
       </div>
     </header>
   );

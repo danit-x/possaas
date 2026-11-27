@@ -10,6 +10,86 @@ const base = {
   actor: { id: 'manager-1', name: 'Ravi', role: 'manager' },
 };
 
+test('valid ingredient and supplier creation events pass sync validation', () => {
+  const events = [
+    {
+      ...base,
+      type: 'stock.item_added',
+      item: {
+        id: 'inv-new',
+        name: 'Sea Salt',
+        category: 'General',
+        baseUnit: 'pcs',
+        packQty: 1,
+        supplierIds: ['sup-new'],
+        workingPriceCents: 0,
+      },
+    },
+    {
+      ...base,
+      id: 'event-2',
+      type: 'stock.supplier_added',
+      supplier: { id: 'sup-new', name: 'Fresh Farms' },
+      linkedItemIds: ['inv-0001'],
+    },
+  ];
+
+  assert.deepEqual(validatePush({ deviceId: 'device-1', events }, 'shop-1'), { events });
+});
+
+test('valid ingredient and supplier archive and restore events pass sync validation', () => {
+  const events = [
+    { ...base, type: 'stock.item_archived', itemId: 'inv-0001' },
+    { ...base, id: 'event-2', type: 'stock.item_restored', itemId: 'inv-0001' },
+    { ...base, id: 'event-3', type: 'stock.supplier_archived', supplierId: 'sup-prima' },
+    { ...base, id: 'event-4', type: 'stock.supplier_restored', supplierId: 'sup-prima' },
+  ];
+  assert.deepEqual(validatePush({ deviceId: 'device-1', events }, 'shop-1'), { events });
+
+  const invalidItem = validatePush({
+    deviceId: 'device-1',
+    events: [{ ...base, type: 'stock.item_archived' }],
+  }, 'shop-1');
+  assert.ok('reason' in invalidItem);
+  if ('reason' in invalidItem) assert.match(invalidItem.reason, /invalid ingredient id/);
+
+  const invalidSupplier = validatePush({
+    deviceId: 'device-1',
+    events: [{ ...base, type: 'stock.supplier_archived' }],
+  }, 'shop-1');
+  assert.ok('reason' in invalidSupplier);
+  if ('reason' in invalidSupplier) assert.match(invalidSupplier.reason, /invalid supplier id/);
+});
+
+test('invalid ingredient and supplier creation payloads are refused', () => {
+  const invalidIngredient = {
+    ...base,
+    type: 'stock.item_added',
+    item: {
+      id: 'inv-new',
+      name: 'Sea Salt',
+      category: 'General',
+      baseUnit: 'pcs',
+      packQty: 1,
+      supplierIds: [],
+      workingPriceCents: 0,
+    },
+  };
+  const invalidSupplier = {
+    ...base,
+    type: 'stock.supplier_added',
+    supplier: { id: 'sup-new', name: 'Fresh Farms' },
+    linkedItemIds: ['inv-1', 'inv-1'],
+  };
+
+  const ingredientResult = validatePush({ deviceId: 'device-1', events: [invalidIngredient] }, 'shop-1');
+  assert.ok('reason' in ingredientResult);
+  if ('reason' in ingredientResult) assert.match(ingredientResult.reason, /invalid ingredient/);
+  const result = validatePush({ deviceId: 'device-1', events: [invalidSupplier] }, 'shop-1');
+  assert.ok('reason' in result);
+  if ('reason' in result) assert.match(result.reason, /invalid supplier/);
+});
+
 test('menu edits and sold-out events are accepted only with valid event data', () => {
   const owner = { ...base, actor: { id: 'owner-1', name: 'Nisal', role: 'owner' } };
   const valid = [
@@ -46,20 +126,7 @@ test('menu edits and sold-out events are accepted only with valid event data', (
   assert.ok('reason' in invalidSoldOut);
 });
 
-test("a manager's price change carries prices only, in whole rupees", () => {
-  const price = (after: object) => ({ ...base, type: 'menu.price_set', itemId: 'margherita', before: {}, after });
-  const ok = price({ prices: { M: 160000 }, adds: { 'full-cheese': 70000 } });
-  assert.deepEqual(validatePush({ events: [ok] }, 'shop-1'), { events: [ok] });
-  assert.ok('reason' in validatePush({ events: [price({ prices: { M: 160000 }, name: { en: 'Free pizza' } })] }, 'shop-1'), 'never a name');
-  assert.ok('reason' in validatePush({ events: [price({ hidden: true })] }, 'shop-1'), 'never hiding');
-  assert.ok('reason' in validatePush({ events: [price({ prices: { M: 160001 } })] }, 'shop-1'));
-  const newSize = price({ prices: { full: 300000 } });
-  assert.deepEqual(validatePush({ events: [newSize] }, 'shop-1'), { events: [newSize] }, 'a size its section gained');
-  const burger = { ...base, type: 'menu.price_set', itemId: 'chicken-burger', before: {}, after: { prices: { full: 60000 } } };
-  assert.ok('reason' in validatePush({ events: [burger] }, 'shop-1'), 'a one-price item gets no sizes');
-});
-
-test("the owner's new items are accepted only with an added-item id and whole-rupee prices", () => {
+test("the owner's new items are accepted only with an added-item id and a full, whole-rupee price list", () => {
   const owner = { ...base, actor: { id: 'owner-1', name: 'Nisal', role: 'owner' } };
   const item = { category: 'pasta', name: { en: 'Chicken Alfredo', si: '' }, description: '', prices: { S: 110000, M: 210000, L: 290000 } };
   const valid = [
@@ -67,20 +134,15 @@ test("the owner's new items are accepted only with an added-item id and whole-ru
     { ...owner, id: 'event-2', type: 'menu.item_set', itemId: 'new-chicken-alfredo', before: {}, after: { prices: { L: 300000 }, hidden: true } },
     { ...owner, id: 'event-3', type: 'menu.sold_out', itemId: 'new-chicken-alfredo', until: 1_800_000_000_000 },
     { ...owner, id: 'event-4', type: 'menu.item_added', itemId: 'new-chicken-alfredo', item: null },
-    // A shop's own section and sizes: the server cannot know them one event at a time, so it checks the shape.
-    { ...owner, id: 'event-5', type: 'menu.item_added', itemId: 'new-chicken-kottu',
-      item: { category: 'sec-kottu', name: { en: 'Chicken Kottu' }, description: '', prices: { regular: 90000, full: 130000 }, number: 3, leaveOut: ['No egg'] } },
-    { ...owner, id: 'event-6', type: 'menu.item_set', itemId: 'new-chicken-kottu', before: {}, after: { prices: { full: 140000 } } },
   ];
   assert.deepEqual(validatePush({ events: valid }, 'shop-1'), { events: valid });
 
   for (const bad of [
     { itemId: 'margherita', item },
     { itemId: 'new-Chicken', item },
-    { itemId: 'new-x', item: { ...item, prices: {} } },
+    { itemId: 'new-x', item: { ...item, prices: { S: 110000 } } },
     { itemId: 'new-x', item: { ...item, prices: { S: 110000, M: 210000, L: '290000' } } },
-    { itemId: 'new-x', item: { ...item, prices: { 'Not A Size': 110000 } } },
-    { itemId: 'new-x', item: { ...item, number: 0 } },
+    { itemId: 'new-x', item: { ...item, category: 'drinks' } },
     { itemId: 'new-x', item: { ...item, name: { en: 'X', fr: 'Y' } } },
     { itemId: 'new-x', item: { ...item, extra: true } },
   ]) {
@@ -91,51 +153,317 @@ test("the owner's new items are accepted only with an added-item id and whole-ru
   assert.ok('reason' in notAdded);
 });
 
-test("the owner's own sections: made, changed and taken off; the shape is checked", () => {
-  const owner = { ...base, orderNumber: 0, actor: { id: 'owner-1', name: 'Nisal', role: 'owner' } };
-  const section = { name: 'Kottu', cookMinutes: 8, sizes: [{ id: 'regular', label: 'Regular' }, { id: 'full', label: 'Full' }], adds: [{ id: 'egg', label: 'Egg', price: 10000 }] };
+test('menu sections (SCRUM-241): his own with sizes, a printed rename, the order; bad ids, sizes or fields are refused', () => {
+  const owner = { ...base, actor: { id: 'owner-1', name: 'Nisal', role: 'owner' } };
+  const kottu = { name: { en: 'Kottu' }, sizes: [{ id: 'x1', label: 'Full' }, { id: 'x2', label: 'Normal' }], cookMinutes: 8 };
   const valid = [
-    { ...owner, type: 'menu.section_set', sectionId: 'sec-kottu', section },
-    { ...owner, id: 'event-2', type: 'menu.section_set', sectionId: 'sec-kottu', section: null },
-    { ...owner, id: 'event-3', type: 'menu.section_set', sectionId: 'sec-kottu', section: { ...section, station: 'right' } },
-    { ...owner, id: 'event-4', type: 'menu.section_set', sectionId: 'sec-kottu', section: { ...section, hours: { from: 1080, to: 300 } } },
+    { ...owner, type: 'menu.section_set', itemId: 'sec-kottu', before: null, after: kottu },
+    { ...owner, id: 'event-2', type: 'menu.section_set', itemId: 'burger', before: null, after: { name: { en: 'Burgers & Subs' }, cookMinutes: 4 } },
+    { ...owner, id: 'event-3', type: 'menu.sections_ordered', itemId: 'sections', before: [], after: ['sec-kottu', 'pizza', 'burger', 'pasta'] },
+    { ...owner, id: 'event-4', type: 'menu.item_added', itemId: 'new-egg-kottu', item: { category: 'sec-kottu', name: { en: 'Egg Kottu' }, description: '', prices: { x1: 100000, x2: 80000 } } },
+    { ...owner, id: 'event-5', type: 'menu.item_set', itemId: 'new-egg-kottu', before: {}, after: { prices: { x1: 110000 } } },
+    { ...owner, id: 'event-6', type: 'menu.section_set', itemId: 'sec-kottu', before: kottu, after: null },
   ];
   assert.deepEqual(validatePush({ events: valid }, 'shop-1'), { events: valid });
   for (const bad of [
-    { sectionId: 'pizza', section },
-    { sectionId: 'sec-kottu', section: { ...section, name: '' } },
-    { sectionId: 'sec-kottu', section: { ...section, cookMinutes: 0 } },
-    { sectionId: 'sec-kottu', section: { ...section, sizes: [{ id: 'one', label: 'One' }] } },
-    { sectionId: 'sec-kottu', section: { ...section, adds: [{ id: 'egg', label: 'Egg', price: 10050 }] } },
-    { sectionId: 'sec-kottu', section: { ...section, extra: true } },
-    { sectionId: 'sec-kottu', section: { ...section, station: 'middle' } },
-    { sectionId: 'sec-kottu', section: { ...section, hours: { from: 600, to: 600 } } },
-    { sectionId: 'sec-kottu', section: { ...section, hours: { from: 600, to: 1440 } } },
-    { sectionId: 'sec-kottu', section: { ...section, hours: { from: '6:00', to: 660 } } },
+    { type: 'menu.section_set', itemId: 'drinks', before: null, after: kottu },
+    { type: 'menu.section_set', itemId: 'sec-x', before: null, after: { cookMinutes: 5 } },
+    { type: 'menu.section_set', itemId: 'sec-x', before: null, after: null },
+    { type: 'menu.section_set', itemId: 'pizza', before: null, after: { hidden: true } },
+    { type: 'menu.section_set', itemId: 'sec-kottu', before: kottu, after: { name: { en: 'Kottu' } } },
+    { type: 'menu.section_set', itemId: 'sec-x', before: null, after: { name: { en: 'X' }, secret: 1 } },
+    { type: 'menu.sections_ordered', itemId: 'sections', before: [], after: ['pizza', 'pizza'] },
+    { type: 'menu.sections_ordered', itemId: 'other', before: [], after: [] },
   ]) {
-    assert.ok('reason' in validatePush({ events: [{ ...owner, type: 'menu.section_set', ...bad }] }, 'shop-1'), JSON.stringify(bad));
+    const r = validatePush({ events: [{ ...owner, ...bad }] }, 'shop-1');
+    assert.ok('reason' in r, JSON.stringify(bad));
   }
 });
 
-test("a close of the day is accepted only whole: the cash in cents and the day's count", () => {
-  const tally = { cents: 0, orders: 0 };
-  const count = { from: 100, to: 200, orders: 1, total: 150000, voids: 0, discounts: 0, byTender: { cash: { cents: 150000, orders: 1 }, transfer: tally, card: tally, qr: tally, comp: tally } };
-  const close = { ...base, type: 'day.closed', from: 100, to: 200, float: 500000, counted: 630000, count };
-  assert.ok('events' in validatePush({ events: [close] }, 'shop-1'));
+test('combo packs (SCRUM-231): a valid box passes, its own-dish picks too; a bad id, price or extra field does not', () => {
+  const manager = { ...base, actor: { id: 'm-1', name: 'Kasun', role: 'manager' } };
+  const combo = {
+    name: { en: 'Family Box' }, price: 360000,
+    slots: [
+      { qty: 1, size: 'L', usual: 'devilled-chicken', options: { 'devilled-chicken': 0, seafood: 50000 } },
+      { qty: 2, usual: 'chicken-burger', options: { 'chicken-burger': 0, 'new-wrap': 0 } },
+    ],
+  };
+  const valid = [
+    { ...manager, type: 'menu.combo_set', itemId: 'combo-family-box', before: null, after: combo },
+    { ...manager, id: 'event-2', type: 'menu.combo_set', itemId: 'combo-family-box', before: combo, after: null },
+  ];
+  assert.deepEqual(validatePush({ events: valid }, 'shop-1'), { events: valid });
   for (const bad of [
-    { ...close, counted: 12.5 },
-    { ...close, float: -1 },
-    { ...close, orderNumber: 7 },
-    { ...close, to: 50 },
-    { ...close, count: { ...count, from: 99 } },
-    { ...close, count: { ...count, byTender: { cash: tally } } },
-    { ...close, actor: undefined },
-  ]) assert.ok('reason' in validatePush({ events: [bad] }, 'shop-1'), JSON.stringify(bad));
+    { itemId: 'family-box', after: combo },
+    { itemId: 'combo-x', after: { ...combo, price: 360050 } },
+    { itemId: 'combo-x', after: { ...combo, extra: 1 } },
+    { itemId: 'combo-x', after: { ...combo, slots: [{ ...combo.slots[0], size: 'S' }] } },
+    { itemId: 'combo-x', after: { ...combo, slots: [{ ...combo.slots[0], secret: 'x' }] } },
+    { itemId: 'combo-x', after: { ...combo, slots: [{ qty: 1, usual: 'not-a-dish', options: { 'not-a-dish': 0 } }] } },
+  ]) {
+    const r = validatePush({ events: [{ ...manager, type: 'menu.combo_set', before: null, ...bad }] }, 'shop-1');
+    assert.ok('reason' in r, JSON.stringify(bad));
+  }
 });
 
-test('a served portion says which ticket and line', () => {
-  const served = { id: 'event-1', shopId: 'shop-1', at: 1, orderNumber: 1001, type: 'kitchen.served', ticketId: 't1', lineId: 'l1' };
-  assert.ok('events' in validatePush({ events: [served, { ...served, id: 'event-2', type: 'kitchen.unserved' }] }, 'shop-1'));
-  assert.ok('reason' in validatePush({ events: [{ ...served, lineId: undefined }] }, 'shop-1'));
-  assert.ok('reason' in validatePush({ events: [{ ...served, ticketId: '' }] }, 'shop-1'));
+test("the owner's own recipe and opening his recipes pass; a malformed recipe does not", () => {
+  const owner = { ...base, actor: { id: 'owner-1', name: 'Owner', role: 'owner' } };
+  const recipe = { kind: 'own', lines: [{ name: 'stock:inv-0016', qty: 2, unit: 'pcs' }] };
+  const valid = [
+    { ...owner, type: 'recipe.answer_set', question: 'recipe:sausages:M', before: null, after: recipe },
+    { ...owner, id: 'event-2', type: 'recipe.answer_set', question: 'addon:chicken', before: null, after: recipe },
+    { ...owner, id: 'event-3', type: 'recipe.viewed' },
+  ];
+  assert.deepEqual(validatePush({ events: valid }, 'shop-1'), { events: valid });
+  const bad = { kind: 'own', lines: [{ name: 'stock:inv-0016', qty: -2, unit: 'pcs' }] };
+  assert.ok('reason' in validatePush({ events: [{ ...owner, type: 'recipe.answer_set', question: 'recipe:sausages:M', before: null, after: bad }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...owner, type: 'recipe.viewed', orderNumber: 4 }] }, 'shop-1'));
+  // His version of a sheet batch: its lines are his stock or what his kitchen makes, never itself.
+  const batch = { kind: 'batch', makes: { qty: 2000, unit: 'g' }, lines: [{ name: 'Mozzarella A', qty: 1500, unit: 'g' }] };
+  const edit = { ...owner, type: 'recipe.answer_set', question: 'batch:Mozzarella Blend', before: null, after: batch };
+  assert.deepEqual(validatePush({ events: [edit] }, 'shop-1'), { events: [edit] });
+  const inside = { ...batch, lines: [{ name: 'Mozzarella Blend', qty: 5, unit: 'g' }] };
+  assert.ok('reason' in validatePush({ events: [{ ...edit, after: inside }] }, 'shop-1'));
+});
+
+test('purchase orders and GRNs: closing short or extra needs a manager and the decisions', () => {
+  const ordered = { ...base, type: 'stock.ordered', poNo: 'PO-0001', supplierId: 'sup', lines: [{ itemId: 'inv-1', packs: 2 }] };
+  const line = (received: number, accepted = received) => [{ itemId: 'inv-1', ordered: 2, received, accepted, returned: received - accepted }];
+  const grn = { ...base, id: 'event-2', type: 'stock.grn', grnNo: 'GRN-0001', orderId: 'event-1', supplierId: 'sup', lines: line(2), approvedBy: null };
+  const reason = (e: unknown) => (validatePush({ events: [e] }, 'shop-1') as { reason: string }).reason;
+  assert.ok('events' in validatePush({ events: [ordered, grn] }, 'shop-1'));
+
+  const short = { ...grn, lines: line(1) };
+  // SCRUM-226: without a manager, a short delivery may only wait for the rest; extra needs one.
+  assert.match(reason(short), /closes an order short without a manager's approval/);
+  assert.match(reason({ ...short, shortDecision: 'close' }), /closes an order short without a manager's approval/);
+  assert.ok('events' in validatePush({ events: [{ ...short, shortDecision: 'wait' }] }, 'shop-1'));
+  assert.match(reason({ ...grn, lines: line(3), overDecision: 'accept' }), /extra without a manager's approval/);
+  const decided = { ...base, type: 'stock.grn_price_reviewed', grnId: 'event-2', use: true };
+  assert.ok('events' in validatePush({ events: [decided] }, 'shop-1'));
+  assert.match(reason({ ...decided, use: 'yes' }), /decides no GRN price/);
+  assert.match(reason({ ...decided, grnId: '' }), /decides no GRN price/);
+  assert.match(reason({ ...short, approvedBy: base.actor }), /short but does not say wait or close/);
+  assert.ok('events' in validatePush({ events: [{ ...short, approvedBy: base.actor, shortDecision: 'wait' }] }, 'shop-1'));
+  // The approving manager's final note: optional, plain text, at most 500 characters.
+  assert.ok('events' in validatePush({ events: [{ ...short, approvedBy: base.actor, shortDecision: 'wait', note: 'The rest comes on Monday' }] }, 'shop-1'));
+  assert.match(reason({ ...short, approvedBy: base.actor, shortDecision: 'wait', note: 'x'.repeat(501) }), /invalid goods received note/);
+  assert.match(reason({ ...short, approvedBy: base.actor, shortDecision: 'wait', note: 42 }), /invalid goods received note/);
+  assert.match(reason({ ...short, approvedBy: { id: 'c', name: 'Nimal', role: 'cashier' }, shortDecision: 'close' }), /invalid goods received note/);
+
+  const over = { ...grn, lines: line(3), approvedBy: base.actor };
+  assert.match(reason(over), /extra but does not say accept or return/);
+  assert.ok('events' in validatePush({ events: [{ ...over, overDecision: 'accept' }] }, 'shop-1'));
+  assert.match(reason({ ...over, overDecision: 'return' }), /wrong amount into stock/, 'returning extra but taking it all into stock');
+  assert.ok('events' in validatePush({ events: [{ ...over, overDecision: 'return', lines: line(3, 2) }] }, 'shop-1'));
+  assert.match(reason({ ...over, overDecision: 'accept', lines: [{ itemId: 'inv-1', ordered: 2, received: 3, accepted: 5, returned: 0 }] }), /wrong amount into stock/, 'stock cannot be made up');
+  assert.match(reason({ ...over, overDecision: 'accept', lines: line(3, 5) }), /invalid goods received note/);
+  assert.match(reason({ ...ordered, lines: [] }), /invalid purchase order/);
+  const draft = { ...base, id: 'event-3', type: 'stock.draft_set', supplierId: 'sup', lines: [{ itemId: 'inv-1', packs: 2 }] };
+  assert.ok('events' in validatePush({ events: [draft, { ...draft, id: 'event-4', lines: [] }] }, 'shop-1'), 'no lines clears the draft');
+  assert.match(reason({ ...draft, lines: [{ itemId: 'inv-1', packs: 0 }] }), /invalid draft order/);
+  assert.match(reason({ ...draft, supplierId: '' }), /invalid draft order/);
+  // A price typed for this order only rides on the draft's line; it must be a real amount.
+  assert.ok('events' in validatePush({ events: [{ ...draft, id: 'event-5', lines: [{ itemId: 'inv-1', packs: 2, unitPriceCents: 655000 }] }] }, 'shop-1'));
+  assert.match(reason({ ...draft, lines: [{ itemId: 'inv-1', packs: 2, unitPriceCents: -1 }] }), /invalid draft order/);
+  assert.match(reason({ ...draft, lines: [{ itemId: 'inv-1', packs: 2, unitPriceCents: 'free' }] }), /invalid draft order/);
+});
+
+test('an undone GRN names a manager and a reason', () => {
+  const undone = { ...base, type: 'stock.grn_undone', grnId: 'event-2', reason: 'Wrong amounts', approvedBy: base.actor };
+  assert.ok('events' in validatePush({ events: [undone] }, 'shop-1'));
+  const reason = (e: unknown) => (validatePush({ events: [e] }, 'shop-1') as { reason: string }).reason;
+  assert.match(reason({ ...undone, reason: '' }), /without a manager or a reason/);
+  assert.match(reason({ ...undone, approvedBy: undefined }), /without a manager or a reason/);
+  assert.match(reason({ ...undone, approvedBy: { id: 'c', name: 'Nimal', role: 'cashier' } }), /without a manager or a reason/);
+});
+
+test('stock movements: the kind decides the sign; nothing else passes', () => {
+  const mv = { ...base, type: 'stock.movement', itemId: 'inv-1', kind: 'GRN', qtyBase: 50000, docId: 'event-9' };
+  assert.ok('events' in validatePush({ events: [mv, { ...mv, id: 'e2', kind: 'GRN_UNDO', qtyBase: -50000 }, { ...mv, id: 'e3', kind: 'COUNT_ADJUST', qtyBase: -3 }] }, 'shop-1'));
+  for (const bad of [{ kind: 'GRN', qtyBase: -1 }, { kind: 'GRN_UNDO', qtyBase: 1 }, { kind: 'SALE', qtyBase: 1 }, { kind: 'GRN', qtyBase: 0 }, { kind: 'GRN', qtyBase: 'x' }]) {
+    assert.match((validatePush({ events: [{ ...mv, ...bad }] }, 'shop-1') as { reason: string }).reason, /invalid stock movement/);
+  }
+});
+
+test('order changes: edits need lines, a cancel needs a reason, a GRN decision is wait or close', () => {
+  const edited = { ...base, type: 'stock.order_edited', orderId: 'event-1', lines: [{ itemId: 'inv-1', packs: 2, stockQty: 50000 }] };
+  assert.ok('events' in validatePush({ events: [edited] }, 'shop-1'));
+  assert.match((validatePush({ events: [{ ...edited, lines: [] }] }, 'shop-1') as { reason: string }).reason, /invalid order change/);
+  assert.match((validatePush({ events: [{ ...edited, lines: [{ itemId: 'inv-1', packs: 2, stockQty: -1 }] }] }, 'shop-1') as { reason: string }).reason, /invalid order change/);
+  const cancelled = { ...base, type: 'stock.order_cancelled', orderId: 'event-1', reason: 'Ordered by mistake' };
+  assert.ok('events' in validatePush({ events: [cancelled] }, 'shop-1'));
+  assert.match((validatePush({ events: [{ ...cancelled, reason: '' }] }, 'shop-1') as { reason: string }).reason, /without saying why/);
+  const { reason: _r, ...noReason } = cancelled;
+  assert.match((validatePush({ events: [noReason] }, 'shop-1') as { reason: string }).reason, /without saying why/);
+  const grn = { ...base, type: 'stock.grn', grnNo: 'GRN-0001', orderId: 'event-1', supplierId: 'sup', lines: [{ itemId: 'inv-1', ordered: 2, received: 2 }], approvedBy: null };
+  assert.ok('events' in validatePush({ events: [{ ...grn, shortDecision: 'wait' }] }, 'shop-1'));
+  assert.match((validatePush({ events: [{ ...grn, shortDecision: 'later' }] }, 'shop-1') as { reason: string }).reason, /invalid goods received note/);
+});
+
+test('a count: Other must say what happened; the note is short', () => {
+  const counted = { ...base, type: 'stock.counted', itemId: 'inv-0006', counted: 1000, expected: 2000, entries: [], reason: 'spoiled', valueCents: -260000, tier: 'daily' };
+  const reason = (e: unknown) => (validatePush({ events: [e] }, 'shop-1') as { reason: string }).reason;
+  assert.ok('events' in validatePush({ events: [counted, { ...counted, id: 'e2', reason: 'other', note: 'The fridge was off' }, { ...counted, id: 'e3', reason: 'wrong-entry' }] }, 'shop-1'));
+  assert.match(reason({ ...counted, reason: 'other' }), /invalid count/);
+  assert.match(reason({ ...counted, reason: 'other', note: '   ' }), /invalid count/);
+  assert.match(reason({ ...counted, note: 'x'.repeat(201) }), /invalid count/);
+  assert.ok('events' in validatePush({ events: [{ ...counted, reason: 'delivery-short' }] }, 'shop-1'), 'an older reason still reads');
+});
+
+test('a price change passes, marked with the GRN it came from or not; a bad GRN mark does not', () => {
+  const price = { ...base, actor: { id: 'm', name: 'Ravi', role: 'manager' }, type: 'stock.price_set', itemId: 'inv-0001', before: 640000, after: 660000 };
+  assert.deepEqual(validatePush({ events: [price] }, 'shop-1'), { events: [price] });
+  const fromGrn = { ...price, grnId: 'grn-event-1' };
+  assert.deepEqual(validatePush({ events: [fromGrn] }, 'shop-1'), { events: [fromGrn] });
+  assert.ok('reason' in validatePush({ events: [{ ...price, grnId: 42 }] }, 'shop-1'));
+});
+
+test('a supplier edit passes sync validation; a broken one is refused', () => {
+  const events = [{
+    ...base, type: 'stock.supplier_edited', supplierId: 'sup-prima',
+    before: { name: 'Prima' }, after: { name: 'Prima Lanka', phone: '+94 77 123 4567' },
+    linked: ['inv-0001'], unlinked: [],
+  }];
+  assert.deepEqual(validatePush({ deviceId: 'device-1', events }, 'shop-1'), { events });
+
+  const invalid = validatePush({ deviceId: 'device-1', events: [{ ...events[0], after: { name: '' } }] }, 'shop-1');
+  assert.ok('reason' in invalid);
+  if ('reason' in invalid) assert.match(invalid.reason, /invalid supplier edit/);
+});
+
+test('prep sent to the kitchen (SCRUM-136): a ticket, an item, a unit and a real amount; its Undo and "make more" amount', () => {
+  const made = { ...base, type: 'prep.ordered', ticketId: 'ticket-1', prepId: 'kitchen:kdough1', name: 'Dough', qty: 20, unit: 'pcs' };
+  const ok = (e: unknown) => 'events' in validatePush({ events: [e] }, 'shop-1');
+  assert.ok(ok(made));
+  assert.ok(!ok({ ...made, qty: 0 }));
+  assert.ok(!ok({ ...made, unit: 'kg' }));
+  assert.ok(!ok({ ...made, prepId: '' }));
+  assert.ok(!ok({ ...made, actor: undefined }));
+  assert.ok(!ok({ ...made, orderNumber: 5 }));
+  assert.ok(!ok({ ...made, ticketId: '' }));
+  assert.ok(ok({ ...base, type: 'prep.order_undone', ticketId: 'ticket-1' }));
+  assert.ok(!ok({ ...base, type: 'prep.order_undone' }));
+  // Held for what it is made from (production.ts), and its release.
+  assert.ok(ok({ ...made, waitFor: ['Culture'], plan: 'ticket-1' }));
+  assert.ok(!ok({ ...made, waitFor: 'Culture' }));
+  assert.ok(!ok({ ...made, waitFor: [''] }));
+  const released = { ...made, type: 'prep.released', waited: ['Culture'] };
+  assert.ok(ok(released));
+  assert.ok(!ok({ ...released, waited: undefined }));
+  assert.ok(!ok({ ...released, qty: -1 }));
+  assert.ok(ok({ ...base, type: 'prep.limit_set', prepId: 'Mozzarella Blend', before: null, after: 3000 }));
+  assert.ok(!ok({ ...base, type: 'prep.limit_set', prepId: 'Mozzarella Blend', before: null, after: -1 }));
+});
+
+test('a shorthand miss syncs with what was typed; a malformed one is refused', () => {
+  const miss = { ...base, actor: { id: 'cashier-1', name: 'Kasun', role: 'cashier' }, type: 'shorthand.missed', text: '2 l margherita, bbq chkn', unresolved: ['bbq chkn'], gaveUp: false };
+  assert.ok('events' in validatePush({ events: [miss] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...miss, unresolved: [] }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...miss, gaveUp: undefined }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...miss, orderNumber: 7 }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...miss, actor: undefined }] }, 'shop-1'));
+});
+
+test('table and vision events sync with exactly their fields; a camera password or a frame is refused (SCRUM-166)', () => {
+  const floor = { ...base, orderNumber: 0, actor: { id: 'cashier-1', name: 'Kasun', role: 'cashier' } };
+  const set = { ...floor, type: 'table.state_set', tableId: 't1', from: 'needs_cleaning', to: 'free' };
+  const cams = { ...floor, type: 'vision.cameras_set', cameras: [{ id: 'c1', name: 'Front', ip: '192.168.1.20', rtspPath: '/stream1', enabled: true }] };
+  assert.ok('events' in validatePush({ events: [set, cams] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...set, to: 'gone' }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...set, orderNumber: 1001 }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...set, actor: undefined }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...cams, cameras: [{ ...cams.cameras[0], password: 'secret' }] }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ events: [{ ...floor, type: 'vision.camera_offline', cameraId: 'c1', image: 'AAAA' }] }, 'shop-1'));
+});
+
+test('a kitchen Remake is a waste with its ticket and line; a bad ticket id is refused (SCRUM-177)', () => {
+  const remake = {
+    ...base, id: 'w1', type: 'stock.wasted', what: { kind: 'dish', itemId: 'margherita', size: 'L' }, name: 'Margherita · Large',
+    qty: 1, reason: 'burnt', ticketId: 't1', lineId: 'L1',
+  };
+  const undo = { ...base, id: 'u1', type: 'stock.waste_undone', wasteId: 'w1', ticketId: 't1' };
+  assert.deepEqual(validatePush({ deviceId: 'device-1', events: [remake, undo] }, 'shop-1'), { events: [remake, undo] });
+  assert.ok('reason' in validatePush({ deviceId: 'device-1', events: [{ ...remake, ticketId: 42 }] }, 'shop-1'));
+  assert.ok('reason' in validatePush({ deviceId: 'device-1', events: [{ ...undo, ticketId: '' }] }, 'shop-1'));
+});
+
+test('warehouse records (SCRUM-184) pass with their fields and nothing loose', () => {
+  const ok = (e: object) => 'events' in validatePush({ deviceId: 'd', events: [{ ...base, ...e }] }, 'shop-1');
+  assert.ok(ok({ type: 'stock.warehouse_set', warehouseId: 'wh-x1', before: null, after: { name: 'Freezer', archived: false } }));
+  assert.ok(!ok({ type: 'stock.warehouse_set', warehouseId: 'wh-x1', before: null, after: { name: ' ', archived: false } }));
+  assert.ok(!ok({ type: 'stock.warehouse_set', warehouseId: 'x1', before: null, after: { name: 'Freezer', archived: false } }));
+  assert.ok(!ok({ type: 'stock.warehouse_set', warehouseId: 'wh-x1', before: null, after: { name: 'Freezer', archived: false, extra: 1 } }));
+  assert.ok(ok({ type: 'stock.kitchen_side_set', before: 'wh-1', after: 'wh-2' }));
+  assert.ok(ok({ type: 'stock.home_set', stockKey: 'semi:kitchen:k1', before: null, after: 'wh-2' }));
+  assert.ok(!ok({ type: 'stock.home_set', stockKey: 'flour', before: null, after: 'wh-2' }));
+  assert.ok(ok({ type: 'stock.moved', stockKey: 'stock:inv-0001', from: 'wh-1', to: 'wh-2', qty: 500 }));
+  assert.ok(!ok({ type: 'stock.moved', stockKey: 'stock:inv-0001', from: 'wh-1', to: 'wh-1', qty: 500 }));
+  assert.ok(!ok({ type: 'stock.moved', stockKey: 'stock:inv-0001', from: 'wh-1', to: 'wh-2', qty: 0 }));
+  assert.ok(ok({ type: 'stock.move_undone', moveId: 'm1' }));
+  assert.ok(!ok({ type: 'stock.grn', orderId: 'p', supplierId: 's', approvedBy: null, lines: [{ itemId: 'i', ordered: 1, received: 1, accepted: 1, warehouseId: 7 }] }));
+  assert.ok(ok({ type: 'stock.grn', orderId: 'p', supplierId: 's', approvedBy: null, lines: [{ itemId: 'i', ordered: 1, received: 1, accepted: 1, warehouseId: 'wh-2' }] }));
+});
+
+test('a delivery app\'s mark on a send: a known app and a clean code, or refused', () => {
+  const send = (platform: unknown) => ({
+    ...base, orderNumber: 1001, type: 'order.sent', ticketId: 't1', addOn: false,
+    lines: [{ id: 'l1', itemId: 'margherita', qty: 1, size: 'M', adds: [], outs: [], sent: true }], platform,
+  });
+  assert.ok(!('reason' in validatePush({ events: [send({ id: 'uber', code: '4F2A9' })] }, 'shop-1')));
+  const refused = validatePush({ events: [send({ id: 'uber', code: '<b>' })] }, 'shop-1');
+  assert.ok('reason' in refused && refused.reason.includes('delivery app'));
+  assert.ok('reason' in validatePush({ events: [send({ id: 'foodpanda', code: 'AB12' })] }, 'shop-1'));
+});
+
+test('paid first (SCRUM-239): a held send and its release', () => {
+  const ok = (e: object) => !('reason' in validatePush({ deviceId: 'd', events: [e] }, 'shop-1'));
+  const send = {
+    ...base, orderNumber: 1044, type: 'order.sent', ticketId: 't1', addOn: false,
+    lines: [{ id: 'l1', itemId: 'margherita', qty: 1, size: 'M', adds: [], outs: [], sent: true }],
+  };
+  assert.ok(ok({ ...send, held: true }));
+  assert.ok(!ok({ ...send, held: 'yes' }));
+  assert.ok(ok({ ...base, orderNumber: 1044, type: 'order.released', ticketId: 't1' }));
+  assert.ok(!ok({ ...base, orderNumber: 1044, type: 'order.released' }));
+  // SCRUM-240: the customer has the food, and its Undo.
+  assert.ok(ok({ ...base, orderNumber: 1044, type: 'order.given' }));
+  assert.ok(ok({ ...base, orderNumber: 1044, type: 'order.given_undone' }));
+});
+
+test('money out: whole cents above nothing, a known kind, and a name for who paid it (SCRUM-105)', () => {
+  const out = { ...base, type: 'money.out', what: 'gas', from: 'drawer', cents: 250000 };
+  const ok = (e: object) => !('reason' in validatePush({ deviceId: 'd', events: [e] }, 'shop-1'));
+  assert.ok(ok(out));
+  assert.ok(ok({ ...base, type: 'money.out_undone', outId: 'event-1' }));
+  assert.ok(ok({ ...base, type: 'money.out_restored', outId: 'event-1' }));
+  assert.equal(ok({ ...out, cents: 10.5 }), false);
+  assert.equal(ok({ ...out, cents: 0 }), false);
+  assert.equal(ok({ ...out, what: 'lunch' }), false);
+  assert.equal(ok({ ...out, from: 'pocket' }), false);
+  assert.equal(ok({ ...out, what: 'other' }), false);
+  assert.equal(ok({ ...out, what: 'supplier' }), false);
+  assert.equal(ok({ ...out, orderNumber: 7 }), false);
+  assert.equal(ok({ ...out, actor: undefined }), false);
+  assert.equal(ok({ ...base, type: 'money.out_undone' }), false);
+  assert.ok(ok({ ...base, type: 'money.grn_removed', grnId: 'g1' }));
+  assert.ok(ok({ ...base, type: 'money.grn_restored', grnId: 'g1' }));
+  assert.equal(ok({ ...base, type: 'money.grn_removed' }), false);
+  assert.ok(ok({ ...out, choiceId: 'gas-5', note: '5kg', qty: 2 }));
+  assert.ok(ok({ ...out, what: 'supplier', supplierId: 's1', grnIds: ['g1'] }));
+  assert.equal(ok({ ...out, qty: 0 }), false);
+  assert.equal(ok({ ...out, grnIds: ['g1'] }), false);
+  assert.ok(ok({ ...base, type: 'money.choices_set', what: 'gas', choices: [{ id: 'a', label: '5kg' }] }));
+  assert.equal(ok({ ...base, type: 'money.choices_set', what: 'gas', choices: [] }), false);
+  assert.equal(ok({ ...base, type: 'money.choices_set', what: 'water', choices: [{ id: 'a', label: '5kg' }] }), false);
+});
+
+test("the owner's line on the bill (SCRUM-256): plain letters pass; too long, Sinhala or an order number do not", () => {
+  const line = (text: unknown, extra = {}) => ({ ...base, actor: { id: 'o', name: 'Owner', role: 'owner' }, type: 'shop.bill_line_set', text, ...extra });
+  const ok = [line('Fresh dough every morning'), line('')];
+  assert.deepEqual(validatePush({ deviceId: 'device-1', events: ok }, 'shop-1'), { events: ok });
+  for (const bad of [line('x'.repeat(97)), line('ස්තූතියි'), line(7), line('hi', { orderNumber: 3 })]) {
+    assert.ok('reason' in validatePush({ deviceId: 'device-1', events: [bad] }, 'shop-1'), JSON.stringify(bad.text));
+  }
 });

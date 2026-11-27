@@ -8,6 +8,10 @@ workers_dev = true
 binding = "DB"
 database_name = "melo"
 database_id = "89d4100b-5d6a-49f7-8456-f4dacce35e2c"
+
+# Voice and typed-order help (Cloudflare Workers AI, free within its daily allowance).
+[ai]
+binding = "AI"
 migrations_dir = "migrations"
 
 # The owner's phone page (the cloud build of the app; nothing else of the POS is served here).
@@ -15,14 +19,10 @@ migrations_dir = "migrations"
 directory = "../dist-cloud"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/", "/api/*", "/admin", "/admin/*", "/owner.webmanifest", "/manager.webmanifest", "/order", "/order/", "/order.html", "/order.webmanifest", "/questions", "/get", "/download"]
+run_worker_first = ["/", "/api/*", "/mcp", "/mcp/*", "/.well-known/*", "/admin", "/admin/*", "/owner.webmanifest", "/manager.webmanifest", "/order.webmanifest", "/questions", "/get", "/download"]
 
 # Online ordering stays off: no shop takes orders through this cloud yet (ORDER_SHOP, ORDER_PHONE,
 # ORDER_HOURS, ORDER_ADDRESS go under [vars] once one does).
-
-# Systems on other code, listed apart on /admin (a link to their own admin; none of their data is here).
-[vars]
-OTHER_SYSTEMS = '[{"name":"CheesyBeez","place":"Thalwila","about":"ERP repo, its own cloud","url":"https://cheesybeez-cloud.cheesybeez-cloud.workers.dev/admin"}]'
 
 # A test copy of the cloud, apart from the shops' live one: its own address and its own empty
 # database. Try changes end to end over the internet before they reach the shops:
@@ -36,3 +36,6 @@ binding = "DB"
 database_name = "melo-staging"
 database_id = "85e3e111-35c1-49b9-95a5-e8dd1c4f34ac"
 migrations_dir = "migrations"
+
+[env.staging.ai]
+binding = "AI"

@@ -1,21 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { canManage, type Actor } from '../domain/auth.ts';
-import { businessDayStart } from '../domain/cashUp.ts';
-import { cashOutsBetween, MAX_NAME, namesByUse, parseCashOut } from '../domain/cashOut.ts';
+import { businessDayStart, cashOutsBetween, MAX_NAME, namesByUse, parseCashOut } from '../domain/cashOut.ts';
 import { fmt } from '../domain/money.ts';
 import { currentCashier } from '../services/auth.ts';
-import { ShopBrand } from './Brand.tsx';
+import { SHOP_NAME } from '../shop/identity.ts';
 import { appendEvent, readAll, subscribeEvents } from './eventLog.ts';
 import { OwnerNav } from './OwnerNav.tsx';
 import { PinSheet } from './PinSheet.tsx';
 
 /**
- * Cash out (#cashout, F3 on the Register): the owner's paper list on the shop PC. Serves the
+ * Cash out (#cashout, F1 on the Register): the owner's paper list on the shop PC. Serves the
  * owner or a manager who has just paid someone from the drawer (the fish man, the bank, gas):
  * they know who and how much; the single next thing is to write it down. One line, "fish 4500",
  * Enter. Names used before are buttons. × takes a line off, Undo puts it back. Today's list
- * (5 am to 5 am) with its total; Close the day expects that much less cash. Anyone may open it;
- * writing takes a manager's or the owner's PIN once per visit (the server checks the role too).
+ * (5 am to 5 am) with its total. Anyone may open it; writing takes a manager's or the owner's
+ * PIN once per visit (the server checks the role too). Every line syncs like a sale.
  */
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -23,7 +22,7 @@ const timeOf = (t: number) => new Date(t).toLocaleTimeString('en-GB', { hour: 'n
 
 export function CashOut({ onBack, nav = true }: {
   onBack: () => void;
-  /** The owner's and managers' header (Owner, Menu, Cash out, ...). A cashier gets the shop's name and Register only. */
+  /** The owner's and managers' sidebar. A cashier gets the shop's name and Register only. */
   nav?: boolean;
 }) {
   const [tick, setTick] = useState(0);
@@ -47,15 +46,6 @@ export function CashOut({ onBack, nav = true }: {
     const t = setTimeout(() => setToast(null), 6000);
     return () => clearTimeout(t);
   }, [toast]);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (pending || e.key !== 'Escape') return;
-      if (e.target instanceof HTMLInputElement && e.target.value) return; // the field clears itself first
-      onBack();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [pending, onBack]);
 
   /** Writes as the manager or owner on hand, or asks for one's PIN first (once per visit). */
   const asManager = (run: (actor: Actor) => void) => {
@@ -88,16 +78,16 @@ export function CashOut({ onBack, nav = true }: {
 
   const count = day.lines.length;
   return (
-    <div className="owner">
+    <div className="inv-page">
       {nav ? <OwnerNav current="cashout" onRegister={onBack} /> : (
-        <header className="owner__head">
-          <ShopBrand />
-          <button type="button" className="owner__back" onClick={onBack}>Register</button>
+        <header className="cashout__bar">
+          <span className="brand">{SHOP_NAME}</span>
+          <button type="button" className="corner__key" onClick={onBack}>Register <kbd>Esc</kbd></button>
         </header>
       )}
-      <main className="owner__main cashout" aria-label="Cash out">
+      <main className="cashout" aria-label="Cash out">
         <div className="cashout__head">
-          <h1 className="menuv__title">Cash out</h1>
+          <h1 className="supplier-heading">Cash out</h1>
           <span className="cashout__day">{new Date(from).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
         </div>
 
@@ -106,7 +96,8 @@ export function CashOut({ onBack, nav = true }: {
             ref={field} value={text} maxLength={MAX_NAME + 20} placeholder="fish 4500" aria-label="Name and amount"
             aria-invalid={error ? true : undefined} autoComplete="off" spellCheck={false}
             onChange={(e) => { setText(e.target.value); setError(''); }}
-            onKeyDown={(e) => { if (e.key === 'Escape' && text) { e.preventDefault(); setText(''); setError(''); } }}
+            // A filled field clears first, so Esc (Back) never throws away a line half typed.
+            onKeyDown={(e) => { if (e.key === 'Escape' && text) { e.preventDefault(); e.stopPropagation(); setText(''); setError(''); } }}
           />
           <button type="submit" className="cta cashout__add">Add <kbd>Enter</kbd></button>
         </form>
@@ -145,7 +136,7 @@ export function CashOut({ onBack, nav = true }: {
       )}
       {pending && (
         <PinSheet
-          purpose="The owner or a manager writes cash out"
+          reason="The owner or a manager writes cash out"
           onClose={() => { setPending(null); field.current?.focus(); }}
           onUnlock={(manager) => { setBy(manager); const run = pending; setPending(null); run(manager); }}
         />

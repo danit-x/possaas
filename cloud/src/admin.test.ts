@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SyncEvent } from '../../src/domain/sync.ts';
-import { adminRoutes, ago, signedIn, startOfDayColombo } from './admin.ts';
+import { adminPage, adminRoutes, ago, signedIn, startOfDayColombo } from './admin.ts';
 import { createCloud, sha256Hex, updateStatus } from './cloud.ts';
 import { fakeD1 } from './fakeD1.ts';
 
@@ -22,7 +22,7 @@ const sessionOf = (r: Response) => r.headers.get('set-cookie')!.split(';')[0];
 async function setup() {
   const { d1, db } = fakeD1();
   for (const [shop, token] of [['shop-a', 'server-a'], ['shop-b', 'server-b']]) {
-    db.prepare('INSERT INTO shops (id, name, created_at) VALUES (?, ?, 0)').run(shop, shop === 'shop-a' ? 'Bata Kade Galle' : 'Test shop');
+    db.prepare('INSERT INTO shops (id, name, created_at) VALUES (?, ?, 0)').run(shop, shop === 'shop-a' ? 'CheesyBeez Thalwila' : 'Test shop');
     db.prepare("INSERT INTO devices (id, tenant_id, kind, token_hash, created_at) VALUES (?, ?, 'shop_server', ?, 0)")
       .run(`dev-${token}`, shop, await sha256Hex(token));
   }
@@ -53,12 +53,17 @@ test('each copy pass tells the cloud the version and the last update; the admin 
 
   const page = await (await admin(req('/admin', { session })))!.text();
   assert.match(page, /1 of 2 online · latest release 1\.0\.5 · 1 still to update/);
-  assert.match(page, /Bata Kade Galle/);
+  assert.match(page, /CheesyBeez Thalwila/);
   assert.match(page, /Version 1\.0\.4 · 1\.0\.5 waiting/);
   assert.match(page, /Updated 1\.0\.4 · 5 min ago/);
   assert.match(page, /Last sale 1 min ago · 1 events today/);
   assert.match(page, /Offline · never/, 'the test shop never checked in');
-  assert.ok(page.indexOf('Bata Kade Galle') < page.indexOf('Test shop'), 'online shops first');
+  assert.ok(page.indexOf('CheesyBeez Thalwila') < page.indexOf('Test shop'), 'online shops first');
+});
+
+test('a version downloaded and held back for the night reads "Ready to install"', () => {
+  const page = adminPage([{ id: 'a', name: 'CheesyBeez Thalwila', version: '1.0.4', update: { phase: 'waiting', percent: 100, version: '1.0.5', at: NOW - 2 * 60_000 }, lastSeenAt: NOW, lastSaleAt: null, eventsToday: 0 }], '1.0.5', NOW);
+  assert.match(page, /Ready to install 1\.0\.5 · 2 min ago/);
 });
 
 test('a shop server cannot store anything odd in its status', () => {
@@ -88,7 +93,7 @@ test('the admin reads any shop, and only once signed in', async () => {
   }
   const box = await (await admin(req('/admin')))!.text();
   assert.match(box, /Admin password/, 'not signed in: the sign-in box');
-  assert.doesNotMatch(box, /Bata Kade Galle/, '...and nothing about any shop');
+  assert.doesNotMatch(box, /CheesyBeez Thalwila/, '...and nothing about any shop');
 });
 
 test('signing in: the right password gives a 30-day session cookie no script can read; nothing else does', async () => {
@@ -120,7 +125,7 @@ test('the laptop\'s server reads the shop list and events with the password as a
   const { admin } = await setup();
   const key = (k: string) => ({ headers: { authorization: `Bearer ${k}` } });
   const list = await (await admin(req('/admin/api/shops', key(KEY))))!.json();
-  assert.deepEqual(list.shops.map((r: { name: string }) => r.name).sort(), ['Bata Kade Galle', 'Test shop']);
+  assert.deepEqual(list.shops.map((r: { name: string }) => r.name).sort(), ['CheesyBeez Thalwila', 'Test shop']);
   assert.equal(list.latest, '1.0.5');
   assert.equal((await admin(req('/admin/api/shops/shop-a/events', key(KEY))))!.status, 200);
   assert.equal((await admin(req('/admin/api/shops', key('wrong'))))!.status, 403);
@@ -129,36 +134,12 @@ test('the laptop\'s server reads the shop list and events with the password as a
 });
 
 test('without a password, or with a short one, /admin does not exist', async () => {
-  for (const key of [null, 'abc1235']) { // under 10 characters
+  for (const key of [null, 'short-password']) {
     const r = await adminRoutes(req('/admin'), new URL('https://cloud.test/admin'), {
       db: fakeD1().d1, key, latest: async () => null, app: async () => new Response(''),
     });
     assert.equal(r!.status, 404);
   }
-});
-
-test('a 10-character password works; wrong ones are braked: 5 from one place, 30 from anywhere, for 15 minutes', async () => {
-  const { d1, db } = fakeD1();
-  const short = 'Kx7#mPq2Lw'; // 10 characters: allowed, because guessing is braked
-  let t = NOW;
-  const admin = (r: Request) => adminRoutes(r, new URL(r.url), { db: d1, key: short, latest: async () => null, app: async () => new Response(''), now: () => t });
-  const from = (ip: string, key: string) => req('/admin/login', {
-    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': ip }, body: new URLSearchParams({ key }),
-  });
-  for (let i = 0; i < 5; i++) assert.equal((await admin(from('1.1.1.1', `guess${i}`)))!.status, 401);
-  const locked = (await admin(from('1.1.1.1', short)))!;
-  assert.equal(locked.status, 429, 'even the right password: trying more tells nothing');
-  assert.match(await locked.text(), /Too many wrong passwords/);
-  assert.equal((await admin(from('2.2.2.2', short)))!.status, 303, 'another place still signs in');
-  // The laptop's key is braked the same way, and its wrong tries count.
-  const api = (key: string) => req('/admin/api/shops', { headers: { authorization: `Bearer ${key}`, 'cf-connecting-ip': '1.1.1.1' } });
-  assert.equal((await admin(api(short)))!.status, 429);
-  t += 15 * 60_000 + 1;
-  assert.equal((await admin(from('1.1.1.1', short)))!.status, 303, 'after 15 minutes it opens again');
-  // 30 wrong from many places: shut for everyone.
-  for (let i = 0; i < 30; i++) await admin(from(`9.9.${i}.1`, 'nope'));
-  assert.equal((await admin(from('3.3.3.3', short)))!.status, 429);
-  assert.ok((db.prepare("SELECT COUNT(*) AS n FROM admin_log WHERE action = 'wrong-password'").get() as { n: number }).n >= 35);
 });
 
 test('times read the way the shop lives them', () => {
@@ -167,88 +148,4 @@ test('times read the way the shop lives them', () => {
   assert.equal(ago(NOW - 20_000, NOW), 'just now');
   assert.equal(ago(NOW - 3 * 3_600_000, NOW), '3 h ago');
   assert.equal(ago(NOW - 3 * 86_400_000, NOW), '3 days ago');
-});
-
-test('shops with something wrong come first, each problem in one line', async () => {
-  const { cloud, admin, db, session } = await setup();
-  // The test shop checks in now with a failed update; Bata Kade Galle has never checked in.
-  const failed = JSON.stringify({ phase: 'failed', percent: 0, version: '1.0.5', at: NOW - 2 * 3_600_000 });
-  await cloud(new Request('https://cloud.test/api/v1/replica', {
-    method: 'POST',
-    headers: { authorization: 'Bearer server-b', 'content-type': 'application/json', 'x-station-version': '1.0.5', 'x-station-update': failed },
-    body: JSON.stringify({ events: [] }),
-  }));
-  // Three short closes in a row at the test shop (the ledger is empty: the counts alone say what was taken).
-  for (const back of [1, 2, 3]) {
-    const from = startOfDayColombo(NOW) - back * 86_400_000 + 5 * 3_600_000;
-    const body = { type: 'day.closed', id: `close-${back}`, shopId: 'shop-b', at: from + 12 * 3_600_000, orderNumber: 0, from, to: from + 12 * 3_600_000,
-      float: 500000, counted: 490000, count: { byTender: { cash: { cents: 0, orders: 0 } } } };
-    db.prepare("INSERT INTO events (tenant_id, id, source_seq, source_device, type, order_number, at, received_at, copied_at, body) VALUES ('shop-b', ?, ?, 'pc', 'day.closed', 0, ?, ?, ?, ?)")
-      .run(body.id, back, body.at, body.at, body.at, JSON.stringify(body));
-  }
-
-  const { shops } = await (await admin(req('/admin/api/shops', { session })))!.json();
-  assert.deepEqual(shops.map((s: { name: string; problems: { level: string; text: string }[] }) => [s.name, s.problems.map((p) => `${p.level}: ${p.text}`)]), [
-    ['Test shop', ['bad: Update to 1.0.5 failed 2 h ago', 'warn: Cash short at the last 3 closes: Rs 300 in all']],
-    ['Bata Kade Galle', ['warn: Has not checked in yet']],
-  ]);
-  const page = await (await admin(req('/admin', { session })))!.text();
-  assert.match(page, /2 need attention · 1 of 2 online/);
-  assert.match(page, /class="shop is-bad"/);
-  assert.match(page, /<li class="warn">Cash short at the last 3 closes: Rs 300 in all<\/li>/);
-});
-
-test('the audit log keeps every sign-in, wrong password and shop opened, once per reading', async () => {
-  const { admin, session } = await setup(); // setup signed in once
-  await admin(login('wrong'));
-  await admin(req('/admin/shop/shop-a', { session }));
-  await admin(req('/admin/api/shops/shop-a/events?after=0', { headers: { authorization: `Bearer ${KEY}`, 'cf-connecting-ip': '203.0.113.9' } }));
-  await admin(req('/admin/api/shops/shop-a/events?after=40', { session })); // the next page of the same reading
-  await admin(req('/admin/logout', { method: 'POST', session }));
-
-  const page = await (await admin(req('/admin/log', { session })))!.text();
-  const order = ['Signed out', "Read the shop's data", 'Opened the shop', 'Wrong password', 'Signed in'];
-  const at = order.map((w) => page.search(new RegExp(w)));
-  assert.ok(at.every((i) => i > 0), `all five are there: ${at}`);
-  assert.deepEqual([...at].sort((a, b) => a - b), at, 'newest first');
-  assert.match(page, /Laptop · 203\.0\.113\.9/);
-  assert.equal((page.match(/Read the shop/g) ?? []).length, 1, 'the next page is not logged again');
-  assert.equal((await admin(req('/admin/log', { headers: { authorization: `Bearer ${KEY}` } })))!.status, 403, 'the key does not open the log');
-});
-
-test('removing a shop: only by typing its id, everything of it goes, every other shop stays', async () => {
-  const { cloud, admin, db, session } = await setup();
-  for (const [token, id] of [['server-a', 'a1'], ['server-b', 'b1']]) {
-    await cloud(new Request('https://cloud.test/api/v1/replica', {
-      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ events: [{ seq: 1, deviceId: 'pc', receivedAt: NOW, event: { ...paid(id, NOW), shopId: token === 'server-a' ? 'shop-a' : 'shop-b' } }] }),
-    }));
-  }
-  const form = (confirm: string) => req('/admin/shops/shop-b/remove', {
-    method: 'POST', session, headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ confirm }),
-  });
-
-  const ask = await (await admin(req('/admin/shops/shop-b/remove', { session })))!.text();
-  assert.match(ask, /Remove Test shop/);
-  assert.match(ask, /1 events, 1 sales and 1 linked devices/);
-
-  const wrong = (await admin(form('shop-a')))!;
-  assert.equal(wrong.status, 400);
-  assert.match(await wrong.text(), /Nothing was removed/);
-  assert.equal((await admin(req('/admin/shops/shop-b/remove', { method: 'POST', headers: { authorization: `Bearer ${KEY}` } })))!.status, 403, 'never with the laptop key');
-  assert.equal((await admin(req('/admin/shops/shop-b/remove', { method: 'POST' })))!.status, 403, 'never without signing in');
-
-  const done = (await admin(form(' shop-b ')))!;
-  assert.equal(done.status, 303);
-  const left = (table: string) => db.prepare(`SELECT tenant_id FROM ${table} ORDER BY tenant_id`).all().map((r) => (r as { tenant_id: string }).tenant_id);
-  for (const t of ['events', 'sales', 'devices']) assert.deepEqual(left(t), ['shop-a'], t);
-  assert.deepEqual(db.prepare('SELECT id FROM shops').all().map((r) => (r as { id: string }).id), ['shop-a']);
-  assert.throws(() => db.prepare("DELETE FROM events WHERE tenant_id = 'shop-a'").run(), /events are never deleted/, 'other shops\' events still never go');
-  // The removed shop's PC can no longer copy in.
-  const push = await cloud(new Request('https://cloud.test/api/v1/replica', {
-    method: 'POST', headers: { authorization: 'Bearer server-b', 'content-type': 'application/json' }, body: JSON.stringify({ events: [] }),
-  }));
-  assert.equal(push.status, 401);
-  assert.match(await (await admin(req('/admin/log', { session })))!.text(), /Removed the shop<\/td><td>Test shop/);
-  assert.equal((await admin(req('/admin/shops/shop-b/remove', { session })))!.status, 404, 'gone');
 });

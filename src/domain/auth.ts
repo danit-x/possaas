@@ -5,7 +5,14 @@
  * Implementation: `src/services/auth.ts` picks the real (server) AuthService
  * on a paired device, the fake one in development and the demo.
  */
-export type Role = 'cashier' | 'manager' | 'owner' | 'kitchen';
+export type Role = 'cashier' | 'manager' | 'owner' | 'kitchen' | 'vision';
+
+/**
+ * The roles a person can have: who can be added as staff and sign in with a PIN. `vision` is not one:
+ * it is the shop server's own stamp on what the camera worker saw (SCRUM-167).
+ */
+export const STAFF_ROLES = ['cashier', 'manager', 'owner', 'kitchen'] as const satisfies readonly Role[];
+export const isStaffRole = (role: unknown): role is (typeof STAFF_ROLES)[number] => STAFF_ROLES.includes(role as never);
 
 export interface Actor {
   id: string;
@@ -22,34 +29,101 @@ export interface AuthService {
   verifyManagerPin(pin: string): Promise<Actor | null>;
 }
 
-/** Managers and owners use manager mode and change the menu. Staff are owner-only. */
+/** Managers and owners use manager mode. Menu prices, names and staff are owner-only. */
 export const managesRole = (role: Role): boolean => role === 'manager' || role === 'owner';
 export const canManage = (actor: Actor): boolean => managesRole(actor.role);
 
-/** What a cashier records: sending, paying, and the quick Undo straight after either. */
-const CASHIER_EVENTS = new Set(['order.sent', 'order.send_undone', 'order.paid', 'order.payment_undone']);
-/** Everything else on an order is a manager change (audited). */
-const MANAGER_EVENTS = new Set([
-  'order.item_changed', 'order.item_cancelled', 'order.line_removed', 'order.line_adjusted',
-  'order.discount_set', 'order.comped', 'order.change_undone',
+/**
+ * What a cashier records: sending, paying, the quick Undo straight after either, and changing
+ * or cancelling a sent item when the customer changes their mind (audited; owner, 2026-11-14).
+ * `order.change_undone` is that change's Undo; `order.settled` settles a paid order's change (SCRUM-242).
+ */
+const CASHIER_EVENTS = new Set([
+  'order.sent', 'order.send_undone', 'order.paid', 'order.payment_undone', 'order.settled', 'order.released', 'order.given', 'order.given_undone',
+  'order.item_changed', 'order.item_cancelled', 'order.change_undone',
 ]);
+/** What the customer pays is a manager's (audited). */
+const MANAGER_EVENTS = new Set(['order.line_removed', 'order.line_adjusted', 'order.discount_set', 'order.comped']);
 
 /**
  * May someone with this role record this event? Kitchen taps carry no
  * person (the kitchen screen is shared), so they are checked by device instead.
  */
-export const mayRecord = (role: Role, type: string): boolean => {
+/**
+ * Stock decisions that are the owner's alone: which items are counted when (SCRUM-90),
+ * checking a count's gap (SCRUM-95; answering is a manager's), what receiving is counted in (SCRUM-96), the stock rules' numbers,
+ * an item's "Order when below" (SCRUM-135), and the warehouses (SCRUM-184).
+ */
+export const OWNER_STOCK: ReadonlySet<string> = new Set(['stock.tier_set', 'stock.gap_reviewed', 'stock.receive_unit_set', 'stock.settings_set', 'stock.limit_set',
+  // The warehouses themselves and which is next to the kitchen (SCRUM-184); homes and moves are a manager's.
+  'stock.warehouse_set', 'stock.kitchen_side_set']);
+
+/** What the cameras see (SCRUM-167): only the camera worker records it, and it records nothing else. */
+export const VISION_RECORDS: ReadonlySet<string> = new Set([
+  'table.state_changed', 'table.alert_raised', 'table.alert_cleared', 'vision.camera_offline', 'vision.camera_online', 'vision.heartbeat',
+]);
+/** The floor plan and the cameras' setup: the owner's (SCRUM-171 sets them up). */
+const OWNER_FLOOR = new Set(['table.layout_set', 'vision.cameras_set', 'vision.zones_set', 'vision.settings_set']);
+
+/**
+ * A kitchen Remake (SCRUM-177) or its Undo: waste tied to a kitchen ticket. Whoever is signed in
+ * records it, like a kitchen tap, so a burnt pizza is never left out; the bin stays a manager's.
+ */
+export const isRemake = (e: { type: string; ticketId?: unknown }): boolean =>
+  (e.type === 'stock.wasted' || e.type === 'stock.waste_undone') && typeof e.ticketId === 'string' && e.ticketId.length > 0;
+
+/** `remake`: the event is a kitchen Remake (isRemake). */
+export const mayRecord = (role: Role, type: string, remake = false): boolean => {
+  if (role === 'vision') return VISION_RECORDS.has(type);
+  if (VISION_RECORDS.has(type)) return false;
+  // Marking a table cleaned, reserved or free on the floor, and its Undo: whoever works the counter.
+  if (type === 'table.state_set' || type === 'table.state_set_undone') return role !== 'kitchen';
+  if (OWNER_FLOOR.has(type)) return role === 'owner';
   if (type.startsWith('kitchen.')) return true;
+  if (remake) return true;
+  // Sending prep to the kitchen: whoever is signed in (SCRUM-136); the "make more" amount is a manager's.
+  if (type === 'prep.ordered' || type === 'prep.order_undone') return true;
+  if (type === 'prep.limit_set') return managesRole(role);
   if (CASHIER_EVENTS.has(type)) return role !== 'kitchen';
+  // What the shorthand parser could not read (SCRUM-143): whoever types orders at the counter.
+  if (type === 'shorthand.missed') return role !== 'kitchen';
   if (MANAGER_EVENTS.has(type)) return managesRole(role);
-  // The menu: owners and managers (from the Register's manager mode, or #menu).
-  if (type.startsWith('menu.')) return managesRole(role);
-  // Closing the day counts the cash: the cashier who took it does not sign it off.
-  if (type === 'day.closed') return managesRole(role);
-  // Cash out takes money out of the drawer: a manager or the owner writes it down.
-  if (type.startsWith('cash.')) return managesRole(role);
+  // Which items are counted daily, weekly or monthly: the owner's choice (SCRUM-90).
+  if (OWNER_STOCK.has(type)) return role === 'owner';
+  // Value addition: Visual Flow is the owner's.
+  if (type.startsWith('value.')) return role === 'owner';
+  // A delivery against the owner's purchase order: whoever works the counter (SCRUM-226). What a
+  // GRN without a manager may hold is grnProblem's (purchaseOrders.ts); prices stay a manager's.
+  if (type === 'stock.grn') return role !== 'kitchen';
+  // Stock counts and supplier prices are a manager's job (SCRUM-41).
+  if (type.startsWith('stock.')) return managesRole(role);
+  // The menu is the owner's; marking something sold out is a manager's job during service.
+  if (type === 'menu.item_set' || type === 'menu.item_added') return role === 'owner';
+  // His menu's sections, and their order (SCRUM-241).
+  if (type === 'menu.section_set' || type === 'menu.sections_ordered') return role === 'owner';
+  // Answers about his recipes and costs, and opening his recipes: the owner's (SCRUM-77).
+  if (type === 'recipe.answer_set' || type === 'recipe.viewed' || type === 'recipe.draft_set') return role === 'owner';
+  // Marking something sold out, and combo packs (SCRUM-231): managers and the owner.
+  if (type === 'menu.sold_out' || type === 'menu.combo_set') return managesRole(role);
+  // An item's photo (menuPhotos.ts): managers and the owner, as in Bata Kade's POS.
+  if (type === 'menu.photo_set') return managesRole(role);
+  // Money out (SCRUM-105): whoever works the counter; what a cashier may pay is mayPayOut (moneyOut.ts).
+  if (type === 'money.out' || type === 'money.out_undone' || type === 'money.out_restored') return role !== 'kitchen';
+  if (type === 'money.choices_set') return managesRole(role);
+  if (type === 'money.grn_removed' || type === 'money.grn_restored') return role === 'owner';
+  // Cash out (cashOut.ts), the owner's paper list: written with a manager's or the owner's PIN.
+  if (type === 'cash.out' || type === 'cash.out_undone') return managesRole(role);
+  // Campaigns (campaigns.ts): the owner's, recorded by the shop server as it sends them.
+  if (type.startsWith('crm.')) return role === 'owner';
+  // Clearing the test data before the first real day (freshStart.ts): the owner's.
+  if (type === 'shop.started_fresh') return role === 'owner';
+  // The owner's line on the bill (SCRUM-256).
+  if (type === 'shop.bill_line_set') return role === 'owner';
   return false;
 };
+
+/** Inventory and suppliers: managers and owners only (SCRUM-41). */
+export const managesStock = (role: Role): boolean => managesRole(role);
 
 /** Cashiers do not see the day's takings (SCRUM-41). */
 export const seesTakings = (role: Role): boolean => managesRole(role);

@@ -5,8 +5,8 @@ import { requireManager } from '../services/auth.ts';
 interface Props {
   onUnlock: (manager: Actor) => void;
   onClose: () => void;
-  /** What the PIN is for, under the title. */
-  purpose?: string;
+  /** What the PIN is for; sent items by default. */
+  reason?: string;
 }
 
 /**
@@ -14,7 +14,7 @@ interface Props {
  * field is focused at once (number pad on tablets) and checks itself at four
  * digits, so there is no extra button to press.
  */
-export function PinSheet({ onUnlock, onClose, purpose = 'To change or cancel sent items' }: Props) {
+export function PinSheet({ onUnlock, onClose, reason = 'To change or cancel sent items' }: Props) {
   const [pin, setPin] = useState('');
   const [error, setError] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -48,7 +48,7 @@ export function PinSheet({ onUnlock, onClose, purpose = 'To change or cancel sen
         <div className="sheet__body">
           <div className="sheet__title">
             <h1>Manager PIN</h1>
-            <span>{purpose}</span>
+            <span>{reason}</span>
           </div>
           <input
             className={`pin${error ? ' pin--error' : ''}`}
@@ -57,7 +57,7 @@ export function PinSheet({ onUnlock, onClose, purpose = 'To change or cancel sen
             autoComplete="off"
             value={pin}
             readOnly={checking}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => onChange(e.target.value.replace(/\D/g, ''))}
             aria-label="Manager PIN"
             aria-invalid={error}
             aria-describedby="pin-msg"

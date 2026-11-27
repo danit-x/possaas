@@ -1,22 +1,9 @@
 import { canHalve, leaveOutsOf } from './halves.ts';
-import type { LineSpec, MenuItem, OrderDraft, OrderInterpreter, SizeId, Variant } from './types.ts';
+import type { LineSpec, MenuItem, OrderDraft, OrderInterpreter, SizeId } from './types.ts';
 
-/** Words for the sample's sizes; a shop's own sizes are typed by their names ("full", "regular"). */
 const SIZE_WORDS: Record<string, SizeId> = {
   s: 'S', single: 'S', small: 'S', m: 'M', med: 'M', medium: 'M', l: 'L', large: 'L', big: 'L',
 };
-
-/** The item's size a typed word means: "l" or "large" (sample), "full" or "f" (a size called Full). */
-const sizeFor = (variants: Variant[], word: string | undefined): Variant | undefined => {
-  if (!word) return undefined;
-  const known = SIZE_WORDS[word];
-  const byWord = variants.find((v) => v.id === known || v.id.toLowerCase() === word || v.label.toLowerCase() === word);
-  if (byWord) return byWord;
-  const initial = variants.filter((v) => v.label[0]?.toLowerCase() === word);
-  return word.length === 1 && initial.length === 1 ? initial[0] : undefined;
-};
-/** The size when none is typed: Medium if there is one (the sample), else the first. */
-const defaultSize = (variants: Variant[]): Variant | undefined => variants.find((v) => v.id === 'M') ?? variants[0];
 const NUMBER_WORDS: Record<string, number> = {
   a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
 };
@@ -24,7 +11,7 @@ const MOD_WORD = /\b(no|without|extra|add|with)\b/;
 
 /**
  * Rule-based interpreter for typed shorthand:
- *   "2 L devilled chicken no onion, 1 margherita extra bacon, burger"
+ *   "2 L devilled chicken no onion, 1 margherita extra bacon, burger" ("2L" works too)
  * Half-and-half: "L half devilled chicken half bbq chicken" or "devilled chicken / bbq chicken L".
  * Deterministic, offline, instant. A voice or LLM interpreter can implement
  * the same OrderInterpreter interface and be swapped in without touching UI.
@@ -35,8 +22,6 @@ export class ShorthandInterpreter implements OrderInterpreter {
   /** Menu names containing "and" ("bacon and onion") must survive splitting on "and". */
   private readonly protectedNames: RegExp[];
   private readonly byId: Map<string, MenuItem>;
-  /** Every word that names a size on this menu; read as a size, never as part of a name. */
-  private readonly sizeWords: Set<string>;
 
   constructor(menu: MenuItem[]) {
     // Longest alias first so "crispy chicken burger" wins over "burger".
@@ -45,8 +30,6 @@ export class ShorthandInterpreter implements OrderInterpreter {
       .sort((a, b) => b.alias.length - a.alias.length);
     this.byNumber = new Map(menu.filter((m) => m.number).map((m) => [m.number!, m]));
     this.byId = new Map(menu.map((m) => [m.id, m]));
-    const labels = menu.flatMap((m) => (m.variants ?? []).map((v) => v.label.toLowerCase()));
-    this.sizeWords = new Set([...Object.keys(SIZE_WORDS), ...labels, ...labels.map((l) => l[0])].filter((w) => w && !w.includes(' ')));
     this.protectedNames = this.aliasIndex
       .filter(({ alias }) => alias.includes(' and '))
       .map(({ alias }) => new RegExp(`\\b${alias}\\b`, 'g'));
@@ -56,7 +39,8 @@ export class ShorthandInterpreter implements OrderInterpreter {
     const lines: LineSpec[] = [];
     const unresolved: string[] = [];
 
-    let protectedInput = input.toLowerCase();
+    // "2l" = "2 l": a size letter may touch the number before it.
+    let protectedInput = input.toLowerCase().replace(/\b(\d+)([sml])\b/g, '$1 $2');
     for (const re of this.protectedNames) protectedInput = protectedInput.replace(re, (m) => m.replace(/ and /g, ' & '));
     for (const raw of protectedInput.split(/,|;|\+|\band\b|\n/)) {
       const segment = raw.trim().replace(/ & /g, ' and ');
@@ -80,8 +64,8 @@ export class ShorthandInterpreter implements OrderInterpreter {
     const itemB = this.byId.get(b.itemId)!;
     if (!canHalve(itemA, itemB)) return null;
     // A size typed anywhere counts; otherwise Medium, as for any pizza.
-    const variants = itemA.variants ?? [];
-    const size = (segment.split(/\s+/).map((t) => sizeFor(variants, t)).find(Boolean) ?? defaultSize(variants))?.id;
+    const typed = segment.split(/\s+/).map((t) => SIZE_WORDS[t]).find(Boolean);
+    const size = (itemA.variants?.find((v) => v.id === typed) ?? itemA.variants?.find((v) => v.id === 'M') ?? itemA.variants?.[0])?.id;
     // Extras and leave-outs typed after either half apply to the whole pizza.
     const modText = [`${before} ${first}`, after].map((t) => { const i = t.search(MOD_WORD); return i >= 0 ? t.slice(i) : ''; }).join(' ');
     const { adds, outs, note } = parseMods(modText, { ...itemA, leaveOut: leaveOutsOf(itemA, itemB) });
@@ -97,14 +81,14 @@ export class ShorthandInterpreter implements OrderInterpreter {
     let qtyGiven = false;
     let qtyIsDigits = false;
     let menuNo: number | undefined;
-    let size: string | undefined;
+    let size: SizeId | undefined;
     const rest: string[] = [];
     for (const t of head.split(/\s+/).filter(Boolean)) {
       if (/^#\d+$/.test(t)) { menuNo = Number(t.slice(1)); continue; }
       const n = /^\d+$/.test(t) ? Number(t) : /^\d+x$/.test(t) ? Number(t.slice(0, -1)) : NUMBER_WORDS[t];
       if (n && rest.length === 0 && !qtyGiven) { qty = n; qtyGiven = true; qtyIsDigits = /^\d+$/.test(t); }
       else if (/^\d+$/.test(t) && rest.length === 0 && menuNo === undefined) menuNo = Number(t);
-      else if (this.sizeWords.has(t) && !size) size = t;
+      else if (SIZE_WORDS[t] && !size) size = SIZE_WORDS[t];
       else if (t !== 'number' && t !== 'x') rest.push(t);
     }
 
@@ -123,7 +107,12 @@ export class ShorthandInterpreter implements OrderInterpreter {
     if (!item) return null;
 
     let resolvedSize: SizeId | undefined;
-    if (item.variants) resolvedSize = (sizeFor(item.variants, size) ?? defaultSize(item.variants))?.id;
+    if (item.variants) {
+      // A size by its own name too ("chicken kottu full"): sections the owner made name their sizes.
+      const words = head.split(/\s+/);
+      const wanted = item.variants.find((v) => v.id === size) ?? item.variants.find((v) => words.includes(v.label.toLowerCase()));
+      resolvedSize = (wanted ?? item.variants.find((v) => v.id === 'M') ?? item.variants[0]).id;
+    }
 
     const { adds, outs, note } = parseMods(modText, item);
     return { itemId: item.id, qty, size: resolvedSize, adds, outs, ...(note ? { note } : {}) };

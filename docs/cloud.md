@@ -1,6 +1,6 @@
 # The cloud copy (SCRUM-61)
 
-**Live:** https://melo.cheesybeez-cloud.workers.dev (Cloudflare Workers + D1, free plan).
+**Live:** https://cheesybeez-cloud.cheesybeez-cloud.workers.dev (Cloudflare Workers + D1, free plan).
 
 ```
  Shop PC: server + MySQL            the truth for selling; works with no internet
@@ -34,26 +34,26 @@ starts copying at once; the owner's phone QR code works from then on. Later: Sho
 - The code is a Worker secret, never in the code or the repo. Give it only to whoever installs a shop.
   Change it any time (old shops keep working; only new shops need the new code):
   `npx wrangler secret put ENROL_CODE` (in `cloud/`), then type the new code.
-- Each shop's id ends in 4 random characters (`bata-kade-galle-7b39`), so two shops with the same
+- Each shop's id ends in 4 random characters (`cheesybeez-thalwila-7b39`), so two shops with the same
   name, or a test install, never mix in the cloud.
-- On Windows the key is kept in `C:\ProgramData\LumePOS`, readable by administrators and Windows only.
+- On Windows the key is kept in `C:\ProgramData\CheesyBeez`, readable by administrators and Windows only.
 
 ## Setting it up for a shop by hand (only for special cases)
 
 From your laptop, in `cloud/` (logged in with `npx wrangler login`):
 
 ```sh
-npm run device -- --shop bata-kade-galle --name "Bata Kade Galle" \
-  --url https://melo.cheesybeez-cloud.workers.dev
+npm run device -- --shop cheesybeez-thalwila --name "CheesyBeez Thalwila" \
+  --url https://cheesybeez-cloud.cheesybeez-cloud.workers.dev
 ```
 
 It prints three lines. Put them in the shop PC's `server\.env` (over AnyDesk) and restart the
 server (or run `deploy\windows\update.ps1 -Force`):
 
 ```
-CLOUD_URL=https://melo.cheesybeez-cloud.workers.dev
+CLOUD_URL=https://cheesybeez-cloud.cheesybeez-cloud.workers.dev
 CLOUD_TOKEN=…
-CLOUD_SHOP=bata-kade-galle
+CLOUD_SHOP=cheesybeez-thalwila
 ```
 
 Check: `http://localhost:8080/api/v1/health` shows `"cloud": { "upToDateAt": …, "lastError": null }`,
@@ -66,16 +66,16 @@ that holds only the Owner view, so nobody on the internet reaches a register the
 
 - Give the owner their link, once (from your laptop, in `cloud/`):
   ```sh
-  npm run device -- --shop bata-kade-galle --kind owner --url https://melo.cheesybeez-cloud.workers.dev
+  npm run device -- --shop cheesybeez-thalwila --kind owner --url https://cheesybeez-cloud.cheesybeez-cloud.workers.dev
   ```
   It prints `…/?owner=<secret>#owner`. Send it privately; opening it on the phone keeps the secret
   there and removes it from the address bar. "Add to Home Screen" makes it an app icon.
 - The phone reads the cloud copy: the first visit loads the shop's history, then every minute only
   what is new. The secret can read that shop's events and nothing else; it can never write.
-- **For the examiners:** `https://melo.cheesybeez-cloud.workers.dev/?demo#owner` shows the
+- **For the examiners:** `https://cheesybeez-cloud.cheesybeez-cloud.workers.dev/?demo#owner` shows the
   demo feed (made-up sales), no secret needed. The bare address shows a short welcome page.
 - A lost phone: there is no screen yet to withdraw a link; until there is, delete that device's row
-  in D1 (`npx wrangler d1 execute melo --remote --command "DELETE FROM devices WHERE id = '…'"`).
+  in D1 (`npx wrangler d1 execute cheesybeez-cloud --remote --command "DELETE FROM devices WHERE id = '…'"`).
   The phone then shows "This link is no longer valid".
 
 ## The manager's phone (SCRUM-94)
@@ -92,9 +92,34 @@ Add to Home Screen (iPhone) makes it an app (`/manager.webmanifest`).
   counts wait in the cloud and arrive when it is back.
 - **Shelf photos** for a big gap go to the cloud (`POST /api/v1/photos`, table `photos`, ~150 KB
   each, about 50 MB a year for one shop). The counter fetches one the first time it is shown
-  and keeps a copy in `C:\ProgramData\LumePOS\photos`.
+  and keeps a copy in `C:\ProgramData\CheesyBeez\photos`.
 - No PIN on the phone: it is that person's phone. A lost phone: delete its row in `devices`
   (as for the owner's phone).
+
+## The owner's ChatGPT (SCRUM-197)
+
+A ChatGPT plugin reads the shop through an MCP server at `/mcp` (`cloud/src/mcp.ts`). Sales: today, and any day or
+period up to 92 days, compared with the usual for that weekday or the period before. SCRUM-198 adds what needs
+attention, stock, what each dish earns and supplier orders, and one tool that writes: it fills in a supplier's
+**draft** order. A person still places it. It is on for staging and live (`MCP_ENABLED = "1"` in `cloud/wrangler.toml`).
+What it reads goes to OpenAI, so answers hold no customers, staff or order numbers.
+
+**Where the rest comes from.** This Worker is on the free plan and cannot fold the shop's whole history per
+question, so the shop server builds a digest (`src/domain/ownerDigest.ts`) in a below-normal-priority child process
+(`server/digestWorker.ts`) and uploads it (`PUT /api/v1/mcp/digest`, table `owner_digests`). It asks
+`GET /api/v1/mcp/wanted` first and does nothing, with no extra process, unless ChatGPT is connected. Connected: at
+most every 10 minutes when something is new, at least every half hour. The digest is an allowlist: no staff names,
+order numbers, free-text notes or phone numbers, and a new To do card goes out only once it is listed in `CARDS`.
+A draft goes through the inbox as `stock.draft_set`, signed "ChatGPT, for the owner".
+
+To add it: in ChatGPT, open Plugins (`chatgpt.com/plugins`), press +, choose **Add custom MCP server**,
+enter `<cloud address>/mcp`, then **Create as a plugin**. ChatGPT registers itself, so there is no
+client ID or secret to copy. ChatGPT opens the sign-in page while adding it: paste the owner link there.
+`server/discover` and `tools/list` also answer without a token and hold no shop data.
+
+To cut it off: **Disconnect** on the owner's phone, at the bottom of Today (it shows only while ChatGPT
+is connected, with Undo for a few seconds). Removing the owner's device also stops it. To connect again,
+sign in again from ChatGPT.
 
 ## The owner's questions page
 
@@ -103,14 +128,14 @@ needs: missing recipe amounts, menu items, receipt details. The key is a Worker 
 a wrong key shows "This link is not right". Every save is kept (`owner_answers`); the newest is the
 answer. Read it with `npm run answers` (in `cloud/`). New key: `npx wrangler secret put ANSWER_KEY`.
 
-## Online orders
+## Online orders (cheesybeez.com)
 
-Customers order ahead on `/order` on the shop's cloud address, collect at the
+Customers order ahead on **cheesybeez.com** (or `/order` on any cloud address), collect at the
 shop and pay there. Rules in `src/domain/online.ts`; the cloud side in `cloud/src/online.ts`;
 the shop side in `server/online.ts`; the counter's **Online** key in `src/ui/Online.tsx`; the
 customer page in `src/order/` (built as `order.html` by `npm run build:cloud`).
 
-On `/order`, customers can install the ordering page from their browser as a lightweight,
+On **cheesybeez.com**, customers can install the ordering page from their browser as a lightweight,
 full-screen app: use **Install app** when offered, or on iPhone/iPad use **Share → Add to Home
 Screen**. The app caches its page and static assets so it can open with a weak connection. Shop
 availability and order status are always fetched live; the cached menu may be stale offline.
@@ -132,6 +157,81 @@ the cloud address root.
 - **Floods:** at most 2 orders in play per phone number, 6 an hour per connection, 20 waiting.
 - **Privacy:** the customer's name and phone are kept only with the online order (the Register
   knows the order by its number), and are blanked after 30 days.
+- **Delivery (SCRUM-193):** Rs 50 a started km, up to 5 km (`DELIVERY_PER_KM`, `DELIVERY_MAX_KM`
+  in `[vars]`), measured by road from the shop. Off until `SHOP_LOCATION = "lat,lng"` is set from a
+  Google Maps pin on the shop (never guessed). Road distances come from openrouteservice.org (free,
+  2,000 a day, no card): sign up, create a key, `npx wrangler secret put ORS_API_KEY`. Without a key,
+  or when it does not answer, the straight line × 1.3 is used. Migration 0012 runs on release.
+  The customer picks *Delivery*, types the address and shares their location (required: the fee is
+  by distance); `/api/v1/delivery-quote` shows the km and fee before ordering, and the cloud works
+  it out again when the order is placed (never the phone's). Past 5 km: "choose pickup, or call". At the counter: *Ready in 30/45/60/90 min*, or decline *Too far to
+  deliver* / *No rider right now* → the kitchen's **Done** makes it ready → **Out** as the rider
+  leaves prints the bill for the bag (address, phone, location, *COLLECT Rs …*) and the customer
+  sees *On the way* → the rider brings the cash, the cashier charges it as any order → *Delivered*.
+  The fee is part of the order's total (never discounted; Free waives it). The owner's Today
+  shows the cash still to come from deliveries under Money, and flags one an hour past its time.
+  Address and location are blanked after 30 days with the name; the customer's own status page
+  never returns the location.
+
+### Customer accounts (optional sign-in)
+
+Customers may sign in on cheesybeez.com with Google; ordering without signing in works as before.
+The **cloud keeps the master copy** of an account (owner, 2026-11-16): customers change it from
+anywhere, even while the shop PC is off. Rules in `src/domain/accounts.ts`, the cloud side in
+`cloud/src/accounts.ts` (+ `google.ts`, `seal.ts`), the page in `src/order/Account.tsx`.
+
+- **What it keeps:** name, mobile, email (from Google), up to 5 delivery addresses with their map
+  pin, and which online orders are theirs. No photo, no birthday. It fills itself from orders: an
+  order placed while signed in gives the account its name and phone (when it has none) and saves a
+  delivery's address and pin, so the next delivery is priced without asking for the location.
+- **Sealed:** name, phone, email and addresses are encrypted (AES-256-GCM) with a key from the
+  `PROFILE_KEY` secret, each bound to its own row; Google ids and phones are found by keyed hash.
+  A copy of the database names nobody without the secret. Losing the secret loses every account.
+  Keep a copy of it somewhere safe outside Cloudflare.
+- **Sessions:** an HttpOnly, Secure, SameSite=Lax cookie (`cb_session`, path `/api/`) for 90
+  days; only its hash is stored. Account changes are refused from any other site (Origin check).
+  At most 20 sign-ins an hour per connection.
+- **The counter:** an order from a signed-in customer reaches the shop marked `account: true`. With
+  Customers (CRM) on, accepting it puts the customer on the shop's list (source *app*) and on the
+  order, so the payment counts for them. Nobody retypes the number. Signed-out orders never reach
+  the list.
+- **The customer's rights (PDPA):** *Download my data* (a JSON file) and *Delete my account* (a
+  second tap confirms) are in the account sheet. Deleting erases the account, its addresses and
+  sessions; past orders stay with the shop without pointing to anyone. D1 Time Travel keeps
+  restorable copies for 30 days, so an erasure is complete after 30 days.
+
+**Turning it on** (off, with no Sign in on the page, until both are set):
+1. Google Cloud Console → APIs & Services → Credentials → *Create OAuth client ID* → Web
+   application. Authorised JavaScript origins: `https://cheesybeez.com` (and the staging address).
+   No redirect URI is needed. The OAuth consent screen needs the shop's name, logo and a privacy
+   policy link.
+2. Put the client id (public) in `[vars]` as `GOOGLE_CLIENT_ID = "…apps.googleusercontent.com"`.
+3. Make the sealing key and store it as a secret (and a safe copy offline):
+   `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` →
+   `npx wrangler secret put PROFILE_KEY`.
+4. `npm run migrate` (migration 0015), then `npm run deploy`. Try it on staging first
+   (`--env staging`, its own `GOOGLE_CLIENT_ID` and `PROFILE_KEY`).
+
+## Language model (SCRUM-142/144)
+
+Cloudflare Workers AI, through the Worker's `AI` binding (`[ai]` in `cloud/wrangler.toml`, live and
+staging). Free within Cloudflare's daily allowance; no key. Rules in `cloud/src/ai.ts`. It only ever
+suggests, and selling never waits for it.
+
+- **`POST /api/v1/ai/command`** `{ text, commands: [{ id, label }] }` → `{ id, cached }`: one id
+  from the list it was sent, or `null`. The caller sends only what that person may already use, so
+  the model cannot reach anything else; a reply outside the list counts as `null`.
+- **`POST /api/v1/ai/transcribe`** (body: the recording, `audio/*`, at most 1 MB) → `{ text }`
+  (Whisper large-v3-turbo, in English, with the shop's words as its starting prompt and its silence
+  filter on; "Thank you." and the like from a silent room come back as `''`). The recording is used
+  once and never stored. The counter sends one only after it heard speech: F9 starts listening, and it
+  stops about a second after the speaker does (`src/domain/speechEnd.ts`), or when F9 is let go.
+- **Who:** paired devices only (shop server, owner and manager phones).
+- **Cache:** the same question with the same list is answered from D1 (`ai_cache`), not the model.
+- **Daily cap:** 300 model calls per shop per Sri Lanka day (`ai_usage`; `AI_DAILY_CALLS` in
+  `[vars]` changes it); past it, `429 too_many`.
+- **No model or a model error:** `503 unavailable`, never a guess. The screens then work as before.
+- **Models:** `COMMAND_MODEL` and `SPEECH_MODEL` in `ai.ts`; change them there only.
 
 ## Changing the cloud
 
@@ -140,7 +240,8 @@ the cloud address root.
 | Run it locally (simulated D1) | `npm run migrate:local` then `npm run dev` (port 8787) |
 | Deploy a new version (builds the owner's page too) | `npm run deploy` |
 | Apply a new schema file from `cloud/migrations/` | `npm run migrate` |
-| Look at the data | `npx wrangler d1 execute melo --remote --command "SELECT COUNT(*) FROM events"` |
+| What the shorthand parser could not read (SCRUM-143), commonest first | `npm run misses` |
+| Look at the data | `npx wrangler d1 execute cheesybeez-cloud --remote --command "SELECT COUNT(*) FROM events"` |
 
 **Release order: cloud first, then the shop PCs.** The cloud checks every event with the same
 rules as the shop server (`server/validate.ts`). An older cloud refuses event types it does not

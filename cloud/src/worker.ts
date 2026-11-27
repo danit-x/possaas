@@ -1,8 +1,9 @@
-import { PRODUCT_NAME } from '../../src/domain/brand.ts';
-import { adminRoutes, otherSystems } from './admin.ts';
+import { adminRoutes } from './admin.ts';
+import type { AiLike } from './ai.ts';
 import { createCloud, type D1Like } from './cloud.ts';
 import { downloadPage, latestRelease } from './download.ts';
 import { answersApi, questionsPage } from './questions.ts';
+import { orsRoadKm } from './road.ts';
 
 interface Env {
   DB: D1Like;
@@ -10,17 +11,37 @@ interface Env {
   ENROL_CODE?: string;
   /** The key in the owner's questions link (npx wrangler secret put ANSWER_KEY). */
   ANSWER_KEY?: string;
-  /** The shop that /order takes online orders for (wrangler.toml [vars]). */
+  /** The shop that cheesybeez.com takes online orders for (wrangler.toml [vars]). */
   ORDER_SHOP?: string;
   /** Its daily hours for the page's status pill, "11:00-21:00" in Sri Lanka time (wrangler.toml [vars]). */
   ORDER_HOURS?: string;
   /** Its phone / WhatsApp number and street address for the page's pickup card (wrangler.toml [vars]). */
   ORDER_PHONE?: string;
   ORDER_ADDRESS?: string;
+  /** Delivery (SCRUM-193, wrangler.toml [vars]): the shop's pin, rupees a km, the farthest km; any unset = pickup only. */
+  SHOP_LOCATION?: string;
+  DELIVERY_PER_KM?: string;
+  DELIVERY_MAX_KM?: string;
+  /** openrouteservice.org key for road distances (npx wrangler secret put ORS_API_KEY); unset = straight line × 1.3. */
+  ORS_API_KEY?: string;
+  /** Cloudflare Workers AI (wrangler.toml [ai]), for the language-model endpoints (SCRUM-144). */
+  AI?: AiLike;
+  /** Model calls per shop per day (wrangler.toml [vars]); unset = 300. */
+  AI_DAILY_CALLS?: string;
+  /** "1" switches on the owner's ChatGPT plugin's MCP server (wrangler.toml [vars], SCRUM-197). */
+  MCP_ENABLED?: string;
   /** The developer's /admin password (npm run admin-key in cloud/). */
   ADMIN_KEY?: string;
-  /** Systems on other code listed apart on /admin: JSON [{ name, place, about, url }] (wrangler.toml [vars]). */
-  OTHER_SYSTEMS?: string;
+  /**
+   * The CheesyBeez Android app (a TWA of cheesybeez.com, twa/README.md): its package name and the SHA-256
+   * fingerprint(s) of its signing key, comma-separated (wrangler.toml [vars]). Unset: no app is vouched for.
+   */
+  TWA_PACKAGE?: string;
+  TWA_SHA256?: string;
+  /** Customer accounts on cheesybeez.com: Google sign-in's client id (wrangler.toml [vars], public). */
+  GOOGLE_CLIENT_ID?: string;
+  /** Seals customers' profiles (npx wrangler secret put PROFILE_KEY: 32 random bytes, base64). Unset = no accounts. */
+  PROFILE_KEY?: string;
   /** The owner's page: the cloud build of the app (npm run build:cloud), served as static files. */
   ASSETS: { fetch(request: Request): Promise<Response> };
 }
@@ -31,8 +52,8 @@ interface Env {
  * exactly as in the QR code it came from.
  */
 export const ownerManifest = (key: string | null) => ({
-  name: `${PRODUCT_NAME} Owner`,
-  short_name: PRODUCT_NAME,
+  name: 'CheesyBeez Owner',
+  short_name: 'CheesyBeez',
   description: "Today's takings and anything that needs you, from anywhere.",
   start_url: key && /^[A-Za-z0-9_-]{20,64}$/.test(key) ? `/?owner=${key}#owner` : '/#owner',
   scope: '/',
@@ -47,12 +68,22 @@ export const ownerManifest = (key: string | null) => ({
   ],
 });
 
-export const orderManifest = () => ({
-  name: 'Order online',
-  short_name: 'Order',
-  description: 'Order ahead, collect it and pay at the shop.',
-  start_url: '/order',
-  scope: '/order',
+/** The manager's phone app (SCRUM-94): the same app, opening on the counts with that phone's key. */
+export const managerManifest = (key: string | null) => ({
+  ...ownerManifest(null),
+  name: 'CheesyBeez Manager',
+  short_name: 'CB Manager',
+  description: "Today's counts, from the shelf.",
+  id: '/manager',
+  start_url: key && /^[A-Za-z0-9_-]{20,64}$/.test(key) ? `/?manager=${key}#manager` : '/#manager',
+});
+
+export const orderManifest = (customerDomain: boolean) => ({
+  name: 'CheesyBeez Ordering',
+  short_name: 'CheesyBeez',
+  description: 'Order pizza, burgers and pasta for pickup at CheesyBeez.',
+  start_url: customerDomain ? '/' : '/order',
+  scope: customerDomain ? '/' : '/order',
   display: 'standalone',
   background_color: '#FAF6EF',
   theme_color: '#FAF6EF',
@@ -63,16 +94,35 @@ export const orderManifest = () => ({
   ],
 });
 
+/** Digital Asset Links for the TWA: the app's package and signing-key fingerprints, or nothing when not set. */
+export const assetLinks = (pkg?: string, sha256?: string) => {
+  const prints = (sha256 ?? '').split(',').map((s) => s.trim().toUpperCase()).filter((s) => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(s));
+  if (!pkg || !/^[a-z][\w]*(\.[a-z][\w]*)+$/i.test(pkg) || !prints.length) return [];
+  return [{
+    relation: ['delegate_permission/common.handle_all_urls'],
+    target: { namespace: 'android_app', package_name: pkg, sha256_cert_fingerprints: prints },
+  }];
+};
+
+/** Customers' address: its home page is the ordering page (order.html); /order shows it on any address. */
+const CUSTOMER_HOST = 'cheesybeez.com';
+
 /** Cloudflare Workers entry point: customer ordering, its API, and the separate owner app. */
 export default {
   fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    // Online ordering (/order) and the owner's questions are set up per cloud: without its
-    // ORDER_SHOP / ANSWER_KEY it has neither page.
-    if (!env.ORDER_SHOP && /^\/order(\.html|\.webmanifest|\/)?$/.test(url.pathname)) return Promise.resolve(new Response('Not found', { status: 404 }));
-    if (!env.ANSWER_KEY && url.pathname === '/questions') return Promise.resolve(new Response('Not found', { status: 404 }));
+    if (url.hostname === `www.${CUSTOMER_HOST}`) {
+      return Promise.resolve(Response.redirect(`https://${CUSTOMER_HOST}${url.pathname}${url.search}`, 301));
+    }
+    if (url.hostname === CUSTOMER_HOST && url.pathname === '/') return env.ASSETS.fetch(new Request(new URL('/order', url), request));
+    // The Android app's proof that it is this site's (Digital Asset Links): without it the app shows a browser bar.
+    if (url.pathname === '/.well-known/assetlinks.json') {
+      return Promise.resolve(new Response(JSON.stringify(assetLinks(env.TWA_PACKAGE, env.TWA_SHA256)), {
+        headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=3600' },
+      }));
+    }
     if (url.pathname === '/order.webmanifest') {
-      return Promise.resolve(new Response(JSON.stringify(orderManifest()), {
+      return Promise.resolve(new Response(JSON.stringify(orderManifest(url.hostname === CUSTOMER_HOST)), {
         headers: { 'content-type': 'application/manifest+json', 'cache-control': 'public, max-age=3600' },
       }));
     }
@@ -82,11 +132,16 @@ export default {
         key: env.ADMIN_KEY ?? null,
         latest: () => latestRelease().then((r) => r?.version ?? null),
         app: (req) => env.ASSETS.fetch(req),
-        others: otherSystems(env.OTHER_SYSTEMS),
       }).then((r) => r ?? new Response('Not found', { status: 404 }));
     }
     if (url.pathname === '/api/v1/answers') return answersApi(request, env.DB, env.ANSWER_KEY);
-    if (url.pathname.startsWith('/api/')) return createCloud(env.DB, { enrolCode: env.ENROL_CODE, orderShop: env.ORDER_SHOP, orderHours: env.ORDER_HOURS, orderPhone: env.ORDER_PHONE, orderAddress: env.ORDER_ADDRESS })(request);
+    if (url.pathname.startsWith('/api/') || url.pathname === '/mcp' || url.pathname.startsWith('/mcp/') || url.pathname.startsWith('/.well-known/')) return createCloud(env.DB, {
+      enrolCode: env.ENROL_CODE, orderShop: env.ORDER_SHOP, orderHours: env.ORDER_HOURS, orderPhone: env.ORDER_PHONE, orderAddress: env.ORDER_ADDRESS,
+      shopLocation: env.SHOP_LOCATION, deliveryPerKm: env.DELIVERY_PER_KM, deliveryMaxKm: env.DELIVERY_MAX_KM, roadKm: orsRoadKm(env.ORS_API_KEY),
+      ai: env.AI ?? null, aiDailyCalls: Number(env.AI_DAILY_CALLS) || undefined,
+      mcpEnabled: env.MCP_ENABLED === '1',
+      googleClientId: env.GOOGLE_CLIENT_ID, profileKey: env.PROFILE_KEY,
+    })(request);
     if (url.pathname === '/get' || url.pathname === '/download') {
       return latestRelease().then((rel) => new Response(downloadPage(rel), {
         headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' },
@@ -99,6 +154,11 @@ export default {
     }
     if (url.pathname === '/owner.webmanifest') {
       return Promise.resolve(new Response(JSON.stringify(ownerManifest(url.searchParams.get('k'))), {
+        headers: { 'content-type': 'application/manifest+json', 'cache-control': 'no-store' },
+      }));
+    }
+    if (url.pathname === '/manager.webmanifest') {
+      return Promise.resolve(new Response(JSON.stringify(managerManifest(url.searchParams.get('k'))), {
         headers: { 'content-type': 'application/manifest+json', 'cache-control': 'no-store' },
       }));
     }

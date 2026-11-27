@@ -1,102 +1,108 @@
-import { menuItems, menuState } from '../domain/menu.ts';
-import { PHOTO_HEIGHT, PHOTO_WIDTH, photoChoice } from '../domain/photos.ts';
-import { bataKadePhoto } from '../shop/bataKadePhotos.ts';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { PHOTO_MAX_SIDE, PHOTO_TARGET_BYTES } from '../domain/photos.ts';
 import { storageKey } from '../ui/storage.ts';
-import { syncToken } from './pairing.ts';
+import { managerToken, ownerToken, syncToken } from './pairing.ts';
 
 /**
- * Menu photos in the browser (src/domain/photos.ts). With the shop server, a photo is sent to it and
- * shown from it; without one (the demo, development) it is kept in this browser.
+ * Shelf photos on this device (SCRUM-94). A photo is shrunk on the phone to about
+ * 150 KB, kept here until the shop PC has it (the shop Wi-Fi comes and goes), then
+ * sent on its own to the cloud, where the shop PC and the owner see it; the count
+ * only carries its id. Without a cloud key (development, the demo) photos stay here.
  */
+const QUEUE = () => storageKey('photos.queue');
+const RETRY_MS = 30_000;
 
-/** Photos kept here: the demo's own, and new ones until the server's copy is loaded. */
-const local = new Map<string, string>();
-const LOCAL_KEY = () => storageKey('photos.v1');
-try {
-  const saved = JSON.parse(localStorage.getItem(LOCAL_KEY()) ?? '{}') as Record<string, string>;
-  for (const [id, url] of Object.entries(saved)) if (typeof url === 'string' && url.startsWith('data:image/')) local.set(id, url);
-} catch { /* blocked or broken: start without */ }
+type Queue = Record<string, string>; // id -> base64 JPEG
+const readQueue = (): Queue => { try { return JSON.parse(localStorage.getItem(QUEUE()) ?? '{}') as Queue; } catch { return {}; } };
+const writeQueue = (q: Queue): void => { try { localStorage.setItem(QUEUE(), JSON.stringify(q)); } catch { /* full or blocked: it stays in memory until sent */ } };
 
-const keepLocally = (id: string, dataUrl: string, save: boolean) => {
-  local.set(id, dataUrl);
-  if (!save) return;
-  try { localStorage.setItem(LOCAL_KEY(), JSON.stringify(Object.fromEntries(local))); } catch { /* full: this session still has it */ }
+export const newPhotoId = (): string => {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return `ph-${btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
 };
 
-/** Where a kept photo is shown from. */
-export const photoSrc = (id: string): string => local.get(id) ?? `/api/v1/photos/${id}.webp`;
-
-/** The picture an item shows, or null for none. */
-export const photoUrl = (itemId: string): string | null => {
-  const choice = photoChoice(menuState(), itemId);
-  if (choice === null) return null;
-  if (choice === undefined) return bataKadePhoto(itemId) ?? null;
-  return photoSrc(choice);
+const toBase64 = async (blob: Blob): Promise<string> => {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
 };
 
-/** Register tiles get a photo strip once the shop has any photo; a new shop's tiles stay as they were. */
-export const shopHasPhotos = (): boolean => menuItems().some((m) => !m.hidden && !m.removed && photoUrl(m.id) !== null);
-
-/** A picture made 480 × 360 (its middle, filling the frame) as a WebP, so it travels light. */
-async function shrink(picture: Blob): Promise<Blob> {
-  let img: ImageBitmap;
-  try { img = await createImageBitmap(picture); } catch { throw new PhotoError('That is not a picture this computer can open. Try a JPG or PNG.'); }
-  const scale = Math.max(PHOTO_WIDTH / img.width, PHOTO_HEIGHT / img.height);
-  const w = PHOTO_WIDTH / scale, h = PHOTO_HEIGHT / scale;
-  const canvas = document.createElement('canvas');
-  canvas.width = PHOTO_WIDTH; canvas.height = PHOTO_HEIGHT;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) { img.close(); throw new PhotoError('This browser cannot make photos small.'); }
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, (img.width - w) / 2, (img.height - h) / 2, w, h, 0, 0, PHOTO_WIDTH, PHOTO_HEIGHT);
-  img.close();
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', 0.82));
-  if (!blob || blob.type !== 'image/webp') throw new PhotoError('This browser cannot make photos small.');
-  return blob;
-}
-
-/** Swapped in tests (jsdom draws nothing). */
-export const photoTools = { shrink };
-
-export class PhotoError extends Error {}
-
-const hex = (bytes: ArrayBuffer | Uint8Array) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-const toDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(String(r.result));
-  r.onerror = () => reject(new PhotoError('The picture could not be read.'));
-  r.readAsDataURL(blob);
-});
-
-/**
- * Keeps a picture the owner chose or pasted, made small; returns its photo id for `menu.photo_set`.
- * Throws a PhotoError in words for the owner.
- */
-export async function keepPhoto(picture: Blob): Promise<string> {
-  const small = await photoTools.shrink(picture);
-  const dataUrl = await toDataUrl(small);
-  const token = syncToken();
-  if (!token) {
-    // No shop server: an id of our own (its SHA-256 where the browser can, like the server's).
-    const bytes = new Uint8Array(await small.arrayBuffer());
-    const id = crypto.subtle ? hex(await crypto.subtle.digest('SHA-256', bytes)) : hex(crypto.getRandomValues(new Uint8Array(32)));
-    keepLocally(id, dataUrl, true);
-    return id;
+/** The camera's photo, upright and shrunk until it is about 150 KB (JPEG, base64). */
+export const shrinkPhoto = async (file: Blob): Promise<string> => {
+  const image = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  let side = PHOTO_MAX_SIDE;
+  for (;;) {
+    const scale = Math.min(1, side / Math.max(image.width, image.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(image.width * scale);
+    canvas.height = Math.round(image.height * scale);
+    canvas.getContext('2d')!.drawImage(image, 0, 0, canvas.width, canvas.height);
+    for (const quality of [0.72, 0.6, 0.5, 0.4]) {
+      const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', quality));
+      if (blob && (blob.size <= PHOTO_TARGET_BYTES || (quality === 0.4 && side <= 640))) return toBase64(blob);
+    }
+    side = Math.round(side * 0.75);
   }
-  let r: Response;
-  try {
-    r = await fetch('/api/v1/photos', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ data: dataUrl.slice(dataUrl.indexOf(',') + 1) }),
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    throw new PhotoError('The shop PC is not answering, so the photo was not saved. Try again in a moment.');
+};
+
+const listeners = new Set<() => void>();
+let timer: ReturnType<typeof setTimeout> | null = null;
+
+/** Sends what is waiting; whatever the shop PC has is taken off this device. */
+export const flushPhotos = async (): Promise<void> => {
+  const token = managerToken();
+  if (!token) return;
+  if (timer) { clearTimeout(timer); timer = null; }
+  for (const [id, data] of Object.entries(readQueue())) {
+    try {
+      const r = await fetch(`${location.origin}/api/v1/photos`, {
+        method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ id, data }),
+      });
+      // 400: the PC will never take it; keeping it would block nothing but fill the phone.
+      if (r.ok || r.status === 400) { const q = readQueue(); delete q[id]; writeQueue(q); }
+    } catch { /* offline: try again later */ }
   }
-  if (!r.ok) throw new PhotoError('The shop PC did not take the photo. Try another picture.');
-  const { id } = (await r.json()) as { id: string };
-  keepLocally(id, dataUrl, false); // shows at once; the server's copy from then on
-  return id;
+  if (Object.keys(readQueue()).length) timer = setTimeout(() => void flushPhotos(), RETRY_MS);
+  listeners.forEach((l) => l());
+};
+
+/** Keeps a photo on this device and starts sending it. */
+export const keepPhoto = (id: string, base64: string): void => {
+  writeQueue({ ...readQueue(), [id]: base64 });
+  listeners.forEach((l) => l());
+  void flushPhotos();
+};
+
+export const waitingPhotos = (): number => Object.keys(readQueue()).length;
+const subscribePhotos = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
+/** How many photos wait on this device for the shop PC (shown, so nobody wonders where they went). */
+export const useWaitingPhotos = (): number => useSyncExternalStore(subscribePhotos, waitingPhotos);
+
+/** Sends photos left over from before, and again whenever the Wi-Fi comes back. */
+export const startPhotoSync = (): void => {
+  window.addEventListener('online', () => void flushPhotos());
+  void flushPhotos();
+};
+
+/** A photo to show: from this device while it waits, else from the shop PC. null while loading or missing. */
+export function usePhotoUrl(id: string | null | undefined): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setUrl(null);
+    if (!id) return;
+    const local = readQueue()[id];
+    if (local) { setUrl(`data:image/jpeg;base64,${local}`); return; }
+    // The phones read from the cloud; the counter from its shop PC (which fetches it from the cloud once).
+    const token = managerToken() ?? ownerToken() ?? syncToken();
+    if (!token) return;
+    let gone = false;
+    let made: string | null = null;
+    fetch(`${location.origin}/api/v1/photos/${id}`, { headers: { authorization: `Bearer ${token}` } })
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((b) => { if (b && !gone) { made = URL.createObjectURL(b); setUrl(made); } })
+      .catch(() => {});
+    return () => { gone = true; if (made) URL.revokeObjectURL(made); };
+  }, [id]);
+  return url;
 }

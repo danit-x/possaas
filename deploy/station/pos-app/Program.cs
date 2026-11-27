@@ -21,8 +21,10 @@ namespace LumePOS
         private const string Pos = "http://localhost:8080/";
 
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
+            // A developer can point it at a dev server: LumePOS.exe http://localhost:5185/
+            var pos = args.Length > 0 && args[0].StartsWith("http://localhost:") ? args[0].TrimEnd('/') + "/" : Pos;
             // One window is enough: a second start just brings the first one forward.
             using (var single = new Mutex(true, "LumePOS.Counter", out var first))
             {
@@ -30,7 +32,7 @@ namespace LumePOS
                 NativeFocus.SharpOnScaledScreens();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new PosWindow(Pos));
+                Application.Run(new PosWindow(pos));
             }
         }
     }
@@ -63,7 +65,10 @@ namespace LumePOS
             var core = web.CoreWebView2;
             core.Settings.AreDefaultContextMenusEnabled = false;   // no "Inspect", "Back", "Print"…
             core.Settings.AreDevToolsEnabled = false;
-            core.Settings.IsZoomControlEnabled = false;
+            core.Settings.IsZoomControlEnabled = false;        // the zoom is ours (FitToScreen), not Ctrl+wheel's
+            FitToScreen();
+            Resize += (s, e) => FitToScreen();
+            DpiChanged += (s, e) => FitToScreen();
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreBrowserAcceleratorKeysEnabled = false; // no Ctrl+P, Ctrl+F, F5 and friends
             core.Settings.IsPasswordAutosaveEnabled = false;
@@ -74,6 +79,25 @@ namespace LumePOS
             core.NavigationStarting += (s, e) => { if (!IsPos(e.Uri) && !e.Uri.StartsWith("data:")) { e.Cancel = true; OpenOutside(e.Uri); } };
             core.NavigationCompleted += async (s, e) => { if (!e.IsSuccess && !waiting) await WaitForServerAsync(); };
             await WaitForServerAsync();
+        }
+
+        /// <summary>
+        /// One look on every screen (owner, 2026-11-25): the POS is laid out as if the screen were at least
+        /// Design wide and high, then the whole page is scaled to fill the real one, like the browser's zoom.
+        /// A shop's 1024x768 at 125% is laid out at 1280x960 and drawn at 64%, a big monitor larger; the
+        /// page never sees a small screen, so its small-screen layouts never switch on. Extra room only ever
+        /// goes to one side (more menu rows on a square screen), the layout itself stays the same.
+        /// </summary>
+        private const double DesignWidth = 1280, DesignHeight = 840;
+
+        private void FitToScreen()
+        {
+            if (web.CoreWebView2 == null || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+            var scale = DeviceDpi / 96.0;                   // Windows' own scaling (125% = 1.25), applied before ours
+            var w = ClientSize.Width / scale;
+            var h = ClientSize.Height / scale;
+            var zoom = Math.Min(w / DesignWidth, h / DesignHeight);
+            if (Math.Abs(web.ZoomFactor - zoom) > 0.001) web.ZoomFactor = zoom;
         }
 
         private bool IsPos(string uri) => uri.StartsWith(url, StringComparison.OrdinalIgnoreCase);

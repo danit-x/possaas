@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
-import { PhotoError, keepPhoto } from '../services/photos.ts';
+import { PhotoError, keepPhoto } from '../services/menuPhotos.ts';
 
 /**
- * An item's photo on its sheet (the Menu screen, and the Register in manager mode). Serves the owner
- * or a manager: they have a picture somewhere (a file, or copied from a browser or WhatsApp) and want
- * it on the item now. Choose photo, Paste (or Ctrl+V anywhere on the sheet), or drop a file on it; it
- * is made small and kept, and the sheet's owner records the change (with its Undo).
+ * An item's photo on its sheet (the Menu screen: Change, and + Add). Serves the owner: they have a
+ * picture somewhere (a file, or copied from a browser or WhatsApp) and want it on the item now.
+ * Choose photo, Paste (or Ctrl+V anywhere on the sheet), or drop a file on it; it is made small and
+ * kept, and the sheet's owner records the change (with its Undo).
  */
 export function PhotoSlot({ name, url, onPhoto, onRemove }: {
   /** The item's name, for the picture's description. */

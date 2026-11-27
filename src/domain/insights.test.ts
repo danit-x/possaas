@@ -2,8 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { demoHistory } from '../fake/history.ts';
 import { rulesSuggestions, salesFrom, type ShopData } from './insights.ts';
+import { SEED_INVENTORY, SEED_SUPPLIERS } from './inventoryData.ts';
 import type { SyncEvent } from './sync.ts';
 
+const stock = { items: SEED_INVENTORY, suppliers: SEED_SUPPLIERS };
 const friday = new Date(2026, 9, 9, 20, 30).getTime(); // a Friday evening, local time
 const ids = (data: ShopData) => rulesSuggestions.insights(data).map((i) => i.id);
 
@@ -11,17 +13,25 @@ const actor = { id: 'n', name: 'Nimal', role: 'cashier' as const };
 const paid = (orderNumber: number, at: number, total: number): SyncEvent =>
   ({ type: 'order.paid', id: `p${orderNumber}-${at}`, shopId: 's', at, actor, orderNumber, total, tender: 'cash', tendered: total });
 
-test('the demo Friday: every kind of card, things needing a decision first, good news last', () => {
-  const insights = rulesSuggestions.insights({ events: demoHistory(friday), now: friday });
-  assert.deepEqual(insights.map((i) => i.id), ['day-closed', 'sales-vs-usual', 'voids', 'kitchen-slow', 'not-selling', 'best-seller']);
-  const [closed, sales, voids, kitchen, idle] = insights;
-  assert.match(closed.title, /^Thursday closed: cash Rs [\d,]+ short$/);
-  assert.match(closed.detail, /Closed by Ravi at 22:45\.$/);
+test('the demo Friday: only what sales and staff say, decisions first, good news last', () => {
+  const insights = rulesSuggestions.insights({ events: demoHistory(friday), now: friday, stock });
+  // No stock, tables, cameras or recipes in Bata Kade's POS: none of their cards.
+  assert.deepEqual(insights.map((i) => i.id), ['sales-vs-usual', 'voids', 'kitchen-slow', 'not-selling', 'best-seller']);
+  const [sales, voids, kitchen, idle] = insights;
   assert.match(sales.title, /^Sales \d+% below a usual Friday$/);
   assert.match(voids.title, /voids today, \d+ by Ravi$/);
   assert.ok(voids.action.items.every((i) => i.secondary?.startsWith('Ravi')), 'each void says who and why');
   assert.match(kitchen.detail, /Usually \d+ min/);
-  assert.equal(idle.title, "BBQ Pork hasn't sold in 2 weeks");
+  assert.equal(idle.title, "Watalappan hasn't sold in 2 weeks");
+});
+
+test('made food changed or cancelled at the counter: no waste card (Bata Kade has no waste, 2026-11-25)', () => {
+  const today = new Date(friday); today.setHours(0, 0, 0, 0);
+  const t = today.getTime() + 3_600_000;
+  const burger = { id: 'l1', itemId: 'chicken-burger', qty: 2, adds: [], outs: [], sent: true, unit: 65000 };
+  const audit = { shopId: 's', actor, orderNumber: 42, totalBefore: 130000, totalAfter: 0 };
+  const cancelled: SyncEvent = { ...audit, id: 'c1', at: t, type: 'order.item_cancelled', lineId: 'l1', index: 0, before: burger, reason: 'Already made', made: true };
+  assert.ok(!ids({ events: [paid(1, t, 100000), cancelled], now: friday, stock }).includes('made-thrown'));
 });
 
 test('the summary counts today only, and a payment undone does not count', () => {
@@ -54,10 +64,24 @@ test('order numbers repeat (each screen counts from 1001): every payment is its 
   assert.deepEqual(salesFrom(events).map((s) => s.total), [200000, 300000, 120000]);
 });
 
+test('a paid order changed afterwards (SCRUM-242): the difference adds to its sale, never a sale of its own', () => {
+  const t = new Date(friday).setHours(0, 0, 0, 0);
+  const settled = (orderNumber: number, at: number, amount: number): SyncEvent =>
+    ({ type: 'order.settled', id: `s${orderNumber}-${at}`, shopId: 's', at, actor, orderNumber, amount, tender: 'cash', tendered: Math.abs(amount) });
+  const events: SyncEvent[] = [
+    paid(1001, t + 1_000_000, 145000),
+    settled(1001, t + 1_100_000, 60000), // Medium to Large: paid Rs 600 more
+    paid(1002, t + 2_000_000, 200000),
+    settled(1002, t + 2_100_000, -45000), // a burger taken off: Rs 450 back
+  ];
+  assert.deepEqual(salesFrom(events).map((s) => s.total), [205000, 155000]);
+  assert.equal(rulesSuggestions.summary({ events, now: friday }).orders, 2);
+});
+
 test('a new shop: no history, so no "usual" to compare with, and no false alarms', () => {
   const day = new Date(friday); day.setHours(0, 0, 0, 0);
   const events = Array.from({ length: 30 }, (_, i) => paid(i + 1, day.getTime() + (12 * 60 + i) * 60_000, 300000));
-  assert.deepEqual(ids({ events, now: friday }), []);
+  assert.deepEqual(ids({ events, now: friday, stock }), []);
 });
 
 test('sales well above usual is good news; within 20% says nothing', () => {
@@ -68,24 +92,4 @@ test('sales well above usual is good news; within 20% says nothing', () => {
   assert.equal(up[0].tone, 'good');
   assert.equal(up[0].title, 'Sales 50% above a usual Friday');
   assert.deepEqual(ids({ events: [...pastFridays, paid(1, at(0, 12 * 60), 1100000)], now: friday }), []);
-});
-
-test("not selling: only this shop's own menu, never the sample's", async () => {
-  const { setStartingMenu, SAMPLE_START } = await import('./menu.ts');
-  const { EMPTY_START } = await import('./menuEdits.ts');
-  setStartingMenu(EMPTY_START);
-  try {
-    const now = Date.now();
-    assert.equal(rulesSuggestions.insights({ events: demoHistory(now), now }).find((i) => i.id === 'not-selling'), undefined);
-  } finally {
-    setStartingMenu(SAMPLE_START);
-  }
-});
-
-test("the counter PC's clock is wrong: the first card, with how to fix it; close enough says nothing", () => {
-  const wrong = rulesSuggestions.insights({ events: demoHistory(friday), now: friday, clockOffMs: -90 * 60_000 });
-  assert.equal(wrong[0].id, 'clock');
-  assert.equal(wrong[0].title, "The counter PC's clock is 1 h 30 min behind");
-  assert.ok(wrong[0].action.items.length > 0);
-  assert.ok(!ids({ events: demoHistory(friday), now: friday, clockOffMs: 60_000 }).includes('clock'));
 });

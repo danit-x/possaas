@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { menuItems, itemById, typingExample } from '../domain/menu.ts';
+import { menuItems, itemById, soldNow } from '../domain/menu.ts';
 import { ShorthandInterpreter } from '../domain/parser.ts';
 import type { LineSpec, OrderDraft, OrderInterpreter } from '../domain/types.ts';
 import { useMenu } from './menuStore.ts';
 import { leaveOutsOf, lineItemName, secondHalf } from '../domain/halves.ts';
+import { missFrom } from '../domain/shorthandMisses.ts';
+import { currentCashier } from '../services/auth.ts';
+import { appendEvent } from './eventLog.ts';
+import { withShopAliases } from '../shop/bataKade.ts';
 
 /**
  * The screen only knows OrderInterpreter. Swap this implementation for a voice or
@@ -25,15 +29,28 @@ interface Props {
   initial: string;
   onSubmit: (specs: LineSpec[]) => void;
   onClose: () => void;
+  /**
+   * An order number typed on its own (SCRUM-247): one of today's bills, paid or not, opens on Enter.
+   * Answers whether there is such a bill; `open` true opens it.
+   */
+  onOrderNumber?: (n: number, open: boolean) => boolean;
 }
 
+/** "1042" or "#1042": what an order number typed on its own looks like (orders start at 1001). */
+const asOrderNumber = (text: string): number | null => {
+  const m = /^#?(\d{3,6})$/.exec(text.trim());
+  return m ? Number(m[1]) : null;
+};
+
 /** Appears the moment the cashier starts typing; one-glance preview before Enter. */
-export function ShorthandBar({ initial, onSubmit, onClose }: Props) {
+export function ShorthandBar({ initial, onSubmit, onClose, onOrderNumber }: Props) {
   const menuVersion = useMenu();
   const [text, setText] = useState(initial);
   const [draft, setDraft] = useState<OrderDraft>({ lines: [], unresolved: [] });
   const inputRef = useRef<HTMLInputElement>(null);
   const latest = useRef(0);
+  /** The leftover text Enter already recorded, so Esc on it right after is not counted twice. */
+  const recorded = useRef<string | null>(null);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -42,21 +59,41 @@ export function ShorthandBar({ initial, onSubmit, onClose }: Props) {
 
   useEffect(() => {
     const id = ++latest.current;
-    const interpreter: OrderInterpreter = new ShorthandInterpreter(menuItems().filter((m) => !m.offHours && !m.hidden));
+    const interpreter: OrderInterpreter = new ShorthandInterpreter(withShopAliases(menuItems().filter((m) => !m.hidden && soldNow(m))));
     Promise.resolve(interpreter.interpret(text)).then((d) => { if (id === latest.current) setDraft(d); });
   }, [text, menuVersion]);
 
   const offered = (line: LineSpec) => {
-    return [line.itemId, ...(line.half ? [line.half] : [])].map(itemById).every((item) => !item.soldOut && !item.hidden && !item.offHours);
+    return [line.itemId, ...(line.half ? [line.half] : [])].map(itemById).every((item) => !item.soldOut && !item.hidden);
   };
   const availableLines = draft.lines.filter(offered);
   const unavailableLines = draft.lines.filter((line) => !offered(line));
 
+  /** What the parser could not read goes to the miss log (SCRUM-143), for better rules or a language model later. */
+  const recordMiss = (gaveUp: boolean) => {
+    const miss = missFrom(text, draft.unresolved);
+    if (!miss) return;
+    appendEvent({ type: 'shorthand.missed', at: Date.now(), orderNumber: 0, actor: currentCashier(), ...miss, gaveUp });
+  };
+
+  const number = asOrderNumber(text);
+  const bill = number !== null && onOrderNumber?.(number, false) ? number : null;
+
   const submit = () => {
+    if (bill !== null) { onOrderNumber?.(bill, true); onClose(); return; }
     if (!availableLines.length) return;
     onSubmit(availableLines);
-    if (draft.unresolved.length) setText(draft.unresolved.join(', ')); // keep only what needs fixing
-    else onClose();
+    if (draft.unresolved.length) {
+      recordMiss(false);
+      const left = draft.unresolved.join(', ');
+      recorded.current = left;
+      setText(left); // keep only what needs fixing
+    } else onClose();
+  };
+
+  const close = () => {
+    if (text.trim() !== recorded.current) recordMiss(true);
+    onClose();
   };
 
   return (
@@ -68,22 +105,26 @@ export function ShorthandBar({ initial, onSubmit, onClose }: Props) {
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') submit();
-            if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+            if (e.key === 'Escape') { e.stopPropagation(); close(); }
           }}
-          placeholder={`${typingExample()}…`}
+          placeholder="2 chicken kottu full, egg rice…"
           aria-label="Type an order"
           spellCheck={false}
           autoComplete="off"
         />
       </div>
       <div className="typebar__preview" aria-live="polite">
-        {availableLines.map((l, i) => <span key={i}>{describe(l)}</span>)}
-        {unavailableLines.map((l, i) => (
-          <span key={`blocked${i}`} className="typebar__bad">
-            {itemById(l.itemId).name.en}: {itemById(l.itemId).hidden ? 'not on the menu' : itemById(l.itemId).offHours ? 'not sold now' : 'sold out'}
-          </span>
-        ))}
-        {draft.unresolved.map((u, i) => <span key={`u${i}`} className="typebar__bad">? {u}</span>)}
+        {bill !== null ? <span>Enter opens bill {bill}</span> : (
+          <>
+            {availableLines.map((l, i) => <span key={i}>{describe(l)}</span>)}
+            {unavailableLines.map((l, i) => (
+              <span key={`blocked${i}`} className="typebar__bad">
+                {itemById(l.itemId).name.en}: {itemById(l.itemId).hidden ? 'not on the menu' : 'sold out'}
+              </span>
+            ))}
+            {draft.unresolved.map((u, i) => <span key={`u${i}`} className="typebar__bad">? {u}</span>)}
+          </>
+        )}
       </div>
     </div>
   );

@@ -1,15 +1,16 @@
 import { setMenuState } from '../domain/menu.ts';
-import { menuStateFromEvents } from '../domain/menuEdits.ts';
-import { useEffect, useState } from 'react';
+import { shopMenuState } from '../ui/menuStore.ts';
+import { useSyncExternalStore } from 'react';
 import type { PullResponse, SyncEvent } from '../domain/sync.ts';
 import { demoHistory } from '../fake/history.ts';
+import { withoutTestData } from '../domain/freshStart.ts';
 import { readAll, subscribeEvents } from '../ui/eventLog.ts';
 import { isDemo } from '../ui/storage.ts';
-import { adminShop, fleetShop, ownerToken, syncToken } from './pairing.ts';
+import { adminShop, fleetShop, managerToken, ownerToken, syncToken } from './pairing.ts';
 
 /**
  * Everything the Owner view looks at: the shop's whole history of events.
- * - The owner's phone: from the cloud copy (same address that served the page).
+ * - The owner's phone, and a manager's phone app: from the cloud copy (same address that served the page).
  * - The developer's admin view of a shop: the same, through /admin (signed in with the admin password).
  * - The Shops screen on the developer's laptop: the same, through its local server (server/fleet.ts).
  * - The counter (paired): from the shop server (the browser keeps only two days).
@@ -20,7 +21,7 @@ import { adminShop, fleetShop, ownerToken, syncToken } from './pairing.ts';
  */
 interface Source {
   /** Events after the cursor, and the new cursor. A full load starts at 0. */
-  next(after: number): Promise<{ events: SyncEvent[]; cursor: number; clockOffMs?: number }>;
+  next(after: number): Promise<{ events: SyncEvent[]; cursor: number }>;
   /** Local sources rebuild the whole list each time. */
   incremental: boolean;
 }
@@ -36,7 +37,7 @@ const remote = (path: string, headers: Record<string, string>): Source => ({
       const page = (await r.json()) as PullResponse;
       events.push(...page.events.map((s) => s.event));
       cursor = page.lastSeq;
-      if (!page.more) return { events, cursor, clockOffMs: page.clockOffMs };
+      if (!page.more) return { events, cursor };
     }
   },
 });
@@ -52,47 +53,96 @@ export const shopSource = (): Source => {
   if (shop) return remote(`/admin/api/shops/${shop}/events`, {});
   const fleet = fleetShop();
   if (fleet) return remote(`/api/v1/fleet/shops/${fleet}/events`, {});
-  const token = ownerToken() ?? syncToken();
+  const token = ownerToken() ?? managerToken() ?? syncToken();
   return token ? remote('/api/v1/events', { authorization: `Bearer ${token}` }) : local(readAll);
 };
 
 export type ShopEvents =
   | { state: 'loading' }
-  | { state: 'ready'; events: SyncEvent[]; at: number; clockOffMs?: number }
+  | { state: 'ready'; events: SyncEvent[]; at: number }
   | { state: 'error'; message: string; events?: SyncEvent[]; at?: number };
 
-/** Loads once, then catches up when this device records something, and every minute. */
+/** Which history a source reads: a different shop (the Shops screen) or key starts afresh. */
+const sourceKey = (): string => {
+  if (isDemo()) return 'demo';
+  const shop = adminShop() ?? fleetShop();
+  if (shop) return `shop:${shop}`;
+  return ownerToken() ?? managerToken() ?? syncToken() ?? 'local';
+};
+
+/**
+ * One copy of the history for every screen that shows it (SCRUM-131: the owner's sidebar and the
+ * screen beside it), so moving between them never loads it again. It loads when the first screen
+ * needs it, then catches up when this device records something, and every minute; it stops when
+ * none is left. A remote history is kept for the next screen (then only what is new is fetched);
+ * this browser's own log is read afresh.
+ */
+const shared = {
+  data: { state: 'loading' } as ShopEvents,
+  /** Everything fetched so far, test data included: a later clear (or its Undo) is applied to all of it. */
+  raw: [] as SyncEvent[],
+  key: '',
+  cursor: 0,
+  listeners: new Set<() => void>(),
+  stop: null as null | (() => void),
+};
+
+const publish = (data: ShopEvents) => {
+  shared.data = data;
+  for (const l of shared.listeners) l();
+};
+
+const start = () => {
+  const key = sourceKey();
+  const source = shopSource();
+  if (key !== shared.key || !source.incremental) {
+    shared.key = key;
+    shared.cursor = 0;
+    shared.raw = [];
+    shared.data = { state: 'loading' };
+  }
+  let alive = true;
+  let busy = false;
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  const load = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const got = await source.next(source.incremental ? shared.cursor : 0);
+      if (!alive) return;
+      shared.raw = source.incremental ? [...shared.raw, ...got.events] : got.events;
+      const events = withoutTestData(shared.raw); // test data the owner cleared (freshStart.ts)
+      shared.cursor = got.cursor;
+      // The owner's own names and prices, wherever this view runs (the phone has no event log).
+      // On top of Bata Kade's menu, like every screen's (menuStore.ts): without it, Cash out and the
+      // owner's screens put the printed menu back and the Register could not find the shop's dishes.
+      setMenuState(shopMenuState(events.filter((e) => e.type.startsWith('menu.'))));
+      publish({ state: 'ready', events, at: Date.now() });
+    } catch (e) {
+      if (!alive) return;
+      const events = shared.data.state === 'loading' ? undefined : shared.data.events;
+      publish({ state: 'error', message: e instanceof Error ? e.message : String(e), events, at: Date.now() });
+    } finally {
+      busy = false;
+    }
+  };
+  void load();
+  const soon = () => { clearTimeout(pending); pending = setTimeout(() => void load(), 1500); };
+  const unsubscribe = subscribeEvents(soon);
+  const every = setInterval(() => void load(), 60_000);
+  shared.stop = () => { alive = false; clearTimeout(pending); clearInterval(every); unsubscribe(); };
+};
+
+const subscribe = (listener: () => void) => {
+  shared.listeners.add(listener);
+  if (shared.listeners.size === 1) start();
+  return () => {
+    shared.listeners.delete(listener);
+    if (shared.listeners.size === 0) { shared.stop?.(); shared.stop = null; }
+  };
+};
+
+/** The shop's whole history, shared by every screen showing it. */
 export function useShopEvents(): ShopEvents {
-  const [data, setData] = useState<ShopEvents>({ state: 'loading' });
-  useEffect(() => {
-    const source = shopSource();
-    let alive = true;
-    let events: SyncEvent[] | undefined;
-    let cursor = 0;
-    let busy = false;
-    let pending: ReturnType<typeof setTimeout> | undefined;
-    const load = async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        const got = await source.next(source.incremental ? cursor : 0);
-        if (!alive) return;
-        events = source.incremental ? [...(events ?? []), ...got.events] : got.events;
-        cursor = got.cursor;
-        // The owner's own names and prices, wherever this view runs (the phone has no event log).
-        setMenuState(menuStateFromEvents(events.filter((e) => e.type.startsWith('menu.'))));
-        setData({ state: 'ready', events, at: Date.now(), clockOffMs: got.clockOffMs });
-      } catch (e) {
-        if (alive) setData({ state: 'error', message: e instanceof Error ? e.message : String(e), events, at: Date.now() });
-      } finally {
-        busy = false;
-      }
-    };
-    void load();
-    const soon = () => { clearTimeout(pending); pending = setTimeout(() => void load(), 1500); };
-    const unsubscribe = subscribeEvents(soon);
-    const every = setInterval(() => void load(), 60_000);
-    return () => { alive = false; clearTimeout(pending); clearInterval(every); unsubscribe(); };
-  }, []);
-  return data;
+  return useSyncExternalStore(subscribe, () => shared.data);
 }

@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canManage, mayRecord, seesTakings } from './auth.ts';
+import { canManage, isRemake, isStaffRole, mayRecord, seesTakings, STAFF_ROLES, VISION_RECORDS } from './auth.ts';
+import { RECIPE_EVENT_TYPES } from './costing.ts';
+import { MENU_EVENT_TYPES } from './menuEdits.ts';
+import { SHORTHAND_EVENT_TYPES } from './shorthandMisses.ts';
+import { KITCHEN_EVENT_TYPES, ORDER_EVENT_TYPES, PREP_EVENT_TYPES, STOCK_EVENT_TYPES } from './sync.ts';
+import { TABLE_EVENT_TYPES, VISION_EVENT_TYPES } from './tables.ts';
 import { fakeAuth } from '../fake/fakeAuth.ts';
 import { FAKE_STAFF } from '../fake/data.ts';
 
@@ -21,30 +26,78 @@ test('only managers and owners may manage', () => {
 });
 
 test('who may record what: the same rule the server enforces', () => {
-  for (const t of ['order.sent', 'order.send_undone', 'order.paid', 'order.payment_undone']) {
+  // The counter changes what the customer eats (a sent item too), never what they pay.
+  for (const t of ['order.sent', 'order.send_undone', 'order.paid', 'order.payment_undone', 'order.item_changed', 'order.item_cancelled', 'order.change_undone']) {
     assert.equal(mayRecord('cashier', t), true, t);
     assert.equal(mayRecord('kitchen', t), false, t);
   }
-  for (const t of ['order.item_cancelled', 'order.discount_set', 'order.comped', 'order.line_adjusted', 'order.change_undone']) {
-    assert.equal(mayRecord('cashier', t), false, t);
-    assert.equal(mayRecord('manager', t), true, t);
-    assert.equal(mayRecord('owner', t), true, t);
-  }
-  for (const t of ['menu.item_set', 'menu.item_added', 'menu.section_set', 'menu.price_set', 'menu.sold_out']) {
+  for (const t of ['order.discount_set', 'order.comped', 'order.line_adjusted', 'order.line_removed']) {
     assert.equal(mayRecord('cashier', t), false, t);
     assert.equal(mayRecord('manager', t), true, t);
     assert.equal(mayRecord('owner', t), true, t);
   }
   assert.equal(mayRecord('kitchen', 'kitchen.bumped'), true);
   assert.equal(mayRecord('owner', 'order.refunded'), false, 'unknown types are never allowed');
+  // SCRUM-226: the counter receives deliveries; prices and their decision stay a manager's.
+  assert.equal(mayRecord('cashier', 'stock.grn'), true);
+  assert.equal(mayRecord('kitchen', 'stock.grn'), false);
+  for (const t of ['stock.price_set', 'stock.grn_price_reviewed', 'stock.grn_undone', 'stock.ordered']) {
+    assert.equal(mayRecord('cashier', t), false, t);
+    assert.equal(mayRecord('manager', t), true, t);
+  }
 });
 
 test('only managers and owners see the takings', () => {
   assert.deepEqual((['cashier', 'kitchen', 'manager', 'owner'] as const).map(seesTakings), [false, false, true, true]);
 });
 
-test('closing the day is for a manager or the owner, not the cashier who took the cash', () => {
-  assert.equal(mayRecord('cashier', 'day.closed'), false);
-  assert.equal(mayRecord('manager', 'day.closed'), true);
-  assert.equal(mayRecord('owner', 'day.closed'), true);
+// ----- tables and cameras (SCRUM-167) -----
+
+const ALL_TYPES = [
+  ...ORDER_EVENT_TYPES, ...KITCHEN_EVENT_TYPES, ...STOCK_EVENT_TYPES, ...PREP_EVENT_TYPES, ...MENU_EVENT_TYPES,
+  ...RECIPE_EVENT_TYPES, ...SHORTHAND_EVENT_TYPES, ...TABLE_EVENT_TYPES, ...VISION_EVENT_TYPES,
+];
+const CAMERA_SEES = ['table.state_changed', 'table.alert_raised', 'table.alert_cleared', 'vision.camera_offline', 'vision.camera_online', 'vision.heartbeat'];
+
+test('vision (the camera worker) records only what the camera sees, nothing on orders, stock, recipes or the menu', () => {
+  assert.deepEqual(ALL_TYPES.filter((t) => mayRecord('vision', t)).sort(), [...CAMERA_SEES].sort());
+  assert.deepEqual([...VISION_RECORDS].sort(), [...CAMERA_SEES].sort());
+  for (const t of [...ORDER_EVENT_TYPES, ...STOCK_EVENT_TYPES, ...RECIPE_EVENT_TYPES, ...MENU_EVENT_TYPES, ...KITCHEN_EVENT_TYPES, ...PREP_EVENT_TYPES]) {
+    assert.equal(mayRecord('vision', t), false, t);
+  }
+  assert.equal(mayRecord('vision', 'table.state_set'), false, 'a camera never sets a table the way staff do');
+});
+
+test('what the camera sees comes from the camera alone: no person records it', () => {
+  for (const role of STAFF_ROLES) for (const t of CAMERA_SEES) assert.equal(mayRecord(role, t), false, `${role} ${t}`);
+});
+
+test('staff change a table on the floor, and undo it, from any role but the kitchen', () => {
+  for (const t of ['table.state_set', 'table.state_set_undone']) {
+    assert.deepEqual(STAFF_ROLES.map((r) => mayRecord(r, t)), [true, true, true, false], t);
+  }
+});
+
+test("the floor plan, cameras, zones and CV settings are the owner's", () => {
+  for (const t of ['table.layout_set', 'vision.cameras_set', 'vision.zones_set', 'vision.settings_set']) {
+    assert.deepEqual(STAFF_ROLES.map((r) => mayRecord(r, t)), [false, false, true, false], t);
+    assert.equal(mayRecord('vision', t), false, t);
+  }
+});
+
+test("nobody signs in as vision: it is the server's own stamp for the camera worker", () => {
+  assert.deepEqual([...STAFF_ROLES], ['cashier', 'manager', 'owner', 'kitchen']);
+  assert.equal(isStaffRole('vision'), false);
+  assert.equal(isStaffRole('owner'), true);
+  assert.equal(seesTakings('vision'), false);
+  assert.equal(canManage({ id: 'v', name: 'Cameras', role: 'vision' }), false);
+});
+
+test('waste is a manager\'s, except a kitchen Remake and its Undo, which whoever is signed in records (SCRUM-177)', () => {
+  assert.equal(mayRecord('cashier', 'stock.wasted'), false);
+  assert.equal(isRemake({ type: 'stock.wasted', ticketId: 't1' }), true);
+  assert.equal(isRemake({ type: 'stock.waste_undone', ticketId: 't1' }), true);
+  assert.equal(isRemake({ type: 'stock.wasted' }), false);
+  assert.equal(isRemake({ type: 'stock.counted', ticketId: 't1' }), false);
+  for (const role of ['cashier', 'kitchen', 'manager', 'owner'] as const) assert.equal(mayRecord(role, 'stock.wasted', true), true, role);
 });

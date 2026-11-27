@@ -1,25 +1,23 @@
-import { useFeatures } from '../services/shop.ts';
-import { twoKitchens as hasTwoKitchens } from '../domain/kitchen.ts';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { BILL_LINE_MAX, billLineOf, checkBillLine } from '../domain/billExtras.ts';
+import { addEvents, readStored, subscribeEvents } from './eventLog.ts';
 import { PIN_LENGTH, type Role } from '../domain/auth.ts';
-import { DEFAULT_FOOTER, PRODUCT_NAME } from '../domain/brand.ts';
-import { printerAdvice, type Advice } from '../domain/printerHelp.ts';
-import type { Station } from '../domain/types.ts';
 import { pairAsCounter } from '../services/pairing.ts';
-import { openDrawer, printReceipt } from '../services/printer.ts';
+import { printReceipt } from '../services/printer.ts';
 import { setupClient, type SetupState, type StaffRow } from '../services/setupClient.ts';
-import { setShopDetails, shopDetails } from '../services/shop.ts';
 import { QrCode } from './QrCode.tsx';
 import { samplePaid } from './ReceiptPreview.tsx';
 import { restartApp } from './restart.ts';
 import { OwnerNav } from './OwnerNav.tsx';
-import { ProductBrand } from './Brand.tsx';
+import { TestDataTab } from './TestDataTab.tsx';
+import { CounterTab } from './CounterTab.tsx';
+import { SHOP_NAME, PRODUCT_NAME } from '../shop/identity.ts';
 
 /**
  * Setting up the shop, on the shop PC itself. Serves whoever sets it up,
  * possibly the owner alone: one question per screen, big targets, Enter to go on.
  * - first:   a new shop. Shop → Printer → Staff → Devices → the PIN screen.
- * - manage:  later (#setup, the owner's PIN first): staff, printer, devices.
+ * - manage:  later (#setup, the owner's PIN first): staff, printer, devices, updates, test data.
  * - connect: a screen on this PC that is not the counter yet (the owner's PIN).
  */
 type Mode = 'first' | 'manage' | 'connect';
@@ -28,14 +26,14 @@ const FIRST: Step[] = ['shop', 'printer', 'staff', 'cloud', 'devices'];
 const TITLES: Record<Step, string> = {
   shop: 'Name your shop', printer: 'Your receipt printer', staff: 'Your staff', cloud: 'Connect to the cloud', devices: 'Connect your devices',
 };
-type Tab = Step | 'updates' | 'backup' | 'help';
-const TAB_LABEL: Record<Tab, string> = { shop: 'Shop', staff: 'Staff', printer: 'Printer', cloud: 'Cloud', devices: 'Devices', updates: 'Updates', backup: 'Backup', help: 'Help' };
+type Tab = Exclude<Step, 'shop'> | 'counter' | 'updates' | 'testData';
+const TAB_LABEL: Record<Tab, string> = { staff: 'Staff', printer: 'Printer', cloud: 'Cloud', devices: 'Devices', counter: 'This counter', updates: 'Updates', testData: 'Test data' };
 const ROLES: { id: Role; label: string }[] = [
   { id: 'cashier', label: 'Cashier' }, { id: 'manager', label: 'Manager' }, { id: 'owner', label: 'Owner' }, { id: 'kitchen', label: 'Kitchen' },
 ];
 const roleLabel = (r: Role) => ROLES.find((x) => x.id === r)?.label ?? r;
 
-function OwnerPin({ title, onPin, error }: { title: string; onPin: (pin: string) => void; error: string }) {
+export function OwnerPin({ title, onPin, error }: { title: string; onPin: (pin: string) => void; error: string }) {
   const [pin, setPin] = useState('');
   return (
     <form className="setup__form" onSubmit={(e) => { e.preventDefault(); if (pin.length === PIN_LENGTH) onPin(pin); }}>
@@ -51,50 +49,9 @@ function OwnerPin({ title, onPin, error }: { title: string; onPin: (pin: string)
   );
 }
 
-const PAY_WHEN = [
-  { payFirst: false, label: 'They eat first, then pay', hint: 'Send to kitchen, then Charge (a restaurant)' },
-  { payFirst: true, label: 'They pay first', hint: 'Charge sends the order to the kitchen (a rice & curry counter, a take-away)' },
-] as const;
-
-/** When customers pay: the register's one action follows it. */
-function PayWhenChoice({ value, onPick }: { value: boolean; onPick: (payFirst: boolean) => void }) {
-  return (
-    <div className="setup__choices" role="radiogroup" aria-label="When customers pay">
-      {PAY_WHEN.map((w) => (
-        <button key={w.label} type="button" role="radio" aria-checked={value === w.payFirst} className="setup__choice" onClick={() => onPick(w.payFirst)}>
-          {w.label} <span className="setup__hint">· {w.hint}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/** Shop setup → Shop: changes when customers pay; the register follows at once. */
-function PayWhenTab({ state, ownerPin }: { state: SetupState; ownerPin?: string }) {
-  const [payFirst, setPayFirst] = useState(state.shop?.payFirst ?? true); // Bata Kade: customers pay first
-  const [error, setError] = useState('');
-  const pick = async (next: boolean) => {
-    setError('');
-    try {
-      await setupClient.setPayWhen(next, ownerPin);
-      setPayFirst(next);
-      const now = shopDetails();
-      if (now) setShopDetails({ ...now, payFirst: next });
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  };
-  return (
-    <div className="setup__form">
-      <h2 className="setup__subhead">When do customers pay?</h2>
-      <PayWhenChoice value={payFirst} onPick={(p) => void pick(p)} />
-      {error && <p className="setup__error" role="alert">{error}</p>}
-    </div>
-  );
-}
-
 function ShopStep({ state, onDone }: { state: SetupState; onDone: () => void }) {
   const [name, setName] = useState(state.shop?.name ?? '');
   const [place, setPlace] = useState(state.shop?.place ?? '');
-  const [payFirst, setPayFirst] = useState(state.shop?.payFirst ?? true); // Bata Kade: customers pay first
   const [error, setError] = useState('');
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -102,250 +59,89 @@ function ShopStep({ state, onDone }: { state: SetupState; onDone: () => void }) 
       const r = await setupClient.nameShop(name, place);
       // The shop PC pairs itself as the counter: no link to open, nothing to type.
       if (r.counterToken) pairAsCounter(r.counterToken, r.shopId);
-      await setupClient.setPayWhen(payFirst);
-      setShopDetails({ name: name.trim(), place: place.trim(), footer: state.shop?.footer ?? DEFAULT_FOOTER, payFirst });
       onDone();
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   };
   return (
     <form className="setup__form" onSubmit={(e) => void submit(e)}>
       <label className="setup__field"><span>Shop name</span>
-        <input autoFocus value={name} placeholder="e.g. Rasika's Kitchen" onChange={(e) => setName(e.target.value)} /></label>
+        <input autoFocus value={name} placeholder={SHOP_NAME} onChange={(e) => setName(e.target.value)} /></label>
       <label className="setup__field"><span>Town</span>
-        <input value={place} placeholder="e.g. Kandy" onChange={(e) => setPlace(e.target.value)} /></label>
-      <h2 className="setup__subhead">When do customers pay?</h2>
-      <PayWhenChoice value={payFirst} onPick={setPayFirst} />
+        <input value={place} placeholder="Thalwila" onChange={(e) => setPlace(e.target.value)} /></label>
       {error && <p className="setup__error" role="alert">{error}</p>}
       <div className="setup__foot"><button type="submit" className="cta" disabled={!name.trim()}>Next</button></div>
     </form>
   );
 }
 
-/**
- * What the receipt (and the corner of every screen) says: the shop's name, a line under it and the
- * footer. Saved before the test receipt, so the test shows them.
- */
-function ReceiptDetails({ shop, ownerPin }: { shop: NonNullable<SetupState['shop']>; ownerPin?: string }) {
-  const [saved, setSaved] = useState({ name: shop.name, place: shop.place, footer: shop.footer });
-  const [draft, setDraft] = useState(saved);
-  const [error, setError] = useState('');
-  const changed = draft.name !== saved.name || draft.place !== saved.place || draft.footer !== saved.footer;
-  const save = async (e: FormEvent) => {
-    e.preventDefault();
-    setError('');
-    try {
-      const { shop: s } = await setupClient.shopDetails(draft, ownerPin);
-      const next = { name: s.name, place: s.place, footer: s.footer };
-      setSaved(next); setDraft(next); setShopDetails(next);
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-  };
-  const field = (key: keyof typeof draft, label: string, placeholder: string) => (
-    <label className="setup__field"><span>{label}</span>
-      <input value={draft[key]} placeholder={placeholder} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))} /></label>
-  );
-  return (
-    <form className="setup__form" aria-label="On the receipt" onSubmit={(e) => void save(e)}>
-      <h2 className="setup__subhead">On the receipt</h2>
-      {field('name', 'Shop name', "e.g. Rasika's Kitchen")}
-      {field('place', 'Under the name', 'e.g. 12 Temple Road, Kandy · 077 123 4567')}
-      {field('footer', 'Last line', 'e.g. Thank you! Come again.')}
-      {error && <p className="setup__error" role="alert">{error}</p>}
-      <p className="setup__row">
-        <button type="submit" className="chip" disabled={!changed || !draft.name.trim()}>Save</button>
-      </p>
-    </form>
-  );
-}
-
-/** A picture the owner chose, made 256 px square (the middle of it) so it travels light: a WebP data: URL. */
-async function smallLogo(file: File): Promise<string> {
-  const img = await createImageBitmap(file);
-  const side = Math.min(img.width, img.height), size = 256;
-  const canvas = document.createElement('canvas');
-  canvas.width = size; canvas.height = size;
-  canvas.getContext('2d')?.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
-  img.close();
-  return canvas.toDataURL('image/webp', 0.85);
-}
-
-/** The shop's logo beside its name in every screen's corner. Not on the receipt (the printer prints text). */
-function ShopLogo({ logo, ownerPin }: { logo: string; ownerPin?: string }) {
-  const [current, setCurrent] = useState(logo);
-  const [error, setError] = useState('');
-  const save = async (next: string | null) => {
-    setError('');
-    try {
-      await setupClient.setLogo(next, ownerPin);
-      setCurrent(next ?? '');
-      const now = shopDetails();
-      if (now) setShopDetails({ ...now, logo: next ?? '' });
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-  };
-  const pick = async (file: File | undefined) => {
-    if (!file) return;
-    try { await save(await smallLogo(file)); }
-    catch { setError('That picture could not be opened. Try a PNG or JPEG.'); }
-  };
-  return (
-    <div className="setup__form" aria-label="Logo">
-      <h2 className="setup__subhead">Logo</h2>
-      <p className="setup__hint">Shown round, beside the shop's name on every screen. A square or round picture works best.</p>
-      <p className="setup__row">
-        {current && <img className="setup__logo" src={current} alt="Your logo" width={64} height={64} />}
-        <label className="chip setup__file">{current ? 'Change' : 'Choose a picture'}
-          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => { void pick(e.target.files?.[0]); e.target.value = ''; }} /></label>
-        {current && <button type="button" className="chip" onClick={() => void save(null)}>Remove</button>}
-      </p>
-      {error && <p className="setup__error" role="alert">{error}</p>}
-    </div>
-  );
-}
-
-/** "Did it come out? No": the most likely cause from what Windows knows, and clearing stuck receipts. */
-function PrinterTrouble({ ownerPin, onRetry }: { ownerPin?: string; onRetry: () => void }) {
-  const [advice, setAdvice] = useState<Advice | null>(null);
-  const [cleared, setCleared] = useState<number | null>(null);
-  const [error, setError] = useState('');
-  const look = useCallback(async () => {
-    setError('');
-    try { setAdvice(printerAdvice((await setupClient.printerState(ownerPin)).state)); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  }, [ownerPin]);
-  useEffect(() => { void look(); }, [look]);
-  const clear = async () => {
-    try { setCleared((await setupClient.clearPrinter(ownerPin)).cleared); await look(); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  };
-  if (error) return <p className="setup__error" role="alert">{error}</p>;
-  if (!advice) return <p className="setup__hint" aria-busy="true">Asking Windows about the printer…</p>;
-  return (
-    <div className="printer-help" role="region" aria-label="Printer help">
-      <p className="printer-help__title">{advice.title}</p>
-      <ol>{advice.steps.map((step) => <li key={step}>{step}</li>)}</ol>
-      {cleared !== null && <p className="setup__done" role="status">{cleared === 1 ? '1 waiting receipt cleared.' : `${cleared} waiting receipts cleared.`}</p>}
-      <p className="setup__row">
-        {advice.clearJobs && <button type="button" className="chip" onClick={() => void clear()}>Clear the waiting receipts</button>}
-        <button type="button" className="chip chip--solid" onClick={onRetry}>Try again</button>
-      </p>
-    </div>
-  );
-}
-
-function PrinterStep({ state, ownerPin, onNext, onRefresh }: { state: SetupState; ownerPin?: string; onNext?: () => void; onRefresh?: () => void }) {
+function PrinterStep({ state, ownerPin, onNext }: { state: SetupState; ownerPin?: string; onNext?: () => void }) {
   const [chosen, setChosen] = useState<string | null>(state.printer);
-  const [paper, setPaper] = useState<58 | 80>(state.shop?.paper ?? 80);
-  /** sent: Windows took it, but only a person can see whether paper came out. */
-  const [test, setTest] = useState<'' | 'printing' | 'sent' | 'ok' | 'trouble'>('');
-  const [tries, setTries] = useState(0);
-  const [drawer, setDrawer] = useState<'' | 'sent' | 'failed'>('');
+  const [test, setTest] = useState<'' | 'printing' | 'printed' | 'failed'>('');
   const [error, setError] = useState('');
   const choose = async (name: string | null) => {
     setError('');
-    try { await setupClient.setPrinter(name, ownerPin); setChosen(name); setTest(''); setDrawer(''); }
+    try { await setupClient.setPrinter(name, ownerPin); setChosen(name); setTest(''); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  };
-  const pickPaper = async (width: 58 | 80) => {
-    setError('');
-    try {
-      await setupClient.setPaper(width, ownerPin);
-      setPaper(width);
-      setTest('');
-      const now = shopDetails();
-      if (now) setShopDetails({ ...now, paper: width }); // the test receipt is laid out for it at once
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const printTest = async () => {
     setTest('printing');
     const r = await printReceipt(samplePaid(), 'Setup', { reprint: true }); // marked COPY, never opens the drawer
-    setTest(r === 'printed' ? 'sent' : 'trouble');
-    setTries((n) => n + 1);
+    setTest(r === 'printed' ? 'printed' : 'failed');
   };
-  const testDrawer = async () => setDrawer((await openDrawer()) === 'printed' ? 'sent' : 'failed');
-  const [ip, setIp] = useState('');
-  /** A USB receipt printer without its driver: Windows' own driver, then chosen, then the list again. */
-  const setUpUsb = async (port: string) => {
-    setError('');
-    try { setChosen((await setupClient.addUsbPrinter(port, ownerPin)).printer); setTest(''); onRefresh?.(); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  };
-  const useNetwork = (e: FormEvent) => {
-    e.preventDefault();
-    const address = ip.trim();
-    if (!/^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(address)) { setError('Type the printer\'s IP address, like 192.168.1.50 (printed on its self-test page).'); return; }
-    void choose(`net:${address}`);
-  };
-  const usb = state.usbPorts ?? [];
-  const options: (string | null)[] = [...state.printers, ...(chosen?.startsWith('net:') ? [chosen] : []), null];
+  const options: (string | null)[] = [...state.printers, null];
   return (
     <div className="setup__form">
       <div className="setup__choices" role="radiogroup" aria-label="Receipt printer">
         {options.map((p) => (
           <button key={p ?? 'none'} type="button" role="radio" aria-checked={chosen === p} className="setup__choice" onClick={() => void choose(p)}>
-            {p === null ? 'No printer yet (receipts are saved as files)' : p.startsWith('net:') ? `Network printer ${p.slice(4)}` : p}
+            {p ?? 'No printer yet (receipts are saved as files)'}
           </button>
         ))}
       </div>
-      {usb.map((port) => (
-        <div key={port} className="printer-help" role="region" aria-label={`Printer on ${port}`}>
-          <p className="printer-help__title">A printer is plugged in on {port}, without its driver.</p>
-          <p className="setup__hint">If it is your receipt printer, it can print without the maker's driver: Windows' own simple driver passes the receipts through.</p>
-          <p className="setup__row"><button type="button" className="chip chip--solid" onClick={() => void setUpUsb(port)}>Set it up</button></p>
-        </div>
-      ))}
-      {state.printers.length === 0 && usb.length === 0 && (
-        <div className="printer-help" role="region" aria-label="No printer found">
-          <p className="printer-help__title">Windows does not know a printer yet.</p>
-          <ol>
-            <li>Plug the printer into this computer with its USB cable, and switch it on.</li>
-            <li>Install its Windows driver: from the CD that came with it, or the maker's website (search for its model, like "XP-80 driver").</li>
-            <li>Then choose Look again.</li>
-          </ol>
-          {onRefresh && <p className="setup__row"><button type="button" className="chip chip--solid" onClick={onRefresh}>Look again</button></p>}
-        </div>
-      )}
-      <form className="setup__row" aria-label="Network printer" onSubmit={useNetwork}>
-        <label className="setup__field setup__field--inline"><span>Network printer (Ethernet or Wi-Fi)</span>
-          <input value={ip} inputMode="decimal" placeholder="IP address, like 192.168.1.50" onChange={(e) => setIp(e.target.value)} /></label>
-        <button type="submit" className="chip" disabled={!ip.trim()}>Use it</button>
-      </form>
+      {state.printers.length === 0 && <p className="setup__hint">No printer found. Plug it in, install its Windows driver, then come back here.</p>}
       {chosen && (
-        <div className="setup__choices" role="radiogroup" aria-label="Paper width">
-          {([80, 58] as const).map((w) => (
-            <button key={w} type="button" role="radio" aria-checked={paper === w} className="setup__choice" onClick={() => void pickPaper(w)}>
-              {w} mm paper{w === 58 ? ' (narrow rolls)' : ''}
-            </button>
-          ))}
-        </div>
-      )}
-      {state.shop && <ReceiptDetails shop={state.shop} ownerPin={ownerPin} />}
-      {state.shop && <ShopLogo logo={state.shop.logo ?? ''} ownerPin={ownerPin} />}
-      {chosen && (
-        <>
-          <p className="setup__row">
-            <button type="button" className="chip" onClick={() => void printTest()} disabled={test === 'printing'}>
-              {test === 'printing' ? 'Printing…' : 'Print a test receipt'}
-            </button>
-            <button type="button" className="chip" onClick={() => void testDrawer()}>Open the cash drawer</button>
-          </p>
-          {test === 'sent' && (
-            <div className="printer-help" role="region" aria-label="Did it print">
-              <p className="printer-help__title">Did a receipt come out?</p>
-              <p className="setup__hint">Its dashed lines should reach from one edge of the paper to the other. If they stop short or wrap, choose the other paper width.</p>
-              <p className="setup__row">
-                <button type="button" className="chip chip--solid" onClick={() => setTest('ok')}>Yes, it printed</button>
-                <button type="button" className="chip" onClick={() => setTest('trouble')}>No</button>
-              </p>
-            </div>
-          )}
-          {test === 'ok' && <p className="setup__done" role="status">The printer is ready.</p>}
-          {test === 'trouble' && <PrinterTrouble key={tries} ownerPin={ownerPin} onRetry={() => void printTest()} />}
-          {drawer === 'sent' && <p className="setup__hint" role="status">Sent to the drawer. If it did not open, check its cable is in the printer's socket marked DK or Drawer (not the computer).</p>}
-          {drawer === 'failed' && <p className="setup__error" role="alert">The printer did not take it. Print a test receipt first to find out why.</p>}
-        </>
+        <p className="setup__row">
+          <button type="button" className="chip" onClick={() => void printTest()} disabled={test === 'printing'}>Print a test receipt</button>
+          <span role="status">{test === 'printed' ? 'Sent to the printer.' : test === 'failed' ? 'The printer did not take it.' : ''}</span>
+        </p>
       )}
       {error && <p className="setup__error" role="alert">{error}</p>}
       {onNext && <div className="setup__foot"><button type="button" className="cta" onClick={onNext}>Next</button></div>}
     </div>
+  );
+}
+
+/**
+ * The owner's line on every bill (SCRUM-256): under the money, two printed lines at most, in the
+ * letters the printer has. Saved with his PIN by the shop server; empty takes it off.
+ */
+export function BillLine({ ownerPin }: { ownerPin?: string }) {
+  const [saved, setSaved] = useState(() => billLineOf(readStored()));
+  useEffect(() => subscribeEvents(() => setSaved(billLineOf(readStored()))), []);
+  const [text, setText] = useState(saved);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const why = checkBillLine(text.trim());
+    if (why) { setError(`${why[0].toUpperCase()}${why.slice(1)}.`); return; }
+    setError('');
+    setBusy(true);
+    try { addEvents((await setupClient.billLine(text.trim(), ownerPin)).events); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    setBusy(false);
+  };
+  return (
+    <form className="setup__billline" onSubmit={(e) => void save(e)}>
+      <label className="setup__label" htmlFor="bill-line">Your line on every bill</label>
+      <input id="bill-line" className="note" value={text} maxLength={BILL_LINE_MAX} onChange={(e) => setText(e.target.value)}
+        placeholder="A thank-you, a pizza fact, today's offer" />
+      <p className="setup__row">
+        <button type="submit" className="chip chip--solid" disabled={busy || text.trim() === saved}>Save</button>
+        <span className="setup__hint num">{BILL_LINE_MAX - text.length} letters left · English letters only (the printer has no Sinhala or Tamil)</span>
+      </p>
+      {error && <p className="setup__error" role="alert">{error}</p>}
+    </form>
   );
 }
 
@@ -385,7 +181,7 @@ function StaffStep({ initial, ownerPin, onNext }: { initial: StaffRow[]; ownerPi
       )}
       <form className="setup__add" onSubmit={(e) => void add(e)} aria-label="Add a person">
         <label className="setup__field"><span>{hasOwner ? 'Add a person' : 'First, the owner'}</span>
-          <input autoFocus value={name} placeholder={hasOwner ? 'Name' : 'e.g. Rasika Perera'} onChange={(e) => setName(e.target.value)} /></label>
+          <input autoFocus value={name} placeholder={hasOwner ? 'Name' : 'Nisal Vimukthi'} onChange={(e) => setName(e.target.value)} /></label>
         <div className="setup__chips" role="radiogroup" aria-label="Role">
           {ROLES.map((r) => (
             <button key={r.id} type="button" role="radio" aria-checked={role === r.id} className="chip" onClick={() => setRole(r.id)}>{r.label}</button>
@@ -479,18 +275,30 @@ function UpdateProgress({ percent, label }: { percent: number; label: string }) 
   );
 }
 
+/** How long "Update now" waits for the updater's first word before saying it did not start. */
+const UPDATER_SILENT_MS = 45_000;
+
 /** Eases from `from` towards `to`: quick at first, slower as it gets close (never quite there). */
 const ease = (from: number, to: number, ms: number, over: number) => from + (to - from) * (1 - Math.exp(-ms / over));
 
 function UpdatesTab({ ownerPin }: { ownerPin?: string }) {
-  const [info, setInfo] = useState<{ current: string; latest: string | null; newer: boolean; off?: boolean } | null>(null);
+  const [info, setInfo] = useState<{ current: string; latest: string | null; newer: boolean } | null>(null);
   const [phase, setPhase] = useState<'checking' | 'idle' | 'updating' | 'slow' | 'back'>('checking');
   const [progress, setProgress] = useState({ percent: 0, label: STEP_LABEL.checking });
   const [error, setError] = useState('');
+  /** The updater has the new version downloaded and is holding it for the next start or the night. */
+  const [downloaded, setDownloaded] = useState(false);
   const check = useCallback(async () => {
     setPhase('checking');
     setError('');
-    try { setInfo(await setupClient.checkUpdate(ownerPin)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    try {
+      const [found, { status }] = await Promise.all([
+        setupClient.checkUpdate(ownerPin),
+        setupClient.updateStatus(ownerPin).catch(() => ({ status: null })),
+      ]);
+      setInfo(found);
+      setDownloaded(status?.phase === 'waiting' && status.version === found.latest);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     setPhase('idle');
   }, [ownerPin]);
   useEffect(() => { void check(); }, [check]);
@@ -504,7 +312,7 @@ function UpdatesTab({ ownerPin }: { ownerPin?: string }) {
     let downAt = 0;
     let shown = 2;
     let label = STEP_LABEL.checking;
-    let heard = false; // the updater has reported a step: it really started
+    let heard = false; // the updater has said where it is
     const show = (percent: number, text: string, allowBack = false) => {
       shown = allowBack ? percent : Math.max(shown, percent);
       label = text;
@@ -528,17 +336,18 @@ function UpdatesTab({ ownerPin }: { ownerPin?: string }) {
       }
       if (up) {
         const s = (await setupClient.updateStatus(ownerPin).catch(() => ({ status: null }))).status;
-        if (s && s.at >= started - 5_000) {
+        // 'waiting' is a 5-minute check that ran just before the note: not an answer to Update now.
+        if (s && s.phase !== 'waiting' && s.at >= started - 5_000) {
           heard = true;
           if (s.phase === 'failed') { setError('The update did not work. Nothing changed: the POS is as it was.'); setPhase('idle'); return; }
           if (s.phase === 'back') { setPhase('back'); return; }
           if (s.phase === 'up-to-date') { setPhase('idle'); void check(); return; }
           const text = s.phase === 'downloading' ? `Downloading version ${s.version}` : STEP_LABEL[s.phase] ?? label;
           show(s.percent, text, s.phase === 'going-back');
-        } else if (!heard && now - started > 30_000) {
-          setError('The update did not start. Nothing changed: the POS is as it was.');
-          setPhase('idle');
-          return;
+        } else if (!heard) {
+          // The updater says where it is within seconds of starting: silence means it never ran.
+          if (now - started > UPDATER_SILENT_MS) { setError('The update did not start. Nothing changed: the POS is as it was. Try again, or restart the PC: it updates as it starts.'); setPhase('idle'); return; }
+          show(ease(2, 10, now - started, 20_000), STEP_LABEL.checking);
         }
       } else {
         // The server is restarting while the installer works: keep moving, a little slower near the end.
@@ -552,18 +361,9 @@ function UpdatesTab({ ownerPin }: { ownerPin?: string }) {
     setTimeout(() => void wait(), 800);
   };
 
-  if (info?.off) {
-    return (
-      <div className="setup__form">
-        <p className="setup__lead">Installed: <b>{info.current}</b>.</p>
-        <p className="setup__done" role="status">Automatic updates are off on this PC. To update, run the new Setup.exe on this PC: your sales, menu and staff are kept.</p>
-      </div>
-    );
-  }
-
   return (
     <div className="setup__form">
-      <p className="setup__lead">Installed: <b>{info?.current ?? '…'}</b>. New versions install by themselves within minutes, once the counter has been quiet for 15 minutes.</p>
+      <p className="setup__lead">Installed: <b>{info?.current ?? '…'}</b>. New versions download by themselves and install the next time the PC is switched on, or late at night when the counter is quiet.</p>
       {phase === 'updating' && <UpdateProgress percent={progress.percent} label={progress.label} />}
       {phase === 'back' && (
         <p className="setup__error" role="alert">Version {info?.latest} did not start on this PC, so {PRODUCT_NAME} went back to {info?.current}. All sales are safe. Tell whoever looks after your POS.</p>
@@ -574,8 +374,13 @@ function UpdatesTab({ ownerPin }: { ownerPin?: string }) {
       {phase === 'idle' && info && !info.newer && <p className="setup__done" role="status">You have the latest version.</p>}
       {phase === 'idle' && info?.newer && (
         <>
-          <p className="setup__lead" role="status">Version <b>{info.latest}</b> is ready.</p>
+          <p className="setup__lead" role="status">
+            {downloaded
+              ? <>Version <b>{info.latest}</b> is downloaded. It installs by itself the next time the PC is switched on, or tonight after 11 pm.</>
+              : <>Version <b>{info.latest}</b> is ready.</>}
+          </p>
           <p className="setup__row"><button type="button" className="cta" onClick={() => void updateNow()}>Update now</button></p>
+          <p className="setup__lead">Update now installs it straight away: the POS restarts for about 2 minutes.</p>
         </>
       )}
       {error && <p className="setup__error" role="alert">{error}</p>}
@@ -588,111 +393,36 @@ function UpdatesTab({ ownerPin }: { ownerPin?: string }) {
   );
 }
 
-/**
- * Shop setup → Backup: the nightly copy stays on this computer; if its disk dies, so does it. A copy
- * on a USB stick, kept away from the computer, is the one that survives (until the cloud keeps one).
- */
-function BackupTab({ ownerPin }: { ownerPin?: string }) {
-  const [drives, setDrives] = useState<{ letter: string; label: string }[] | null>(null);
-  const [saving, setSaving] = useState('');
-  const [saved, setSaved] = useState<{ where: string; events: number } | null>(null);
-  const [error, setError] = useState('');
-  const look = useCallback(async () => {
-    setError('');
-    try { setDrives((await setupClient.backupDrives(ownerPin)).drives); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  }, [ownerPin]);
-  useEffect(() => { void look(); }, [look]);
-  const save = async (d: { letter: string; label: string }) => {
-    setSaving(d.letter); setSaved(null); setError('');
-    try { const r = await setupClient.backupToUsb(d.letter, ownerPin); setSaved({ where: `${d.label} (${d.letter}:)`, events: r.events }); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    setSaving('');
-  };
-  return (
-    <div className="setup__form">
-      <p className="setup__lead">Your sales are copied every night on this computer. Keep a copy away from it too: once a week, plug in a USB stick and save one.</p>
-      {drives === null ? <p className="setup__hint" aria-busy="true">Looking for USB sticks…</p> : drives.length === 0 ? (
-        <p className="setup__row">
-          <span>Plug in a USB stick.</span>
-          <button type="button" className="chip" onClick={() => void look()}>Look again</button>
-        </p>
-      ) : (
-        <p className="setup__row">
-          {drives.map((d) => (
-            <button key={d.letter} type="button" className="cta" disabled={saving !== ''} onClick={() => void save(d)}>
-              {saving === d.letter ? 'Saving…' : `Save a copy on ${d.label} (${d.letter}:)`}
-            </button>
-          ))}
-        </p>
-      )}
-      {saved && <p className="setup__done" role="status">Saved on {saved.where}, in “Lume POS backups” ({saved.events} records). Keep the stick away from this computer.</p>}
-      {error && <p className="setup__error" role="alert">{error}</p>}
-    </div>
-  );
-}
-
-/**
- * Shop setup → Help: something is wrong and the person who looks after the POS is far away.
- * One tap puts a support file on the desktop to send them (WhatsApp is fine).
- */
-function HelpTab({ ownerPin }: { ownerPin?: string }) {
-  const [state, setState] = useState<'idle' | 'saving' | { name: string }>('idle');
-  const [error, setError] = useState('');
-  const save = async () => {
-    setState('saving');
-    setError('');
-    try { setState({ name: (await setupClient.saveSupport(ownerPin)).name }); }
-    catch (e) { setState('idle'); setError(e instanceof Error ? e.message : String(e)); }
-  };
-  return (
-    <div className="setup__form">
-      <p className="setup__lead">Something not working? Save a support file and send it to whoever looks after your {PRODUCT_NAME}, on WhatsApp or by email.</p>
-      <p className="setup__hint">It has the POS's logs and this computer's details. Never your sales, staff, PINs or passwords.</p>
-      <p className="setup__row">
-        <button type="button" className="cta" disabled={state === 'saving'} onClick={() => void save()}>
-          {state === 'saving' ? 'Saving…' : 'Save support file'}
-        </button>
-      </p>
-      {typeof state === 'object' && <p className="setup__done" role="status">Saved on the desktop: <b>{state.name}</b></p>}
-      {error && <p className="setup__error" role="alert">{error}</p>}
-      <p className="setup__hint">If {PRODUCT_NAME} will not open at all, use <b>{PRODUCT_NAME} support file</b> in the Windows Start menu instead.</p>
-    </div>
-  );
-}
-
 function DevicesStep({ state, ownerPin, onFinish }: { state: SetupState; ownerPin?: string; onFinish?: () => void }) {
-  const [links, setLinks] = useState<Partial<Record<Device, string>>>({});
+  const [links, setLinks] = useState<{ kitchen?: string; owner?: string }>({});
   const [error, setError] = useState('');
-  // Two kitchens switched on and a section in the right one: one screen for each.
-  const twoKitchens = hasTwoKitchens();
-  const parts = useFeatures();
-  const show = async (device: Device) => {
+  const show = async (kind: 'kitchen' | 'owner') => {
     setError('');
-    try {
-      const { link } = device === 'owner' ? await setupClient.pair('owner', ownerPin)
-        : await setupClient.pair('kitchen', ownerPin, device === 'kitchen' ? undefined : device.slice('kitchen-'.length) as Station);
-      setLinks((l) => ({ ...l, [device]: link }));
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    try { const { link } = await setupClient.pair(kind, ownerPin); setLinks((l) => ({ ...l, [kind]: link })); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
-  const card = (device: Device, title: string, how: string, available: boolean, why: string) => (
+  const card = (kind: 'kitchen' | 'owner', title: string, how: string, available: boolean, why: string) => (
     <section className="setup__device" aria-label={title}>
       <h2>{title}</h2>
-      {links[device]
-        ? <><QrCode text={links[device]!} label={`QR code for the ${title.toLowerCase()}`} /><p className="setup__hint">{how}</p></>
+      {links[kind]
+        ? <><QrCode text={links[kind]!} label={`QR code for the ${title.toLowerCase()}`} /><p className="setup__hint">{how}</p>
+          {/* SCRUM-229: the address the tablet must reach, so a wrong one is seen at once (also over AnyDesk). */}
+          {kind === 'kitchen' && (
+            <p className="setup__hint">
+              It opens <b className="num">{new URL(links[kind]!).host}</b>. If the tablet says it cannot reach it, open that address in the
+              tablet&apos;s browser: when it fails there too, the Wi-Fi keeps devices apart (guest Wi-Fi or &quot;client isolation&quot; on the router).
+            </p>
+          )}</>
         : available
-          ? <button type="button" className="chip chip--solid" onClick={() => void show(device)}>Show QR code</button>
+          ? <button type="button" className="chip chip--solid" onClick={() => void show(kind)}>Show QR code</button>
           : <p className="setup__hint">{why}</p>}
     </section>
   );
-  const kitchenHow = "Scan it with the kitchen screen's camera. It must be on the shop's Wi-Fi.";
   return (
     <div className="setup__form">
       <div className="setup__devices">
-        {twoKitchens
-          ? <>{card('kitchen-left', 'Left kitchen', kitchenHow, true, '')}{card('kitchen-right', 'Right kitchen', kitchenHow, true, '')}</>
-          : card('kitchen', 'Kitchen tablet', "Scan it with the tablet's camera. The tablet must be on the shop's Wi-Fi.", true, '')}
-        {parts.ownerPhone && card('owner', "Owner's phone", "Scan it with the owner's phone. It then shows the Owner view, from anywhere.", state.cloud,
+        {card('kitchen', 'Kitchen tablet', "Scan it with the tablet's camera. The tablet must be on the shop's Wi-Fi.", true, '')}
+        {card('owner', "Owner's phone", "Scan it with the owner's phone. It then shows the Owner view, from anywhere.", state.cloud,
           'Connect to the cloud first (the step before), then come back here.')}
       </div>
       <p className="setup__hint">You can do this later too: Manager mode → Ctrl+K → Shop setup.</p>
@@ -701,9 +431,6 @@ function DevicesStep({ state, ownerPin, onFinish }: { state: SetupState; ownerPi
     </div>
   );
 }
-
-/** What a QR code pairs. */
-type Device = 'kitchen' | 'kitchen-left' | 'kitchen-right' | 'owner';
 
 export function SetupWizard({ mode, onClose }: { mode: Mode; onClose?: () => void }) {
   const [state, setState] = useState<SetupState | null>(null);
@@ -739,35 +466,24 @@ export function SetupWizard({ mode, onClose }: { mode: Mode; onClose?: () => voi
   };
 
   let body;
-  if (!state && error) {
-    // No answer from the shop server: say so and offer one way on, never a box that loads for ever.
-    body = (
-      <div className="setup__form">
-        <h1>Shop setup can't open</h1>
-        <p className="setup__error" role="alert">The {PRODUCT_NAME} server on this PC is not answering, so nothing can be set up from here.</p>
-        <p className="menuv__lead">Close {PRODUCT_NAME} and open it again from the desktop. If this keeps happening, restart the PC.</p>
-        <p className="setup__row"><button type="button" className="cta closeday__print" onClick={() => { setError(''); void reload(); }}>Try again</button></p>
-      </div>
-    );
-  } else if (!state) body = <div className="setup__form"><div className="skeleton setup__skeleton" aria-label="Loading" /></div>;
+  if (!state) body = <div className="setup__form"><div className="skeleton setup__skeleton" aria-label="Loading" /></div>;
   else if (mode === 'connect') body = <OwnerPin title="Connect this screen as the counter" onPin={(p) => void unlock(p)} error={error} />;
   else if (mode === 'manage' && !ownerPin) body = <OwnerPin title="Shop setup" onPin={(p) => void unlock(p)} error={error} />;
   else if (mode === 'manage') {
     body = (
       <>
         <nav className="cats setup__tabs" aria-label="Shop setup">
-          {(['shop', 'staff', 'printer', 'cloud', 'devices', 'updates', 'backup', 'help'] as const).map((t) => (
+          {(['staff', 'printer', 'cloud', 'devices', 'counter', 'updates', 'testData'] as const).map((t) => (
             <button key={t} type="button" className="pill" aria-pressed={tab === t} onClick={() => setTab(t)}>{TAB_LABEL[t]}</button>
           ))}
         </nav>
-        {tab === 'shop' && <PayWhenTab state={state} ownerPin={ownerPin} />}
         {tab === 'staff' && <StaffStep initial={staff ?? []} ownerPin={ownerPin} />}
-        {tab === 'printer' && <PrinterStep state={state} ownerPin={ownerPin} onRefresh={() => void reload()} />}
+        {tab === 'printer' && <PrinterStep state={state} ownerPin={ownerPin} />}
         {tab === 'cloud' && <CloudStep connected={state.cloud} ownerPin={ownerPin} onConnected={connected} />}
         {tab === 'devices' && <DevicesStep state={state} ownerPin={ownerPin} />}
+        {tab === 'counter' && <CounterTab />}
         {tab === 'updates' && <UpdatesTab ownerPin={ownerPin} />}
-        {tab === 'backup' && <BackupTab ownerPin={ownerPin} />}
-        {tab === 'help' && <HelpTab ownerPin={ownerPin} />}
+        {tab === 'testData' && <TestDataTab ownerPin={ownerPin} />}
       </>
     );
   } else {
@@ -778,7 +494,7 @@ export function SetupWizard({ mode, onClose }: { mode: Mode; onClose?: () => voi
         <p className="setup__step">Step {i + 1} of {FIRST.length}</p>
         <h1>{TITLES[step]}</h1>
         {step === 'shop' && <ShopStep state={state} onDone={next} />}
-        {step === 'printer' && <PrinterStep state={state} onNext={next} onRefresh={() => void reload()} />}
+        {step === 'printer' && <PrinterStep state={state} onNext={next} />}
         {step === 'staff' && <StaffStep initial={state.staff ?? []} onNext={next} />}
         {step === 'cloud' && <CloudStep connected={state.cloud} onConnected={connected} onNext={next} />}
         {step === 'devices' && <DevicesStep state={state} onFinish={() => void finish()} />}
@@ -792,10 +508,13 @@ export function SetupWizard({ mode, onClose }: { mode: Mode; onClose?: () => voi
     <div className="setup">
       {mode === 'manage' ? <OwnerNav current="setup" onRegister={onClose} /> : (
         <header className="setup__head">
-          <ProductBrand />
+          <span className="brand">{SHOP_NAME}</span>
         </header>
       )}
-      <main className="setup__main" aria-label="Shop setup">{body}</main>
+      <main className="setup__main" aria-label="Shop setup">
+        {body}
+      </main>
     </div>
   );
 }
+

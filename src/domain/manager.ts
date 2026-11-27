@@ -6,7 +6,8 @@ import { lineGross, totals } from './totals.ts';
 import type { Cents, Discount, LineSpec, Order, OrderLine } from './types.ts';
 
 /**
- * Manager mode, as pure functions. EVERY manager change goes through
+ * Audited changes to an order, as pure functions (once "manager mode"; the counter has none since
+ * 2026-11-25, the cashier makes them). EVERY such change goes through
  * `applyManagerChange`: it returns the new order, exactly one audit event,
  * and the inverse that Undo applies. Undo is itself a change with its own
  * audit event: the log is append-only, nothing is rewritten.
@@ -14,10 +15,17 @@ import type { Cents, Discount, LineSpec, Order, OrderLine } from './types.ts';
  * Menu prices are never touched: discounts live in `order.adjust`.
  */
 export type ManagerChange =
-  /** Remove a line. A line already sent to the kitchen needs a reason (owner rule). */
-  | { kind: 'void'; lineId: string; reason?: string }
-  /** Change size / extras / quantity / note. Sent lines need a reason. */
-  | { kind: 'edit'; lineId: string; after: LineSpec; reason?: string }
+  /**
+   * Remove a line. Nobody is asked a reason for a sent line: the counter's own is recorded
+   * (whether it was made). `made`: the kitchen had started or finished it.
+   */
+  | { kind: 'void'; lineId: string; reason?: string; made?: boolean; afterPay?: boolean }
+  /**
+   * Change size / extras / quantity / note. Sent lines: as for void. `remake` (SCRUM-242): the
+   * kitchen throws the old one away and makes the new one as a new ticket (so it is `made`);
+   * without it the kitchen's ticket changes in place. `afterPay`: the order was already paid.
+   */
+  | { kind: 'edit'; lineId: string; after: LineSpec; reason?: string; made?: boolean; remake?: boolean; afterPay?: boolean }
   /** Cents off one line (capped at the line's price). 0 removes the adjustment. */
   | { kind: 'adjustLine'; lineId: string; cents: Cents }
   /** Percentage off, Free (comp), or null to remove the order discount. */
@@ -76,8 +84,27 @@ export const applyInverse = (order: Order, inv: Inverse): Order => {
   }
 };
 
+/**
+ * What the counter may change: everything, with no manager and no PIN. What the customer eats (a
+ * sent line's size, extras, quantity, or the line itself; owner, 2026-11-14: customers change their
+ * minds) and what they pay (discounts, Free, a line's price; owner, 2026-11-25: Bata Kade has no
+ * manager mode). Every change is still audited under the cashier's own name.
+ */
+export const cashierMay = (_change: ManagerChange): boolean => true;
+
+/** The reason recorded when a cashier changes a sent line: what the owner needs to know is whether food was wasted. */
+export const counterReason = (made: boolean, remake = false): string =>
+  (remake ? 'Thrown away, made again' : made ? 'Already made' : 'Before it was made');
+
 export function applyManagerChange(order: Order, change: ManagerChange, actor: Actor, at: number): Applied | Refusal {
-  if (!canManage(actor)) return { refused: 'not-a-manager' };
+  if (!canManage(actor) && (actor.role === 'kitchen' || actor.role === 'vision' || !cashierMay(change))) return { refused: 'not-a-manager' };
+  /** A sent line's reason: what happened (was it made?), never a picked chip, whoever changes it. */
+  const reasonFor = (c: { made?: boolean; remake?: boolean }): string => counterReason(Boolean(c.made || c.remake), Boolean(c.remake));
+  const madeMark = (c: { made?: boolean; remake?: boolean; afterPay?: boolean }) => ({
+    ...(c.made || c.remake ? { made: true } : {}),
+    ...(c.remake ? { remake: true as const } : {}),
+    ...(c.afterPay ? { afterPay: true as const } : {}),
+  });
   const totalBefore = totals(order).total;
   const stamp = (o: Order): Order => ({ ...o, edited: { by: actor.name, at } });
   const base = { at, actor, orderNumber: order.number, totalBefore };
@@ -87,7 +114,7 @@ export function applyManagerChange(order: Order, change: ManagerChange, actor: A
       const index = order.lines.findIndex((l) => l.id === change.lineId);
       if (index < 0) return { refused: 'no-such-line' };
       const line = order.lines[index];
-      const reason = change.reason?.trim() ?? '';
+      const reason = reasonFor(change);
       if (line.sent && !reason) return { refused: 'reason-required' };
       const next = stamp({ ...order, lines: order.lines.filter((l) => l.id !== line.id) });
       const totalAfter = totals(next).total;
@@ -95,7 +122,7 @@ export function applyManagerChange(order: Order, change: ManagerChange, actor: A
         order: next,
         inverse: { kind: 'restoreLine', line, index },
         event: line.sent
-          ? { ...base, totalAfter, type: 'order.item_cancelled', lineId: line.id, index, before: line, reason }
+          ? { ...base, totalAfter, type: 'order.item_cancelled', lineId: line.id, index, before: line, reason, ...madeMark(change) }
           : { ...base, totalAfter, type: 'order.line_removed', lineId: line.id, index, before: line },
         ...(line.sent ? { kitchen: { lineId: line.id, after: null } } : {}),
       };
@@ -103,9 +130,9 @@ export function applyManagerChange(order: Order, change: ManagerChange, actor: A
     case 'edit': {
       const line = order.lines.find((l) => l.id === change.lineId);
       if (!line) return { refused: 'no-such-line' };
-      const reason = change.reason?.trim() ?? '';
+      const reason = reasonFor(change);
       if (line.sent && !reason) return { refused: 'reason-required' };
-      // A changed sent line is priced as the menu has it now (a manager chose the new size or extras).
+      // A changed sent line is priced as the menu has it now (the new size or extras were chosen).
       const after: OrderLine = {
         ...change.after, id: line.id,
         ...(line.sent ? { sent: true, unit: unitPrice(itemById(change.after.itemId), change.after) } : {}),
@@ -115,7 +142,7 @@ export function applyManagerChange(order: Order, change: ManagerChange, actor: A
       return {
         order: next,
         inverse: { kind: 'replaceLine', line },
-        event: { ...base, totalAfter: totals(next).total, type: 'order.item_changed', lineId: line.id, before: line, after, reason },
+        event: { ...base, totalAfter: totals(next).total, type: 'order.item_changed', lineId: line.id, before: line, after, reason, ...(line.sent ? madeMark(change) : {}) },
         ...(line.sent ? { kitchen: { lineId: line.id, after } } : {}),
       };
     }
@@ -166,7 +193,7 @@ export function undoManagerChange(
 
 export const isRefusal = (r: Applied | Refusal): r is Refusal => 'refused' in r;
 
-/** Chip keys 1-4 in manager mode. */
+/** The bill's discount chips (under Discount), in this order. */
 export const DISCOUNT_CHIPS: { key: string; discount: Discount; label: string }[] = [
   { key: '1', discount: { kind: 'percent', pct: 10 }, label: '10%' },
   { key: '2', discount: { kind: 'percent', pct: 20 }, label: '20%' },

@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync, statfsSync, writeFileS
 import { arch, cpus, freemem, homedir, release, totalmem, uptime, version as osVersion } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PRODUCT_NAME } from '../src/domain/brand.ts';
+import { PRODUCT_NAME } from '../src/shop/identity.ts';
 import { zip, type ZipEntry } from './zip.ts';
 
 /**

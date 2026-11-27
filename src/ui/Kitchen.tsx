@@ -1,20 +1,24 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { platformLabel } from '../domain/platforms.ts';
 import {
-  cancelledToServe, cookTimeMs, elapsedLabel, forStation, needsAttention, queue, servingRows, ticketLines, toServe, urgency, type KitchenTicket, type LineView,
+  cookTimeMs, elapsedLabel, needsAttention, queue, ticketLines, urgency, type KitchenTicket, type LineView,
 } from '../domain/kitchen.ts';
-import { kitchenStation } from '../services/pairing.ts';
-import { useServingList } from '../services/shop.ts';
-import type { Station } from '../domain/types.ts';
 import { chime, useSoundBlocked } from './chime.ts';
-import { recordKitchen, recordServed, useKitchenTickets } from './kitchenStore.ts';
+import { recordKitchen, useKitchenTickets } from './kitchenStore.ts';
 import { SyncSign } from './SyncSign.tsx';
+import { prepAmount } from '../domain/prep.ts';
 
 /**
  * Kitchen display. Serves the cook: knows the menu, hands busy, standing back
  * from the screen. The only question it answers is "what do I make next?":
- * one column, oldest first, colour = how long it has waited, one tap Done.
+ * one column, oldest first, colour = how long it has waited. Each ticket has
+ * one button that is its next step: Start, then Done. The two taps time the
+ * cooking (cookLog in the domain) for later analysis.
  * It is the kitchen's ONLY channel (no printed tickets), so arrivals, changes
  * and cancellations chime and flash until someone taps the ticket.
+ * Prep tickets (SCRUM-136: a semi-processed item sent from low stock) queue after the
+ * customers' orders, labelled PREP on a quieter card; Done on one is the batch made.
+ * Bata Kade keeps no waste (owner, 2026-11-25): no Remake-with-a-reason on a line (SCRUM-177 is off).
  */
 
 export const useNow = (everyMs: number): number => {
@@ -76,56 +80,76 @@ function LineBody({ v, struck = false, showQty = false }: { v: LineView; struck?
   );
 }
 
-interface ScreenProps {
-  /** Shown when the Kitchen shares the counter PC with the Register. */
-  onBack?: () => void;
-  /** The counter showing one kitchen of a shop with two; otherwise this screen's own (its pairing). */
-  station?: Station;
-  /** A kitchen login on the counter switches user here (F4). */
-  onSwitch?: () => void;
-}
-
-/** Every arrival, change or cancellation chimes once; it keeps flashing until tapped. */
-const useArrivalChime = (open: KitchenTicket[]) => {
+/**
+ * `onBack`: shown when the Kitchen shares the counter PC with the Register (F2 flips).
+ * `onSwitch`: a kitchen login on the counter switches user here (F4).
+ */
+export function Kitchen({ onBack, onSwitch }: { onBack?: () => void; onSwitch?: () => void } = {}) {
+  const tickets = useKitchenTickets();
+  const now = useNow(1000);
+  // The last Start or Done, for Undo.
+  const [last, setLast] = useState<{ id: string; number: number; label: string; step: 'started' | 'done' } | null>(null);
+  const soundBlocked = useSoundBlocked();
   const lastAlert = useRef(0);
+  useDarkTheme();
+  useWakeLock();
+
+  const open = queue(tickets);
+
+  // Every arrival, change or cancellation chimes once; the ticket keeps flashing until tapped.
   const latestAlert = Math.max(0, ...open.filter(needsAttention).map((t) => t.alertAt));
   useEffect(() => {
     if (latestAlert > lastAlert.current) chime();
     lastAlert.current = Math.max(lastAlert.current, latestAlert);
   }, [latestAlert]);
-};
 
-/** An Undo that offers itself for six seconds, also on Ctrl+Z. */
-const useUndo = <T,>(onUndo: (last: T) => void) => {
-  const [last, setLast] = useState<T | null>(null);
+  /** Start a waiting ticket; finish a started one. */
+  const step = (t: KitchenTicket) => {
+    const started = t.startedAt === undefined;
+    recordKitchen(started ? 'kitchen.started' : 'kitchen.bumped', t);
+    setLast({ id: t.id, number: t.number, label: t.prep ? `Prep ${t.prep.name}` : String(t.number), step: started ? 'started' : 'done' });
+    if (navigator.vibrate) navigator.vibrate(8);
+  };
+
   const undo = useCallback(() => {
     if (last === null) return;
-    onUndo(last);
+    recordKitchen(last.step === 'started' ? 'kitchen.unstarted' : 'kitchen.unbumped', last);
     setLast(null);
-  }, [last, onUndo]);
+  }, [last]);
+
   useEffect(() => {
     if (last === null) return;
     const t = setTimeout(() => setLast(null), 6000);
     return () => clearTimeout(t);
   }, [last]);
-  return { last, setLast, undo };
-};
 
-function Screen({ title, now, onBack, onSwitch, children }: Omit<ScreenProps, 'station'> & { title: string; now: number; children: ReactNode }) {
-  const soundBlocked = useSoundBlocked();
-  useDarkTheme();
-  useWakeLock();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === 'Escape' && onBack) { e.preventDefault(); onBack(); return; }
+      // Space = the oldest ticket's next step (Start, then Done). A focused button keeps Space for itself.
+      if (e.key === ' ' && !(e.target instanceof HTMLButtonElement)) {
+        e.preventDefault();
+        const next = open[0];
+        if (next) step(next);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   return (
     <div className="kitchen">
       <header className="kitchen__head">
-        <h1>{title}</h1>
+        <h1>Kitchen</h1>
         <span className="kitchen__right">
           <SyncSign />
           <time className="kitchen__clock num">
             {new Date(now).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
           </time>
           {onBack && (
-            <button type="button" className="corner__key" onClick={onBack}>Register <kbd>Esc</kbd></button>
+            <button type="button" className="corner__key" onClick={onBack}>Register <kbd>F2</kbd></button>
           )}
           {onSwitch && (
             <button type="button" className="corner__key" onClick={onSwitch}>Switch user <kbd>F4</kbd></button>
@@ -137,70 +161,12 @@ function Screen({ title, now, onBack, onSwitch, children }: Omit<ScreenProps, 's
         // Browsers block sound until the page is tapped once; the tap itself turns it on.
         <button type="button" className="kitchen__sound">Sound is off · tap to turn on</button>
       )}
-      {children}
-    </div>
-  );
-}
 
-/** Space acts on the top row, Ctrl+Z undoes, Esc goes back. A focused button keeps Space for itself. */
-const useKitchenKeys = (onSpace: () => void, undo: () => void, onBack?: () => void) => {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.key === 'Escape' && onBack) { e.preventDefault(); onBack(); return; }
-      if (e.key === ' ' && !(e.target instanceof HTMLButtonElement)) { e.preventDefault(); onSpace(); }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
-};
-
-/**
- * A shop with two kitchens has a screen in each: it shows that kitchen's orders only, and
- * says which kitchen it is. A screen set to neither shows both.
- */
-const STATION_NAME: Record<Station, string> = { left: 'Left kitchen', right: 'Right kitchen' };
-const useStationTickets = (shown?: Station): { tickets: KitchenTicket[]; station: Station | null } => {
-  const station = shown ?? kitchenStation();
-  return { tickets: forStation(useKitchenTickets(), station), station };
-};
-
-/** On a screen that shows both kitchens, which one a ticket went to. Neutral: colour is urgency only. */
-function StationTag({ t, station }: { t: { station?: Station }; station: Station | null }) {
-  if (station || !t.station) return null;
-  return <span className="ticket__tag ticket__tag--station">{t.station === 'left' ? '← Left' : 'Right →'}</span>;
-}
-
-/** A restaurant cooks to tickets; a pay-first counter with the Serving list part hands paid portions over. */
-export function Kitchen(props: ScreenProps = {}) {
-  return useServingList() ? <Serving {...props} /> : <Tickets {...props} />;
-}
-
-function Tickets({ onBack, onSwitch, station: shown }: ScreenProps) {
-  const { tickets, station } = useStationTickets(shown);
-  const now = useNow(1000);
-  const open = queue(tickets);
-  useArrivalChime(open);
-  const { last: done, setLast: setDone, undo } = useUndo<{ id: string; number: number }>(
-    useCallback((d) => recordKitchen('kitchen.unbumped', d), []),
-  );
-
-  const markDone = (id: string, number: number) => {
-    recordKitchen('kitchen.bumped', { id, number });
-    setDone({ id, number });
-    if (navigator.vibrate) navigator.vibrate(8);
-  };
-
-  // Space = the oldest ticket is done.
-  useKitchenKeys(() => { if (open[0]) markDone(open[0].id, open[0].number); }, undo, onBack);
-
-  return (
-    <Screen title={station ? STATION_NAME[station] : 'Kitchen'} now={now} onBack={onBack} onSwitch={onSwitch}>
       <main className="kitchen__list" aria-label="Orders to make">
         {open.length === 0 && <p className="kitchen__empty">No orders waiting</p>}
         {open.map((t) => {
           const elapsed = now - t.firedAt;
+          if (t.prep) return <PrepTicket key={t.id} t={t} prep={t.prep} elapsed={elapsed} onStep={() => step(t)} />;
           const name = `Order ${t.number}${t.addOn ? ', added items' : ''}${t.changed ? ', changed' : ''}`;
           const alerting = needsAttention(t);
           return (
@@ -221,12 +187,14 @@ function Tickets({ onBack, onSwitch, station: shown }: ScreenProps) {
               <div className="ticket__meta">
                 <span className="ticket__no num">{t.number}</span>
                 {t.changed && <span className="ticket__tag ticket__tag--changed">Changed</span>}
-                {t.addOn && <span className="ticket__tag">Added</span>}
-                <StationTag t={t} station={station} />
+                {t.remake ? <span className="ticket__tag ticket__tag--changed">Remake · customer changed</span>
+                  : t.addOn && <span className="ticket__tag">Added</span>}
+                {t.startedAt !== undefined && <span className="ticket__tag">Cooking</span>}
                 {/* Neutral, like Added: on the kitchen screen colour means urgency only. */}
+                {t.platform && <span className="ticket__tag">{platformLabel(t.platform)}</span>}
                 {t.online && !t.addOn && (
                   <span className="ticket__tag">
-                    Online · pickup {new Date(t.online.pickupBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                    {t.online.delivery ? 'Delivery · by' : 'Online · pickup'} {new Date(t.online.pickupBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
                   </span>
                 )}
                 <span className="ticket__time num" aria-label={`Waiting ${elapsedLabel(elapsed)}`}>
@@ -235,11 +203,13 @@ function Tickets({ onBack, onSwitch, station: shown }: ScreenProps) {
               </div>
               <ul className="ticket__items">
                 {ticketLines(t).map((l) => (
-                  <li key={l.key}>
+                  <Fragment key={l.key}>
+                  {l.box?.first && <li className="ticket__box" aria-label={`${l.box.name}: these go out in one bag`}>{l.box.name} · one bag</li>}
+                  <li className={l.box ? 'ticket__inbox' : undefined}>
                     {l.status === 'cancelled' && (
                       <>
                         <LineBody v={l} struck showQty />
-                        <span className="ticket__cancelled">Cancelled</span>
+                        <span className="ticket__cancelled">{l.binned ? 'Thrown away · new ticket' : 'Cancelled'}</span>
                       </>
                     )}
                     {l.status === 'changed' && l.was && (
@@ -251,121 +221,63 @@ function Tickets({ onBack, onSwitch, station: shown }: ScreenProps) {
                       </>
                     )}
                     {l.status === 'ok' && <LineBody v={l} />}
+                    {/* No Remake-with-a-reason here (owner, 2026-11-25: Bata Kade keeps no waste); an old one still shows. */}
+                    {l.status !== 'cancelled' && l.remade ? <span className="ticket__remake"><span className="ticket__tag">Remake ×{l.remade}</span></span> : null}
                   </li>
+                  </Fragment>
                 ))}
               </ul>
-              <button type="button" className="ticket__done" aria-label={`Done: ${name}`} onClick={() => markDone(t.id, t.number)}>
-                Done
-              </button>
+              {t.startedAt === undefined ? (
+                <button type="button" className="ticket__start" aria-label={`Start: ${name}`} onClick={() => step(t)}>
+                  Start
+                </button>
+              ) : (
+                <button type="button" className="ticket__done" aria-label={`Done: ${name}`} onClick={() => step(t)}>
+                  Done
+                </button>
+              )}
             </article>
           );
         })}
       </main>
 
-      {done !== null && (
-        <div className="toast" role="status" key={done.id}>
-          <span className="num">{done.number} done</span>
+      {last !== null && (
+        <div className="toast" role="status" key={`${last.id}-${last.step}`}>
+          <span className="num">{last.label} {last.step}</span>
           <button type="button" onClick={undo}>Undo</button>
         </div>
       )}
-    </Screen>
+    </div>
   );
 }
 
 /**
- * Serving list. Serves the person handing food over at a pay-first counter:
- * the student says what they paid for; the list says how many of each meal
- * are paid and not yet given, longest wait first. One tap hands over one
- * portion; when a meal is not on the list, nobody has paid for it.
+ * A prep ticket: what to make for the dishes (dough, sauce), not a customer's order. Labelled
+ * PREP where an order has its number, on a quieter card with a dashed edge; it has no cook time,
+ * so its edge stays neutral (colour on this screen means a customer is waiting). Start, then Done.
  */
-function Serving({ onBack, onSwitch, station: shown }: ScreenProps) {
-  const { tickets, station } = useStationTickets(shown);
-  const now = useNow(1000);
-  const open = queue(tickets);
-  const rows = servingRows(tickets);
-  const cancelled = cancelledToServe(tickets);
-  useArrivalChime(open);
-  type Given = { ticket: { id: string; number: number }; lineId: string; name: string; closed: boolean; at: number };
-  const { last: given, setLast: setGiven, undo } = useUndo<Given>(useCallback((g) => {
-    recordServed('kitchen.unserved', g.ticket, g.lineId);
-    if (g.closed) recordKitchen('kitchen.unbumped', g.ticket);
-  }, []));
-
-  const serveOne = (row: (typeof rows)[number]) => {
-    const t = open.find((x) => x.id === row.next.ticketId);
-    if (!t) return;
-    const ticket = { id: t.id, number: t.number };
-    recordServed('kitchen.served', ticket, row.next.lineId);
-    // The last portion closes the ticket: say so as the kitchen's Done, which the owner's
-    // prep times and online pickups already listen for.
-    const closed = t.lines.reduce((n, l) => n + toServe(l), 0) === 1;
-    if (closed) recordKitchen('kitchen.bumped', ticket);
-    setGiven({ ticket, lineId: row.next.lineId, name: row.name, closed, at: Date.now() });
-    if (navigator.vibrate) navigator.vibrate(8);
-  };
-
-  useKitchenKeys(() => { if (rows[0]) serveOne(rows[0]); }, undo, onBack);
-
+function PrepTicket({ t, prep, elapsed, onStep }: {
+  t: KitchenTicket; prep: NonNullable<KitchenTicket['prep']>; elapsed: number; onStep: () => void;
+}) {
+  const name = `Prep: ${prep.name}`;
+  const alerting = needsAttention(t);
   return (
-    <Screen title={station ? `Serving · ${STATION_NAME[station]}` : 'Serving'} now={now} onBack={onBack} onSwitch={onSwitch}>
-      <main className="kitchen__list" aria-label="Paid, to hand over">
-        {rows.length === 0 && cancelled.length === 0 && <p className="kitchen__empty">Nothing paid and waiting</p>}
-        {cancelled.map((t) => (
-          <article key={t.id} className="ticket serve ticket--bad ticket--alert" aria-label={`Order ${t.number}, cancelled`}>
-            <div className="ticket__meta">
-              <span className="ticket__no num">{t.number}</span>
-              <span className="ticket__tag ticket__tag--changed">Cancelled</span>
-            </div>
-            <ul className="ticket__items">
-              {ticketLines(t).map((l) => <li key={l.key}><LineBody v={l} struck showQty /></li>)}
-            </ul>
-            {/* Nothing is left to hand over, so seeing it closes it (Done also counts as seen). */}
-            <button type="button" className="ticket__done" aria-label={`Seen: Order ${t.number}, cancelled`} onClick={() => recordKitchen('kitchen.bumped', t)}>
-              Seen
-            </button>
-          </article>
-        ))}
-        {rows.map((r) => {
-          const waiting = open.filter((t) => r.ticketIds.includes(t.id));
-          const alerting = waiting.filter(needsAttention);
-          const elapsed = now - r.oldestAt;
-          const name = [r.name, r.detail].filter(Boolean).join(', ');
-          return (
-            <article
-              key={r.key}
-              className={`ticket serve ticket--${urgency(elapsed, r.cookMs)}${alerting.length ? ' ticket--alert' : ''}`}
-              aria-label={`${name}: ${r.count} paid`}
-            >
-              {alerting.length > 0 && (
-                <button
-                  type="button"
-                  className="ticket__ack"
-                  aria-label={`Seen: ${name}`}
-                  onClick={() => alerting.forEach((t) => recordKitchen('kitchen.seen', t))}
-                />
-              )}
-              <div className="ticket__meta">
-                <span className="ticket__no num" aria-hidden>× {r.count}</span>
-                <StationTag t={waiting[0] ?? {}} station={station} />
-                <span className="ticket__time num" aria-label={`Longest wait ${elapsedLabel(elapsed)}`}>
-                  {elapsedLabel(elapsed)}
-                </span>
-              </div>
-              <div className="ticket__items serve__item"><LineBody v={{ ...r, qty: 1 }} /></div>
-              <button type="button" className="ticket__done" aria-label={`Served one: ${name}`} onClick={() => serveOne(r)}>
-                Served
-              </button>
-            </article>
-          );
-        })}
-      </main>
-
-      {given !== null && (
-        <div className="toast" role="status" key={given.at}>
-          <span>Served · {given.name}</span>
-          <button type="button" onClick={undo}>Undo</button>
-        </div>
-      )}
-    </Screen>
+    <article className={`ticket ticket--prep${alerting ? ' ticket--alert' : ''}`} aria-label={name}>
+      {alerting && <button type="button" className="ticket__ack" aria-label={`Seen: ${name}`} onClick={() => recordKitchen('kitchen.seen', t)} />}
+      <div className="ticket__meta">
+        <span className="ticket__prep">Prep</span>
+        {t.startedAt !== undefined && <span className="ticket__tag">Making</span>}
+        <span className="ticket__time num" aria-label={`Waiting ${elapsedLabel(elapsed)}`}>{elapsedLabel(elapsed)}</span>
+      </div>
+      <ul className="ticket__items">
+        <li>
+          <span className="ticket__name">{prep.name}</span>
+          <span className="ticket__detail num">Make {prepAmount(prep.qty, prep.unit)}</span>
+        </li>
+      </ul>
+      {t.startedAt === undefined
+        ? <button type="button" className="ticket__start" aria-label={`Start: ${name}`} onClick={onStep}>Start</button>
+        : <button type="button" className="ticket__done" aria-label={`Done: ${name}`} onClick={onStep}>Done</button>}
+    </article>
   );
 }

@@ -1,6 +1,7 @@
 node_modules
 dist
 server/.env
+.env*.local
 server/prints/
 server/.env.migrate
 deploy/windows/pairing-link.txt
@@ -14,4 +15,13 @@ cloud/.dev.vars
 
 # The owner's spreadsheets: personal data (customer names, phone numbers). Never commit.
 excel/
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Tool caches
+.playwright-mcp/
 tsconfig.tsbuildinfo
+
+# Stock and phone clips for the camera worker replay (npm run cv:clips): licences forbid handing them on
+test-assets/

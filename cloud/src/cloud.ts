@@ -1,9 +1,17 @@
+import type { Actor } from '../../src/domain/auth.ts';
+import { createAccounts } from './accounts.ts';
 import { PULL_LIMIT, PUSH_BATCH, type ApiError, type PullResponse, type SyncedEvent } from '../../src/domain/sync.ts';
-import { cleanFeatures, type ShopFeatures } from '../../src/domain/features.ts';
 import { validatePush } from '../../server/validate.ts';
+import { aiRoutes, type AiLike } from './ai.ts';
+import { googleKeys as liveGoogleKeys, type GoogleKeys } from './google.ts';
 import { HttpError, json, sha256Hex } from './http.ts';
+import { managerRoutes, parseActor } from './manager.ts';
+import { mcpRoutes } from './mcp.ts';
 import { onlineRoutes } from './online.ts';
+import { pushRoutes } from './push.ts';
 import { projectSales } from './sales.ts';
+import type { RoadKm } from './road.ts';
+import { sealKeys } from './seal.ts';
 
 export { sha256Hex };
 
@@ -28,29 +36,13 @@ export interface D1Like {
   batch(statements: D1Statement[]): Promise<{ meta: { changes: number } }[]>;
 }
 
-export type Kind = 'shop_server' | 'owner';
-export interface CloudDevice { id: string; tenantId: string; kind: Kind }
+export type Kind = 'shop_server' | 'owner' | 'manager';
+/** actor: a manager phone's person (SCRUM-94); null for every other device. */
+export interface CloudDevice { id: string; tenantId: string; kind: Kind; actor: Actor | null }
 
 /** POST /api/v1/replica: events exactly as the shop server holds them, oldest first. */
 export interface ReplicaPush { events: SyncedEvent[] }
-export interface ReplicaState {
-  lastSourceSeq: number;
-  serverTime: number;
-  /** The parts of the POS switched for this shop on /admin (absent ones: the defaults). */
-  features: Partial<ShopFeatures>;
-}
-
-/** A shop's parts as /admin set them; {} when never set. */
-export const shopFeatures = async (db: D1Like, tenantId: string): Promise<Partial<ShopFeatures>> => {
-  const raw = (await db.prepare('SELECT features FROM shops WHERE id = ?').bind(tenantId).first<{ features: string | null }>())?.features;
-  try { return raw ? cleanFeatures(JSON.parse(raw)) : {}; } catch { return {}; }
-};
-
-/** The parts a shop server says it has (x-station-features), cleaned, as stored text; null when it did not say. */
-const seenFeatures = (raw: string | null): string | null => {
-  if (!raw || raw.length > 500) return null;
-  try { return JSON.stringify(cleanFeatures(JSON.parse(raw))); } catch { return null; }
-};
+export interface ReplicaState { lastSourceSeq: number; serverTime: number }
 
 
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v);
@@ -88,47 +80,65 @@ export interface CloudOptions {
    * setup wizard, and the shop server registers itself. Without it, nobody can add a shop.
    */
   enrolCode?: string;
-  /** The shop that /order takes online orders for (wrangler.toml ORDER_SHOP). */
+  /** The shop that cheesybeez.com takes online orders for (wrangler.toml ORDER_SHOP). */
   orderShop?: string;
   /** Its daily hours, "11:00-21:00" (wrangler.toml ORDER_HOURS); unset = the page shows no times. */
   orderHours?: string;
   /** Its phone / WhatsApp number and address for the page's pickup card; unset = not shown. */
   orderPhone?: string;
   orderAddress?: string;
+  /**
+   * Delivery (SCRUM-193): the shop's pin "lat,lng", rupees a km and the farthest km (wrangler.toml
+   * SHOP_LOCATION, DELIVERY_PER_KM, DELIVERY_MAX_KM); any unset = pickup only.
+   */
+  shopLocation?: string;
+  deliveryPerKm?: string;
+  deliveryMaxKm?: string;
+  /** Road km between two points (road.ts, openrouteservice); null or missing = the straight-line guess. */
+  roadKm?: RoadKm;
+  /** Cloudflare Workers AI (the Worker's AI binding, SCRUM-144); null = the AI endpoints answer 503. */
+  ai?: AiLike | null;
+  /** Model calls per shop per day (wrangler.toml AI_DAILY_CALLS); unset = ai.ts AI_DAILY_CALLS. */
+  aiDailyCalls?: number;
+  /** The owner's ChatGPT plugin's MCP server (wrangler.toml MCP_ENABLED, SCRUM-197); unset = off. */
+  mcpEnabled?: boolean;
+  /**
+   * Customer accounts on cheesybeez.com (accounts.ts): the page's Google sign-in client id
+   * (wrangler.toml GOOGLE_CLIENT_ID) and the sealing secret (PROFILE_KEY). Either unset = no accounts.
+   */
+  googleClientId?: string;
+  profileKey?: string;
+  /** Google's public keys; tests pass their own. */
+  googleKeys?: GoogleKeys;
 }
 
-/** The shop PC's clock minus the cloud's, as it last told us, or null (the Owner view's clock card). */
-export const shopClockOff = async (db: D1Like, tenantId: string): Promise<number | null> =>
-  (await db.prepare("SELECT clock_off_ms AS off FROM devices WHERE tenant_id = ? AND kind = 'shop_server' AND clock_off_ms IS NOT NULL ORDER BY last_seen_at DESC LIMIT 1")
-    .bind(tenantId).first<{ off: number }>())?.off ?? null;
-
 export function createCloud(db: D1Like, options: CloudOptions | (() => number) = {}) {
-  const { now = Date.now, enrolCode, ...order } = typeof options === 'function' ? { now: options } as CloudOptions : options;
+  const {
+    now = Date.now, enrolCode, ai = null, aiDailyCalls, mcpEnabled, googleClientId, profileKey, googleKeys = liveGoogleKeys, ...order
+  } = typeof options === 'function' ? { now: options } as CloudOptions : options;
+  // The keys come from the secret once (WebCrypto is asynchronous), then serve every request.
+  const accountsReady = sealKeys(profileKey).then((keys) => createAccounts({ db, now, orderShop: order.orderShop, googleClientId, keys, googleKeys }));
   const authenticate = async (req: Request, allowed: Kind[]): Promise<CloudDevice> => {
     const h = req.headers.get('authorization');
     const token = h?.startsWith('Bearer ') ? h.slice(7) : null;
     const row = token
-      ? await db.prepare('SELECT id, tenant_id, kind FROM devices WHERE token_hash = ?').bind(await sha256Hex(token))
-        .first<{ id: string; tenant_id: string; kind: Kind }>()
+      ? await db.prepare('SELECT id, tenant_id, kind, actor FROM devices WHERE token_hash = ?').bind(await sha256Hex(token))
+        .first<{ id: string; tenant_id: string; kind: Kind; actor: string | null }>()
       : null;
     if (!row) throw new HttpError(401, 'unauthorized', 'unknown device token');
     if (!allowed.includes(row.kind)) throw new HttpError(403, 'forbidden', 'not for this device');
-    return { id: row.id, tenantId: row.tenant_id, kind: row.kind };
+    return { id: row.id, tenantId: row.tenant_id, kind: row.kind, actor: row.kind === 'manager' ? parseActor(row.actor) : null };
   };
 
   const lastSourceSeq = async (tenantId: string): Promise<number> =>
     (await db.prepare('SELECT COALESCE(MAX(source_seq), 0) AS s FROM events WHERE tenant_id = ?').bind(tenantId)
       .first<{ s: number }>())?.s ?? 0;
 
-  /** A shop server checked in: when, which version it runs, its last update and how far its clock is off (the admin view). */
+  /** A shop server checked in: when, which version it runs, and its last update (the admin view). */
   const seen = async (device: CloudDevice, req: Request): Promise<void> => {
     const version = req.headers.get('x-station-version');
-    const t = now();
-    // The PC's clock as it sent this, against ours (the trip itself is a second or two: far below what matters).
-    const clock = Number(req.headers.get('x-station-clock'));
-    await db.prepare('UPDATE devices SET last_seen_at = ?, version = COALESCE(?, version), update_status = COALESCE(?, update_status), clock_off_ms = COALESCE(?, clock_off_ms), features_seen = COALESCE(?, features_seen) WHERE id = ?')
-      .bind(t, version && /^[\w.+-]{1,32}$/.test(version) ? version : null, updateStatus(req.headers.get('x-station-update')),
-        Number.isSafeInteger(clock) && clock > 0 ? clock - t : null, seenFeatures(req.headers.get('x-station-features')), device.id)
+    await db.prepare('UPDATE devices SET last_seen_at = ?, version = COALESCE(?, version), update_status = COALESCE(?, update_status) WHERE id = ?')
+      .bind(now(), version && /^[\w.+-]{1,32}$/.test(version) ? version : null, updateStatus(req.headers.get('x-station-update')), device.id)
       .run();
   };
 
@@ -139,17 +149,26 @@ export function createCloud(db: D1Like, options: CloudOptions | (() => number) =
 
   const routes = async (req: Request, url: URL): Promise<Response> => {
     if (url.pathname === '/api/v1/health' && req.method === 'GET') return json(200, { ok: true, serverTime: now() });
-    const online = await onlineRoutes(req, url, { db, now, ...order, authenticate });
+    const mcp = await mcpRoutes(req, url, { db, now, enabled: mcpEnabled, authenticate });
+    if (mcp) return mcp;
+    const accounts = await accountsReady;
+    const account = await accounts.routes(req, url);
+    if (account) return account;
+    const online = await onlineRoutes(req, url, { db, now, ...order, authenticate, accounts });
     if (online) return online;
+    const push = await pushRoutes(req, url, { db, now, orderShop: order.orderShop, authenticate });
+    if (push) return push;
+    const manager = await managerRoutes(req, url, { db, now, authenticate });
+    if (manager) return manager;
+    const answered = await aiRoutes(req, url, { db, now, ai, dailyCalls: aiDailyCalls, authenticate });
+    if (answered) return answered;
 
     if (url.pathname === '/api/v1/replica') {
       const device = await authenticate(req, ['shop_server']);
       await seen(device, req);
       if (req.method === 'GET') {
         await fileSales(device.tenantId); // the shop's heartbeat also catches up the ledger
-        return json(200, {
-          lastSourceSeq: await lastSourceSeq(device.tenantId), serverTime: now(), features: await shopFeatures(db, device.tenantId),
-        } satisfies ReplicaState);
+        return json(200, { lastSourceSeq: await lastSourceSeq(device.tenantId), serverTime: now() } satisfies ReplicaState);
       }
       if (req.method !== 'POST') throw new HttpError(405, 'server', 'method not allowed');
       let body: unknown;
@@ -213,26 +232,34 @@ export function createCloud(db: D1Like, options: CloudOptions | (() => number) =
       return json(200, { token });
     }
 
-    // The owners' phones, managed by the shop server (the setup wizard's QR codes, and withdrawing a lost phone).
+    // The owners' and managers' phones, managed by the shop server (the setup wizard's QR codes, and withdrawing a lost phone).
     if (url.pathname === '/api/v1/devices' || url.pathname.startsWith('/api/v1/devices/')) {
       const device = await authenticate(req, ['shop_server']);
       if (url.pathname === '/api/v1/devices' && req.method === 'GET') {
         const { results } = await db.prepare(
-          "SELECT id, kind, created_at FROM devices WHERE tenant_id = ? AND kind = 'owner' ORDER BY created_at")
-          .bind(device.tenantId).all<{ id: string; kind: Kind; created_at: number }>();
-        return json(200, { devices: results.map((r) => ({ id: r.id, kind: r.kind, createdAt: r.created_at })) });
+          "SELECT id, kind, actor, created_at FROM devices WHERE tenant_id = ? AND kind IN ('owner', 'manager') ORDER BY created_at")
+          .bind(device.tenantId).all<{ id: string; kind: Kind; actor: string | null; created_at: number }>();
+        return json(200, { devices: results.map((r) => ({
+          id: r.id, kind: r.kind, createdAt: r.created_at, ...(r.kind === 'manager' ? { person: parseActor(r.actor)?.name ?? null } : {}),
+        })) });
       }
       if (url.pathname === '/api/v1/devices' && req.method === 'POST') {
+        let body: { kind?: unknown; actor?: unknown } = {};
+        try { body = (await req.json()) as typeof body; } catch { /* {} : an owner phone, as before */ }
+        const kind: Kind = body.kind === 'manager' ? 'manager' : 'owner';
+        // A manager phone is made for one manager or owner of this shop (the shop server says who).
+        const actor = kind === 'manager' ? parseActor(JSON.stringify(body.actor ?? null)) : null;
+        if (kind === 'manager' && !actor) throw new HttpError(400, 'invalid_event', 'a manager phone needs its person: a manager or an owner');
         const token = newToken();
         const id = newId();
-        await db.prepare('INSERT INTO devices (id, tenant_id, kind, token_hash, created_at) VALUES (?, ?, ?, ?, ?)')
-          .bind(id, device.tenantId, 'owner', await sha256Hex(token), now()).run();
+        await db.prepare('INSERT INTO devices (id, tenant_id, kind, token_hash, created_at, actor) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(id, device.tenantId, kind, await sha256Hex(token), now(), actor ? JSON.stringify({ id: actor.id, name: actor.name, role: actor.role }) : null).run();
         return json(200, { id, token });
       }
       if (req.method === 'DELETE') {
         const id = decodeURIComponent(url.pathname.slice('/api/v1/devices/'.length));
         // Only this shop's phones: never a shop server, never another shop's device.
-        const r = await db.prepare("DELETE FROM devices WHERE id = ? AND tenant_id = ? AND kind = 'owner'")
+        const r = await db.prepare("DELETE FROM devices WHERE id = ? AND tenant_id = ? AND kind IN ('owner', 'manager')")
           .bind(id, device.tenantId).run();
         return json(r.meta.changes ? 200 : 404, { removed: r.meta.changes });
       }
@@ -241,7 +268,7 @@ export function createCloud(db: D1Like, options: CloudOptions | (() => number) =
 
     if (url.pathname === '/api/v1/events' && req.method === 'GET') {
       // Reading the copy: the owner's phone later, or a shop server rebuilding itself.
-      const device = await authenticate(req, ['shop_server', 'owner']);
+      const device = await authenticate(req, ['shop_server', 'owner', 'manager']);
       const after = Math.max(0, Number(url.searchParams.get('after')) || 0);
       const limit = Math.min(PULL_LIMIT, Math.max(1, Number(url.searchParams.get('limit')) || PULL_LIMIT));
       const { results } = await db.prepare(
@@ -251,10 +278,8 @@ export function createCloud(db: D1Like, options: CloudOptions | (() => number) =
       const events = results.slice(0, limit).map((r) => ({
         event: JSON.parse(r.body), deviceId: r.source_device, seq: r.seq, receivedAt: r.received_at,
       }));
-      const clockOffMs = await shopClockOff(db, device.tenantId);
       return json(200, {
         events, lastSeq: events.at(-1)?.seq ?? after, more: results.length > limit, serverTime: now(),
-        ...(clockOffMs !== null ? { clockOffMs } : {}),
       } satisfies PullResponse);
     }
 

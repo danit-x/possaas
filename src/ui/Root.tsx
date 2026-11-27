@@ -1,30 +1,35 @@
-import { useFeatures } from '../services/shop.ts';
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from 'react';
 import { flushSync } from 'react-dom';
 import { seesTakings } from '../domain/auth.ts';
-import type { Station } from '../domain/types.ts';
+import { voicePages } from '../domain/voicePages.ts';
 import { usesLogin } from '../services/auth.ts';
-import { adminShop, fleetShop, isCloudSite, isKitchenDevice, ownerToken, syncToken } from '../services/pairing.ts';
+import { adminShop, fleetShop, isCloudSite, isKitchenDevice, isManagerPhone, ownerToken, syncToken } from '../services/pairing.ts';
 import { isDemo } from './storage.ts';
 import { lock, signedIn, subscribeAuth } from '../services/serverAuth.ts';
 import { App } from './App.tsx';
+import { CashOut } from './CashOut.tsx';
 import { Kitchen } from './Kitchen.tsx';
 import { LockScreen } from './LockScreen.tsx';
 import { MenuView } from './MenuView.tsx';
-import { CloseDay } from './CloseDay.tsx';
-import { CashOut } from './CashOut.tsx';
 import { useMenu } from './menuStore.ts';
-import { menuIsEmpty } from '../domain/menu.ts';
 import { OwnerView } from './OwnerView.tsx';
 import { OwnerWelcome } from './OwnerWelcome.tsx';
 import { ShopsView } from './ShopsView.tsx';
 import { ReceiptPreview } from './ReceiptPreview.tsx';
 import { SetupWizard } from './SetupWizard.tsx';
-import { ProductBrand } from './Brand.tsx';
+import { useVoice, VoiceNote } from './VoiceKey.tsx';
+import { navigate, onNavigate, startNav, useBackKeys } from './nav.ts';
+import { kitchenScreenOn } from './kitchenScreen.ts';
+import { SHOP_NAME } from '../shop/identity.ts';
+
+/** The developers' module codes (#unlock): opened once in a shop's life. */
+const UnlockView = lazy(() => import('./UnlockView.tsx'));
+/** Customers (CRM): a module, on only where the developers turned it on. */
+const CustomersView = lazy(() => import('./customers/CustomersView.tsx'));
 
 const KITCHEN = '#kitchen';
 const OWNER = '#owner';
-const CASH_OUT = '#cashout';
+const CASHOUT = '#cashout';
 
 /** Changing screens cross-fades (view transitions, 200 ms in styles.css) where the browser can; instant elsewhere. */
 const withTransition = (change: () => void) => {
@@ -81,7 +86,7 @@ function NotConnected() {
   return (
     <main className="lock" aria-label="Not connected">
       <div className="lock__card owner-welcome">
-        <ProductBrand />
+        <span className="brand">{SHOP_NAME}</span>
         <h1 className="lock__title">This device is not connected yet</h1>
         <p>On the shop PC: Manager mode → Ctrl+K → Shop setup → Devices, then scan the QR code with this device.</p>
       </div>
@@ -94,71 +99,87 @@ function NotConnected() {
  * - A kitchen device (paired as kitchen) shows the Kitchen only, with no login.
  * - On the counter, staff log in with their PIN (SCRUM-40); F4 switches user,
  *   and the screen locks itself when quiet. A kitchen login sees the Kitchen only.
- * - Until the kitchen has its own screen, the Kitchen key (one per kitchen in a shop
- *   with two) shows that kitchen on the counter; Esc or the Register key comes back.
- *   F3 flips to Cash out and back (anyone opens it, writing
- *   takes a manager's or the owner's PIN)
- *   F7 to the Owner view and back (owners and managers). The Kitchen stays visible while the
+ * - The Kitchen view is hidden on the counter until it is turned back on (kitchenScreen.ts);
+ *   then the Kitchen key opens it and F2 comes back. F10 flips to the Owner view and back
+ *   (owners and managers). The Kitchen stays visible while the
  *   screen is locked; only going back to the Register needs a PIN.
  * Development and the demo have no login (fake staff), as before.
  */
 export function Root() {
   useMenu();
-  const parts = useFeatures();
-  const [hash, setHash] = useState(location.hash);
+  const [hash, setHash] = useState(() => { startNav(); return location.hash; });
   /** Came here from the Register, so the Kitchen offers a way back. */
   const [fromRegister, setFromRegister] = useState(false);
   const needsLogin = usesLogin();
   const staff = useSyncExternalStore(subscribeAuth, signedIn);
   const kitchenOnly = isKitchenDevice() || staff?.role === 'kitchen';
   const setup = useSetupCheck();
-  /**
-   * A new shop's owner meets "Add your menu" first, and stays there while adding (the menu stops
-   * being empty with the first item) until they choose Done or "Do it later".
-   */
-  const [menuLater, setMenuLater] = useState(false);
-  const [buildingMenu, setBuildingMenu] = useState(false);
   useIdleLock(needsLogin && staff !== null);
 
-  /** Only the owner builds the menu: anyone else who logs in meanwhile gets the Register. */
-  const owns = !needsLogin || staff?.role === 'owner';
-  const firstMenu = menuIsEmpty() && owns && !menuLater && !isCloudSite();
-  useEffect(() => { if (firstMenu) setBuildingMenu(true); }, [firstMenu]);
+  useEffect(() => onNavigate(() => setHash(location.hash)), []);
 
-  useEffect(() => {
-    const onHash = () => setHash(location.hash);
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
-
-  /** `#kitchen`, or `#kitchen/left|right`: one kitchen of a shop with two. */
-  const kitchenHash = /^#kitchen(?:\/(left|right))?$/.exec(hash);
-  const inKitchen = kitchenHash !== null;
-  const kitchenView = (kitchenHash?.[1] as Station | undefined) ?? null;
+  // The Kitchen view is hidden on the counter until it is turned back on (kitchenScreen.ts).
+  const inKitchen = hash === KITCHEN && kitchenScreenOn();
   /** The Owner view shows the takings: owners and managers only (SCRUM-41). */
   const seesOwner = !kitchenOnly && (!needsLogin || (staff !== null && seesTakings(staff.role)));
-  const go = useCallback((to: '' | `${typeof KITCHEN}${'' | '/left' | '/right'}` | typeof OWNER | typeof CASH_OUT | '#shops') => withTransition(() => {
-    // replaceState: flipping all day must not fill the browser history.
-    history.replaceState(null, '', to || location.pathname + location.search);
-    setHash(to);
-    if (to.startsWith(KITCHEN)) setFromRegister(true);
+  // Every move is one step (nav.ts), the Register too, so Back is always "where I just was".
+  const go = useCallback((to: string) => withTransition(() => {
+    navigate(to);
+    if (to === KITCHEN) setFromRegister(true);
   }), []);
-  const show = useCallback((kitchen: boolean, station?: Station) => go(kitchen ? `${KITCHEN}${station ? `/${station}` as const : ''}` : ''), [go]);
+  const show = useCallback((kitchen: boolean) => go(kitchen ? KITCHEN : ''), [go]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLElement && e.target.closest('[role="dialog"]')) return;
-      if (e.key === 'F7' && seesOwner) { e.preventDefault(); go(hash === OWNER ? '' : OWNER); }
-      if (e.key === 'F4' && needsLogin && staff) { e.preventDefault(); lock(); }
-      if (e.key === 'F3' && parts.cashOut && !kitchenOnly && (!needsLogin || staff)) { e.preventDefault(); go(hash === CASH_OUT ? '' : CASH_OUT); }
+      // F2 … F8 are the Register's bill keys (ActionBar). From the Kitchen, F2 still goes back.
+      if (e.key === 'F2' && !kitchenOnly && (inKitchen || (needsLogin && !staff && kitchenScreenOn()))) { e.preventDefault(); show(!inKitchen); }
+      if (e.key === 'F10' && seesOwner) { e.preventDefault(); go(hash === OWNER ? '' : OWNER); }
+      if (e.key === 'F4' && needsLogin && staff && (inKitchen || kitchenOnly)) { e.preventDefault(); lock(); }
+      // Cash out and back (F1 is the browser's help page otherwise).
+      if (e.key === 'F1' && !kitchenOnly && !isCloudSite() && (!needsLogin || staff)) { e.preventDefault(); go(hash === CASHOUT ? '' : CASHOUT); }
+      // The developers' Modules page (#unlock): the installed app has no address bar, so a hidden
+      // key opens it on the shop PC, locked or not; the developers' password is still the authority.
+      if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === 'KeyU' && !isCloudSite() && !isManagerPhone()) {
+        e.preventDefault();
+        go(hash === '#unlock' ? '' : '#unlock');
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [hash, go, seesOwner, needsLogin, staff, kitchenOnly, parts.cashOut]);
+  }, [hash, inKitchen, show, go, seesOwner, kitchenOnly, needsLogin, staff]);
 
+  // Opening a page by voice (SCRUM-145): only the pages this person could open anyway.
+  const isOwnerHere = !needsLogin || staff?.role === 'owner';
+  const pages = useMemo(() => voicePages({
+    seesOwner, owner: isOwnerHere, setup: !needsLogin || staff?.role === 'owner' || staff?.role === 'manager',
+  }), [seesOwner, isOwnerHere, needsLogin, staff]);
+  const voiceOn = !isManagerPhone() && !isCloudSite() && (setup === 'none' || setup === 'done') && !kitchenOnly && (!needsLogin || staff !== null);
+  const voice = useVoice(voiceOn ? pages : [], hash, go);
+
+  const screen = renderScreen();
+  // Back (Esc, the mouse's back button, Alt+←) may leave a place, never the Register, the lock,
+  // setup or a kitchen screen with no Register to go back to.
+  const atPlace = hash !== '' && !kitchenOnly && !isCloudSite() && (setup === 'none' || setup === 'done')
+    && screen.type !== App && screen.type !== LockScreen && screen.type !== NotConnected
+    && !(screen.type === SetupWizard && hash !== '#setup') && !(inKitchen && !fromRegister && !needsLogin);
+  useBackKeys(atPlace);
+  return voiceOn ? <>{screen}<VoiceNote voice={voice.voice} onBack={voice.back} /></> : screen;
+
+  function renderScreen(): ReactElement {
   // The cloud site is the owner's phone page and nothing else (the demo for examiners too).
-  if (isCloudSite()) return ownerToken() || isDemo() || adminShop() ? <OwnerView phone /> : <OwnerWelcome />;
+  // A manager's phone app (SCRUM-94): the counts and the stock, nothing else.
+  if (isManagerPhone()) return <NotConnected />;
+  if (isCloudSite()) {
+    if (!(ownerToken() || isDemo() || adminShop())) return <OwnerWelcome />;
+    return <OwnerView phone />;
+  }
   if (setup === 'checking') return <div className="setup" aria-busy="true" />;
+  // The developers' module codes (modules.ts): the shop PC itself (the setup API answers nothing else),
+  // no pairing or login needed; the signed code is the authority.
+  if (hash === '#unlock' && setup !== 'new' && setup !== 'remote') {
+    return <Suspense fallback={<div className="setup" aria-busy="true" />}><UnlockView onClose={() => go('')} /></Suspense>;
+  }
   if (setup === 'new') return <SetupWizard mode="first" />;
   if (setup === 'remote' && !syncToken()) return <NotConnected />;
   if (setup === 'done' && !syncToken()) return <SetupWizard mode="connect" />;
@@ -168,25 +189,27 @@ export function Root() {
   }
   if (hash === '#receipt') return <ReceiptPreview />; // setup page, not a cashier screen
   if (kitchenOnly) return <Kitchen onSwitch={staff ? lock : undefined} />;
-  if (inKitchen) return <Kitchen key={hash} station={kitchenView ?? undefined} onBack={fromRegister || needsLogin ? () => show(false) : undefined} />;
+  if (inKitchen) return <Kitchen onBack={fromRegister || needsLogin ? () => show(false) : undefined} />;
   if (needsLogin && !staff) return <LockScreen />;
+  // Managers and owners only (SCRUM-41, mayManageStock); anyone else typing the address gets the
+  // Register. The server refuses a cashier's stock events anyway.
   if (hash === OWNER && seesOwner) return <OwnerView onBack={() => go('')} />;
   // The developer's Shops screen (only answers on the developer's laptop: server/fleet.ts).
   if (hash === '#shops' && seesOwner) return <ShopsView onBack={() => go('')} />;
   if (fleetShop() && seesOwner) return <OwnerView key={hash} shop={fleetShop()!} onBack={() => go('#shops')} />;
-  if (owns && (buildingMenu || firstMenu) && (hash === '' || hash === '#menu')) {
-    return <MenuView onBack={() => { setBuildingMenu(false); setMenuLater(true); go(''); }} />;
+  // The owner changes the menu; managers can mark items sold out during service.
+  if ((hash === '#items/finished' || hash === '#menu' || hash === '#items') && (!needsLogin || (staff !== null && seesTakings(staff.role)))) {
+    return <MenuView owner={isOwnerHere} onBack={() => go('')} />;
   }
-  // Closing the day: the owner or a manager counts the drawer.
-  if (hash === '#close' && seesOwner) return <CloseDay onBack={() => go('')} />;
-  // Cash out: anyone opens it when someone is paid from the drawer; writing takes a manager's or the owner's PIN.
-  if (hash === CASH_OUT && parts.cashOut) return <CashOut nav={seesOwner} onBack={() => go('')} />;
-  // The owner and managers change the menu (also on the Register, in manager mode).
-  if (hash === '#menu' && (!needsLogin || (staff !== null && seesTakings(staff.role)))) {
-    return <MenuView onBack={() => go('')} />;
+  // Cash out, the owner's paper list: anyone opens it (F1 on the Register); writing takes a manager's PIN.
+  if (hash === CASHOUT) return <CashOut nav={seesOwner} onBack={() => go('')} />;
+  if ((hash === '#customers' || hash.startsWith('#customers/')) && seesOwner) {
+    return <Suspense fallback={<div className="inv-page" aria-busy="true" />}><CustomersView hash={hash} onRegister={() => go('')} /></Suspense>;
   }
   return (
-    <App onKitchen={(station) => show(true, station)} onOwner={needsLogin && seesOwner ? () => go(OWNER) : undefined} onCashOut={() => go(CASH_OUT)}
-      onSwitch={needsLogin ? lock : undefined} />
+    <App onKitchen={() => show(true)} onOwner={needsLogin && seesOwner ? () => go(OWNER) : undefined}
+      onCashOut={() => go(CASHOUT)} onSwitch={needsLogin ? lock : undefined}
+      onVoice={voiceOn ? { start: () => void voice.start(), stop: voice.stop } : undefined} />
   );
+  }
 }

@@ -1,7 +1,8 @@
 import { itemById } from './menu.ts';
 import { unitPrice } from './money.ts';
 import { totals } from './totals.ts';
-import type { Cents, LineSpec, Order, OrderLine } from './types.ts';
+import { isPlatformId } from './platforms.ts';
+import type { Cents, LineSpec, Order, OrderLine, PaidOrder } from './types.ts';
 
 let seq = 0;
 export const newLineId = (): string =>
@@ -9,7 +10,9 @@ export const newLineId = (): string =>
 
 export const emptyOrder = (number: number): Order => ({ number, lines: [] });
 
+/** A dish in a combo box is its own line (its share of the box price is its own): it never merges. */
 const sameConfig = (a: LineSpec, b: LineSpec): boolean =>
+  !a.box && !b.box &&
   a.itemId === b.itemId &&
   (a.half ?? '') === (b.half ?? '') &&
   a.size === b.size &&
@@ -56,3 +59,11 @@ export const markSent = (order: Order, at: number): Order => ({
 export const bareLine = (itemId: string, size?: LineSpec['size']): LineSpec => ({
   itemId, qty: 1, size, adds: [], outs: [],
 });
+
+/**
+ * What a paid order still owes after it changed (SCRUM-242): > 0 the customer pays the difference,
+ * < 0 the shop gives it back, 0 settled. A Free order (comp) owes nothing either way, and a delivery
+ * app's order is settled with the app, not at the counter.
+ */
+export const balanceDue = (paid: PaidOrder): Cents =>
+  paid.tender === 'comp' || isPlatformId(paid.tender) ? 0 : orderTotal(paid) - paid.total - (paid.settled ?? 0);

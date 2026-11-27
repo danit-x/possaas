@@ -95,9 +95,9 @@ test('every change creates exactly one audit entry with the manager and before/a
   }
 });
 
-test('rules: sent items need a reason, cashiers are refused, menu prices never change', () => {
-  assert.deepEqual(applyManagerChange(order(), { kind: 'void', lineId: 'a' }, RAVI, 0), { refused: 'reason-required' });
-  assert.deepEqual(applyManagerChange(order(), { kind: 'discount', discount: { kind: 'comp' } }, NIMAL, 0), { refused: 'not-a-manager' });
+test('rules (owner, 2026-11-25: no manager mode): nobody is asked a reason, a cashier may discount, menu prices never change', () => {
+  assert.equal((apply(order(), { kind: 'void', lineId: 'a' }, RAVI).event as { reason: string }).reason, 'Before it was made');
+  assert.equal(apply(order(), { kind: 'discount', discount: { kind: 'comp' } }, NIMAL).event.type, 'order.comped');
   const unsent: Order = { number: 1, lines: [{ id: 'x', itemId: 'margherita', qty: 1, size: 'M', adds: [], outs: [] }] };
   assert.equal(apply(unsent, { kind: 'void', lineId: 'x' }).event.type, 'order.line_removed'); // not sent: no reason needed
   const adj = apply(order(), { kind: 'adjustLine', lineId: 'c', cents: 999_999 }); // capped at the line's 600
@@ -105,8 +105,41 @@ test('rules: sent items need a reason, cashiers are refused, menu prices never c
   assert.deepEqual(adj.order.lines, order().lines); // line prices untouched
 });
 
+test('a cashier changes or cancels a sent item, and what the customer pays, with no PIN and no reason asked', () => {
+  const KITCHEN: Actor = { id: 'k', name: 'Kitchen', role: 'kitchen' };
+  // Before the kitchen made it: the counter's own reason, no waste mark.
+  const smaller = apply(order(), { kind: 'edit', lineId: 'a', after: { itemId: 'devilled-chicken', qty: 1, size: 'M', adds: ['full-cheese'], outs: [] } }, NIMAL);
+  assert.equal(smaller.event.type, 'order.item_changed');
+  assert.equal((smaller.event as { reason: string }).reason, 'Before it was made');
+  assert.equal('made' in smaller.event, false);
+  assert.deepEqual(smaller.kitchen?.after?.size, 'M');
+  assert.deepEqual(smaller.order.edited, { by: 'Nimal', at: 1000 });
+  // Already made: recorded as such, so the owner sees the waste.
+  const thrown = apply(order(), { kind: 'void', lineId: 'c', made: true }, NIMAL);
+  assert.deepEqual(thrown.event, { ...thrown.event, type: 'order.item_cancelled', reason: 'Already made', made: true });
+  // A reason a cashier passes is ignored: the record says what happened, not a picked chip.
+  assert.equal((apply(order(), { kind: 'void', lineId: 'b', reason: 'whatever' }, NIMAL).event as { reason: string }).reason, 'Before it was made');
+  // Money too (owner, 2026-11-25), audited under the cashier's name.
+  assert.deepEqual(apply(order(), { kind: 'discount', discount: { kind: 'percent', pct: 10 } }, NIMAL).event.actor, NIMAL);
+  assert.equal(apply(order(), { kind: 'adjustLine', lineId: 'a', cents: 100 }, NIMAL).event.type, 'order.line_adjusted');
+  // The kitchen screen never changes an order.
+  for (const change of [
+    { kind: 'void', lineId: 'a' },
+    { kind: 'discount', discount: { kind: 'percent', pct: 10 } },
+  ] as ManagerChange[]) assert.deepEqual(applyManagerChange(order(), change, KITCHEN, 0), { refused: 'not-a-manager' });
+});
+
 test('a sent-line void or edit tells the kitchen; discounts do not', () => {
   assert.deepEqual(apply(order(), { kind: 'void', lineId: 'a', reason: 'x' }).kitchen, { lineId: 'a', after: null });
   assert.equal(apply(order(), { kind: 'edit', lineId: 'b', after: { itemId: 'margherita', qty: 3, size: 'M', adds: [], outs: [] }, reason: 'x' }).kitchen?.after?.qty, 3);
   assert.equal(apply(order(), { kind: 'discount', discount: { kind: 'comp' } }).kitchen, undefined);
+});
+
+test('the customer changed their mind (SCRUM-242): throw away + make new is recorded made and remade; after paying, it says so', () => {
+  const large = { itemId: 'devilled-chicken', qty: 1, size: 'L' as const, adds: [], outs: [] };
+  const remade = apply(order(), { kind: 'edit', lineId: 'a', after: large, remake: true, afterPay: true }, NIMAL);
+  assert.deepEqual(remade.event, { ...remade.event, type: 'order.item_changed', reason: 'Thrown away, made again', made: true, remake: true, afterPay: true });
+  // Change the ticket: nothing wasted, whatever the kitchen had done.
+  const inPlace = apply(order(), { kind: 'edit', lineId: 'a', after: large }, NIMAL);
+  assert.equal('made' in inPlace.event || 'remake' in inPlace.event || 'afterPay' in inPlace.event, false);
 });

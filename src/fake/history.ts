@@ -1,23 +1,19 @@
 import type { Actor } from '../domain/auth.ts';
-import { dayCount, expectedCash } from '../domain/cashUp.ts';
-import { MENU } from '../domain/menu.ts';
 import type { SyncEvent } from '../domain/sync.ts';
-import { lineGross, percentOf } from '../domain/totals.ts';
+import { percentOf } from '../domain/totals.ts';
 import type { OrderLine, SizeId } from '../domain/types.ts';
+import { BATA_KADE_ITEMS, bataKadeMenuEvents } from '../shop/bataKade.ts';
 import { FAKE_SHOP_ID, FAKE_STAFF } from './data.ts';
 
 /**
- * FAKE: five weeks of believable pizza-shop trading, for the Owner view in
- * /?demo and for tests. Deterministic (seeded), so a demo looks the same every
- * time. Normal days have a lunch and a dinner rush, mostly cash, a discount or
- * a void now and then. TODAY is deliberately a bad day, so every kind of
- * insight has something to show: fewer sales than a usual same weekday, a
- * burst of voids by one manager, a slow kitchen in the last two hours, two
- * items running low, and one pizza nobody has ordered for three weeks.
- * Cash out, like the owner's paper list: fish and vegetables every morning, chicken every third
- * day, gas now and then, and the day's cash to the bank in the afternoon.
- * Ravi closes most past days at 10:45 pm (Owner view → Past days): usually exact, now and then
- * a little short or over, and one day in seven nobody closes.
+ * FAKE: five weeks of believable Bata Kade trading (rice & curry, kottu and fried rice at
+ * Hapugala), for the Owner view in /?demo and for tests. Bata Kade's own menu, as the menu
+ * events the shop server stores, then its sales: breakfast rice & curry from 7 to 10, lunch,
+ * and a long dinner of kottu and fried rice. Deterministic (seeded), so a demo looks the same
+ * every time. TODAY is deliberately a bad day, so the cards have something to show: fewer sales
+ * than a usual same weekday, a burst of voids by one manager, a slow kitchen in the last two
+ * hours, and Watalappan nobody has ordered for three weeks. The owner's Cash out lines (fish,
+ * vegetables, gas, the bank) are on the paper list most days.
  * Nothing here is real, and none of it is ever synced.
  */
 
@@ -25,6 +21,7 @@ const DAY = 24 * 60 * 60_000;
 const MIN = 60_000;
 const nimal: Actor = FAKE_STAFF.find((s) => s.actor.role === 'cashier')!.actor;
 const ravi: Actor = FAKE_STAFF.find((s) => s.actor.role === 'manager')!.actor;
+const owner: Actor = FAKE_STAFF.find((s) => s.actor.role === 'owner')!.actor;
 
 /** mulberry32: a small seeded random generator, so the demo is the same every time. */
 const seeded = (seed: number) => () => {
@@ -34,23 +31,32 @@ const seeded = (seed: number) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 };
 
-/** How often each item is ordered (pizzas lead, the specials trail). */
+/** How often each item is ordered (kottu, fried rice and rice lead); anything not named: 1. */
 const POPULAR: Record<string, number> = {
-  'devilled-chicken': 10, margherita: 9, 'cheese-onion': 7, 'bbq-chicken': 7, sausages: 6, 'chicken-burger': 6,
-  'crispy-chicken-burger': 5, veggie: 4, 'italian-pasta': 4, 'bbq-mix': 4, 'bbq-sausages': 3, 'tonno-cipolla': 3,
-  seafood: 2, 'bacon-onion': 2, 'fish-burger': 2, 'egg-burger': 2, 'bacon-egg-burger': 2, 'bbq-pork': 2,
+  'new-kt-chicken': 12, 'new-kt-egg': 9, 'new-fr-chicken': 10, 'new-fr-egg': 7, 'new-fr-mixed': 5,
+  'new-rc-d-chicken': 10, 'new-rc-d-fish': 8, 'new-rc-d-egg': 7, 'new-rc-d-vege': 5, 'new-rc-d-special': 4,
+  'new-rc-m-chicken': 6, 'new-rc-m-fish': 6, 'new-rc-m-egg': 6, 'new-rc-m-vege': 5, 'new-rc-m-special': 3,
+  'new-ml-biriyani': 6, 'new-ot-milk-tea': 8, 'new-ot-plain-tea': 6, 'new-dr-coke-400ml': 4, 'new-dr-water-500ml': 4,
+  'new-sh-string-hoppers-10': 3, 'new-rt-wade': 3, 'new-rt-egg-roti-plain': 3, 'new-ml-milk-rice': 3,
 };
 /** Nobody has ordered it for three weeks: the "not selling" card. */
-const FORGOTTEN = 'bbq-pork';
+const FORGOTTEN = 'new-ot-watalappan';
+const MORNING = 'sec-rice-morning';
+const DAYTIME = 'sec-rice';
+
+/** The owner's paper list: who was paid from the drawer, and about how much (rupees). */
+const CASH_OUTS: [string, number][] = [['Fish', 4500], ['Vegetables', 2300], ['Chicken', 6800], ['Gas', 4200], ['Bank', 20000]];
+
+type Item = (typeof BATA_KADE_ITEMS)[number];
+const priceOf = (item: Item, size?: SizeId) => item.item.prices[size ?? 'one'] ?? 0;
 
 export function demoHistory(now: number, shopId = FAKE_SHOP_ID): SyncEvent[] {
-  const events: SyncEvent[] = [];
   const today = new Date(now); today.setHours(0, 0, 0, 0);
+  // The menu first, as the shop server stores it: Bata Kade's sections and items, the printed sample's hidden.
+  const events: SyncEvent[] = [...bataKadeMenuEvents(shopId, today.getTime() - 40 * DAY, owner)];
   let orderNumber = 1001;
   let n = 0;
   const id = (p: string) => `demo-${p}-${++n}`;
-  const cashOut = (name: string, amount: number, at: number) =>
-    events.push({ type: 'cash.out', id: id('cash'), shopId, at, actor: ravi, orderNumber: 0, name, amount });
 
   for (let back = 35; back >= 0; back--) {
     const day = new Date(today); day.setDate(day.getDate() - back);
@@ -59,54 +65,58 @@ export function demoHistory(now: number, shopId = FAKE_SHOP_ID): SyncEvent[] {
     const rand = seeded(dayStart / DAY);
     const pick = <T>(xs: T[]) => xs[Math.floor(rand() * xs.length)];
     const weekend = day.getDay() === 5 || day.getDay() === 6;
-    let orders = Math.round((weekend ? 44 : 30) * (0.9 + rand() * 0.2));
+    let orders = Math.round((weekend ? 48 : 34) * (0.9 + rand() * 0.2));
     if (isToday) orders = Math.round(orders * 0.7); // a slow day
 
-    // Cash out, before the day's sales (no random numbers: the sales stay as they were).
-    const at = (h: number, m = 0) => dayStart + (h * 60 + m) * MIN;
-    cashOut('Fish', 400000 + (back % 4) * 50000, at(7, 40));
-    cashOut('Vegetables', 230000 + (back % 3) * 20000, at(8, 15));
-    if (back % 3 === 0) cashOut('Chicken', 1200000 + (back % 2) * 50000, at(9, 5));
-    if (back % 6 === 2) cashOut('Gas', 550000, at(11));
-    if (back % 2 === 1) cashOut('Bank', 2000000, at(16, 30));
-
-    const menu = MENU.filter((m) => !(m.id === FORGOTTEN && back <= 21));
-    const weights = menu.map((m) => POPULAR[m.id] ?? 1);
-    const totalWeight = weights.reduce((a, b) => a + b, 0);
-    const chooseItem = () => {
-      let r = rand() * totalWeight;
-      for (let i = 0; i < menu.length; i++) { r -= weights[i]; if (r <= 0) return menu[i]; }
-      return menu[menu.length - 1];
+    const offered = BATA_KADE_ITEMS.filter((m) => !(m.id === FORGOTTEN && back <= 21));
+    /** Breakfast sells the morning rice & curry; later, the lunch & dinner one. Everything else all day. */
+    const chooser = (breakfast: boolean) => {
+      const menu = offered.filter((m) => m.item.category !== (breakfast ? DAYTIME : MORNING));
+      const weights = menu.map((m) => POPULAR[m.id] ?? 1);
+      const total = weights.reduce((a, b) => a + b, 0);
+      return () => {
+        let r = rand() * total;
+        for (let i = 0; i < menu.length; i++) { r -= weights[i]; if (r <= 0) return menu[i]; }
+        return menu[menu.length - 1];
+      };
     };
+    const atBreakfast = chooser(true);
+    const later = chooser(false);
 
     for (let o = 0; o < orders; o++) {
-      // Lunch 12-2 pm for a third, dinner 6-9:30 pm for the rest.
-      const minute = rand() < 0.35 ? 12 * 60 + rand() * 120 : 18 * 60 + rand() * 210;
+      // Breakfast 7-10 am for a fifth, lunch 12-2 pm for a third, dinner 6-10 pm for the rest.
+      const r = rand();
+      const breakfast = r < 0.2;
+      const minute = breakfast ? 7 * 60 + rand() * 180 : r < 0.5 ? 12 * 60 + rand() * 120 : 18 * 60 + rand() * 240;
       const sentAt = dayStart + Math.floor(minute) * MIN + Math.floor(rand() * 60_000);
       if (sentAt > now) continue;
       const number = orderNumber++;
       const lines: OrderLine[] = Array.from({ length: 1 + Math.floor(rand() * 3) }, () => {
-        const item = chooseItem();
-        const size = item.variants ? (pick(item.variants.map((v) => v.id)) as SizeId) : undefined;
+        const item = (breakfast ? atBreakfast : later)();
+        const sizes = (['x1', 'x2'] as SizeId[]).filter((s) => item.item.prices[s] !== undefined);
+        const size = sizes.length ? pick(sizes) : undefined;
         return {
           id: id('line'), itemId: item.id, qty: rand() < 0.8 ? 1 : 2, ...(size ? { size } : {}),
-          adds: item.adds.length && rand() < 0.2 ? [item.adds[0].id] : [], outs: [], sent: true,
+          adds: [], outs: [], sent: true, unit: priceOf(item, size),
         };
       });
       const ticketId = id('ticket');
       events.push({ type: 'order.sent', id: id('sent'), shopId, at: sentAt, actor: nimal, orderNumber: number, ticketId, lines, addOn: false });
 
-      // The kitchen: 7-12 minutes normally; 18-26 in tonight's last two hours.
+      // The kitchen: 5-10 minutes normally; 18-26 in tonight's last two hours.
       const slow = isToday && sentAt >= now - 2 * 60 * MIN;
-      const cook = (slow ? 18 + rand() * 8 : 7 + rand() * 5) * MIN;
+      const cook = (slow ? 18 + rand() * 8 : 5 + rand() * 5) * MIN;
+      const startAt = sentAt + Math.min(cook / 3, 3 * MIN);
+      if (startAt <= now) events.push({ type: 'kitchen.started', id: id('start'), shopId, at: startAt, orderNumber: number, ticketId });
       if (sentAt + cook <= now) events.push({ type: 'kitchen.bumped', id: id('bump'), shopId, at: sentAt + cook, orderNumber: number, ticketId });
 
-      let total = lines.reduce((s, l) => s + lineGross(l), 0);
+      const gross = (l: OrderLine) => (l.unit ?? 0) * l.qty;
+      let total = lines.reduce((s, l) => s + gross(l), 0);
       // A void now and then; today, a burst of them, all by the same manager.
       const voidChance = isToday ? 0.45 : 0.015;
       if (lines.length > 1 && rand() < voidChance && sentAt + 3 * MIN <= now) {
         const gone = lines[lines.length - 1];
-        const after = total - lineGross(gone);
+        const after = total - gross(gone);
         events.push({
           type: 'order.item_cancelled', id: id('void'), shopId, at: sentAt + 3 * MIN, actor: ravi, orderNumber: number,
           lineId: gone.id, index: lines.length - 1, before: gone, reason: pick(['Customer changed mind', 'Wrong item', 'Too long a wait']),
@@ -123,8 +133,7 @@ export function demoHistory(now: number, shopId = FAKE_SHOP_ID): SyncEvent[] {
         });
         total = after;
       }
-      // Customers eat first, pay after.
-      const paidAt = sentAt + (25 + rand() * 20) * MIN;
+      const paidAt = sentAt + (15 + rand() * 20) * MIN;
       if (paidAt <= now) {
         const cash = rand() < 0.8;
         const tendered = cash ? Math.ceil(total / 100000) * 100000 : total;
@@ -135,14 +144,13 @@ export function demoHistory(now: number, shopId = FAKE_SHOP_ID): SyncEvent[] {
       }
     }
 
-    const closeAt = dayStart + (22 * 60 + 45) * MIN;
-    if (!isToday && rand() > 1 / 7) {
-      const from = dayStart + 5 * 60 * MIN;
-      const count = dayCount(events, from, closeAt);
-      const float = 500000;
-      const off = rand();
-      const counted = expectedCash(count, float) + (off < 0.15 ? -Math.ceil(rand() * 5) * 10000 : off > 0.95 ? 5000 : 0);
-      events.push({ type: 'day.closed', id: id('close'), shopId, at: closeAt, actor: ravi, orderNumber: 0, from, to: closeAt, float, counted, count });
+    // The owner's Cash out, mid-morning: fish and vegetables most days, the rest now and then.
+    for (const [name, rupees] of CASH_OUTS) {
+      const often = name === 'Fish' || name === 'Vegetables' ? 0.85 : name === 'Bank' ? 0.15 : 0.35;
+      if (rand() >= often) continue;
+      const at = dayStart + Math.floor((9 * 60 + rand() * 120) * MIN);
+      const amount = Math.round((rupees * (0.85 + rand() * 0.3)) / 50) * 50 * 100;
+      events.push({ type: 'cash.out', id: id('cash'), shopId, at, actor: owner, orderNumber: 0, name, amount });
     }
   }
 

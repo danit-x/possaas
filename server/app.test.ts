@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import type { StreamMessage, SyncEvent } from '../src/domain/sync.ts';
 import { createApp, type AppOptions } from './app.ts';
@@ -55,6 +58,18 @@ test('health says when an update is under way, so the counter can show it', asyn
   const s = await start(memoryStore(), undefined, { version: () => '1.0.9', updating: () => update });
   assert.deepEqual(await (await s.call('/api/v1/health', null)).json(), { ok: true, serverTime: 5000, version: '1.0.9', update });
   await s.stop();
+});
+
+test('a malformed address answers 400 and the server keeps running (SA-03)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cb-static-'));
+  writeFileSync(join(dir, 'index.html'), '<!doctype html><title>POS</title>');
+  const s = await start(memoryStore(), undefined, { staticDir: dir });
+  assert.equal((await s.call('/%zz', null)).status, 400);
+  assert.equal((await s.call('/assets/%E0%A4%A', null)).status, 400);
+  assert.equal((await s.call('/api/v1/health', null)).status, 200);
+  assert.equal(await (await s.call('/kitchen', null)).text(), '<!doctype html><title>POS</title>');
+  await s.stop();
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('push is idempotent: the same batch twice is stored once, with the same seq', async () => {
@@ -169,6 +184,17 @@ async function staffed() {
   return { ...s, store, cashier, manager, login };
 }
 
+test('clearing test data is never a device push, not even the owner signed in at the counter', async () => {
+  const s = await staffed();
+  const owner = await s.store.addStaff(SHOP, 'Nisal', 'owner', '1234');
+  await s.login('1234');
+  const fresh = { id: 'fresh', shopId: SHOP, at: 5000, orderNumber: 0, actor: { id: owner.id, name: 'Nisal', role: 'owner' }, type: 'shop.started_fresh', before: 4000 };
+  const r = await (await s.push(s.tokens.counter, [fresh])).json();
+  assert.deepEqual(r.rejected, [{ id: 'fresh', reason: 'test data is cleared in Settings on the shop PC' }]);
+  assert.equal((await s.push(s.tokens.counter, [{ ...fresh, id: 'later', before: 6000 }])).status, 400, 'a cut-off after its own time is not valid');
+  await s.stop();
+});
+
 test('login: the PIN finds the person; wrong PINs are slowed down', async () => {
   const s = await staffed();
   const ok = await s.login('1111');
@@ -212,6 +238,39 @@ test('the server checks roles: a cashier cannot discount, even by sending the ev
   await s.stop();
 });
 
+test('a cashier pays gas from the drawer, but not rent or from the bank; a manager may (SCRUM-105)', async () => {
+  const s = await staffed();
+  await s.login('1111');
+  await s.login('2580', 'manager');
+  const nimal = { id: s.cashier.id, name: 'Nimal', role: 'cashier' };
+  const boss = { id: s.manager.id, name: 'Ravi', role: 'manager' };
+  const out = (id: string, actor: object, what: string, from: string) =>
+    ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor, type: 'money.out', what, from, cents: 100000 });
+  const res = await (await s.push(s.tokens.counter, [
+    out('m1', nimal, 'gas', 'drawer'), out('m2', nimal, 'gas', 'bank'), out('m3', nimal, 'rent', 'drawer'), out('m4', boss, 'rent', 'bank'),
+  ])).json();
+  assert.deepEqual(res.accepted.map((a: { id: string }) => a.id).sort(), ['m1', 'm4']);
+  assert.deepEqual(res.rejected.map((r: { id: string }) => r.id).sort(), ['m2', 'm3']);
+  await s.stop();
+});
+
+test('a cashier records a kitchen Remake and its Undo, but not the bin\'s waste (SCRUM-177)', async () => {
+  const s = await staffed();
+  await s.login('1111');
+  const nimal = { id: s.cashier.id, name: 'Nimal', role: 'cashier' };
+  const waste = (id: string, extra: Record<string, unknown>) => ({
+    ...order(id, 'stock.wasted', nimal), orderNumber: 0, what: { kind: 'dish', itemId: 'margherita', size: 'L' }, name: 'Margherita · Large', qty: 1, reason: 'burnt', ...extra,
+  });
+  const r = await (await s.push(s.tokens.counter, [
+    waste('remake', { ticketId: 't1', lineId: 'L1' }),
+    { ...order('undo', 'stock.waste_undone', nimal), orderNumber: 0, wasteId: 'remake', ticketId: 't1' },
+    waste('bin', { ticketId: undefined }),
+  ])).json();
+  assert.deepEqual(r.accepted.map((a: { id: string }) => a.id), ['remake', 'undo']);
+  assert.deepEqual(r.rejected.map((x: { id: string }) => x.id), ['bin']);
+  await s.stop();
+});
+
 test('a session covers its own time only, and only on the device it was opened on', async () => {
   const s = await staffed();
   await s.login('1111');
@@ -242,7 +301,140 @@ test('staff: a PIN belongs to one active person; a deactivated PIN stops working
   await store.addStaff(SHOP, 'Kamal', 'cashier', '1111'); // free again
 });
 
-test('menu: a logged-in owner or manager changes it (cashiers: auth.test)', async () => {
+test('stock: only a logged-in manager or owner may change it, and only from the counter', async () => {
+  const s = await staffed();
+  await s.login('1111');
+  await s.login('2580');
+  const stock = (id: string, actor: { id: string; name: string; role: string }) =>
+    ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor, type: 'stock.unit_set', itemId: 'inv-0001', name: 'Tray', base: 30 });
+  const r = await (await s.push(s.tokens.counter, [
+    stock('by-cashier', { id: s.cashier.id, name: 'Nimal', role: 'cashier' }),
+    stock('by-manager', { id: s.manager.id, name: 'Ravi', role: 'manager' }),
+  ])).json();
+  assert.deepEqual(r.accepted.map((a: { id: string }) => a.id), ['by-manager']);
+  assert.deepEqual(r.rejected.map((x: { id: string }) => x.id), ['by-cashier']);
+  const kitchen = await (await s.push(s.tokens.kitchen, [stock('k', { id: s.manager.id, name: 'Ravi', role: 'manager' })])).json();
+  assert.deepEqual(kitchen.rejected.map((x: { id: string }) => x.id), ['k']);
+  await s.stop();
+});
+
+test("tables: staff set a table from the counter; no device may push what a camera saw (vision is the server's stamp)", async () => {
+  const s = await staffed();
+  await s.login('1111');
+  const nimal = { id: s.cashier.id, name: 'Nimal', role: 'cashier' };
+  const cameras = { id: 'vision', name: 'Cameras', role: 'vision' };
+  const floor = (id: string, type: string, actor: { id: string; name: string; role: string }, more: Record<string, unknown>) =>
+    ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor, type, ...more });
+  const r = await (await s.push(s.tokens.counter, [
+    floor('cleaned', 'table.state_set', nimal, { tableId: 't1', from: 'needs_cleaning', to: 'free' }),
+    floor('undo', 'table.state_set_undone', nimal, { tableId: 't1', undoneEventId: 'cleaned' }),
+    floor('seen', 'table.state_changed', cameras, { tableId: 't1', from: 'free', to: 'occupied', confidence: 0.9 }),
+    floor('fake-cam', 'table.state_changed', nimal, { tableId: 't1', from: 'free', to: 'occupied', confidence: 0.9 }),
+    floor('offline', 'vision.camera_offline', cameras, { cameraId: 'c1' }),
+    floor('layout', 'table.layout_set', nimal, { tables: [{ id: 't1', label: '1', seats: 4 }] }),
+  ])).json();
+  assert.deepEqual(r.accepted.map((a: { id: string }) => a.id), ['cleaned', 'undo']);
+  assert.deepEqual(r.rejected.map((x: { id: string }) => x.id), ['seen', 'fake-cam', 'offline', 'layout']);
+  assert.match(r.rejected.find((x: { id: string }) => x.id === 'seen').reason, /only the shop server/);
+  const kitchen = await (await s.push(s.tokens.kitchen, [floor('k-cam', 'vision.heartbeat', cameras, { cameras: [], cpu: 10 })])).json();
+  assert.deepEqual(kitchen.rejected.map((x: { id: string }) => x.id), ['k-cam']);
+  await s.stop();
+});
+
+test('nobody logs in as vision, even if such a row were in the staff table', async () => {
+  const store = memoryStore();
+  await store.addStaff(SHOP, 'Cameras', 'vision', '7777');
+  const s = await start(store);
+  assert.equal((await s.call('/api/v1/login', s.tokens.counter, { pin: '7777', purpose: 'shift' })).status, 401);
+  await s.stop();
+});
+
+test('numbers: the server numbers each new PO and GRN, devices cannot number documents themselves', async () => {
+  const s = await staffed();
+  await s.login('2580');
+  const by = { id: s.manager.id, name: 'Ravi', role: 'manager' };
+  const doc = (id: string, type: string, rest: object) => ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor: by, type, ...rest });
+  const po = (id: string) => doc(id, 'stock.ordered', { supplierId: 'sup', lines: [{ itemId: 'inv-0001', packs: 2 }] });
+  const grn = doc('g1', 'stock.grn', { orderId: 'p1', supplierId: 'sup', lines: [{ itemId: 'inv-0001', ordered: 2, received: 2, accepted: 2 }], approvedBy: null });
+  const numbers = async () => Object.fromEntries(((await (await s.call('/api/v1/events?after=0', s.tokens.counter)).json()).events as { event: { type: string; docId?: string; number?: string } }[])
+    .filter((e) => e.event.type === 'stock.numbered').map((e) => [e.event.docId, e.event.number]));
+
+  await s.push(s.tokens.counter, [po('p1'), grn]);
+  await s.push(s.tokens.counter, [po('p2')]);
+  await s.push(s.tokens.counter, [po('p1')]); // the device pushes again: nothing new
+  assert.deepEqual(await numbers(), { p1: 'PO-0001', g1: 'GRN-0001', p2: 'PO-0002' });
+
+  const cheat = await (await s.push(s.tokens.counter, [doc('n1', 'stock.numbered', { docId: 'p9', kind: 'PO', number: 'PO-0001' })])).json();
+  assert.deepEqual(cheat.rejected.map((x: { id: string; reason: string }) => x.reason), ['only the shop server numbers documents']);
+  assert.equal(Object.keys(await numbers()).length, 3);
+  await s.stop();
+});
+
+test('production: a held batch reaches the kitchen when the server sees its input made; devices cannot release one', async () => {
+  const s = await staffed();
+  const owner = await s.store.addStaff(SHOP, 'Anton', 'owner', '3690');
+  await s.login('3690');
+  const by = { id: owner.id, name: 'Anton', role: 'owner' };
+  const doc = (id: string, type: string, rest: object) => ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor: by, type, ...rest });
+  const answer = (id: string, question: string, after: object) => doc(id, 'recipe.answer_set', { question, before: null, after });
+  const released = async () => ((await (await s.call('/api/v1/events?after=0', s.tokens.counter)).json()).events as { event: { id: string; type: string } }[])
+    .filter((e) => e.event.type === 'prep.released').map((e) => e.event.id);
+
+  await s.push(s.tokens.counter, [
+    answer('a1', 'prep:kculture', { kind: 'prep', name: 'Culture', makes: { qty: 2000, unit: 'g' }, lines: [{ name: 'stock:inv-0001', qty: 1000, unit: 'g' }] }),
+    answer('a2', 'prep:kdough', { kind: 'prep', name: 'Dough', makes: { qty: 10000, unit: 'g' }, lines: [{ name: 'kitchen:kculture', qty: 2000, unit: 'g' }] }),
+    doc('o1', 'prep.ordered', { ticketId: 'culture-1', prepId: 'kitchen:kculture', name: 'Culture', qty: 2000, unit: 'g' }),
+    doc('o2', 'prep.ordered', { ticketId: 'dough-1', prepId: 'kitchen:kdough', name: 'Dough', qty: 10000, unit: 'g', waitFor: ['Culture'], plan: 'dough-1' }),
+  ]);
+  assert.deepEqual(await released(), [], 'the culture is not made yet');
+
+  const cheat = await (await s.push(s.tokens.counter, [doc('r1', 'prep.released', { ticketId: 'dough-1', prepId: 'kitchen:kdough', name: 'Dough', qty: 10000, unit: 'g', waited: ['Culture'] })])).json();
+  assert.deepEqual(cheat.rejected.map((x: { reason: string }) => x.reason), ['only the shop server sends held batches to the kitchen']);
+
+  await s.push(s.tokens.kitchen, [{ id: 'b1', shopId: SHOP, at: 5000, orderNumber: 0, ticketId: 'culture-1', type: 'kitchen.bumped' }]);
+  assert.deepEqual(await released(), ['rel-dough-1'], 'the culture is Done: the dough goes, once');
+  await s.push(s.tokens.kitchen, [{ id: 'b2', shopId: SHOP, at: 5000, orderNumber: 0, ticketId: 'none', type: 'kitchen.seen' }]);
+  assert.deepEqual(await released(), ['rel-dough-1']);
+  await s.stop();
+});
+
+test('purchasing: the server re-checks the order against what it stored, and says what to do', async () => {
+  const s = await staffed();
+  await s.login('2580');
+  const by = { id: s.manager.id, name: 'Ravi', role: 'manager' };
+  const doc = (id: string, type: string, rest: object) => ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor: by, type, ...rest });
+  const order = doc('p1', 'stock.ordered', { supplierId: 'sup', lines: [{ itemId: 'inv-0001', packs: 2 }] });
+  const grn = (id: string, extra: object = {}) => doc(id, 'stock.grn', { orderId: 'p1', supplierId: 'sup', lines: [{ itemId: 'inv-0001', ordered: 2, received: 2, accepted: 2 }], approvedBy: null, ...extra });
+  const reasons = async (events: unknown[]) => ((await (await s.push(s.tokens.counter, events)).json()).rejected ?? []).map((x: { reason: string }) => x.reason);
+
+  assert.deepEqual(await reasons([order, grn('g1')]), []);
+  assert.match((await reasons([grn('g2')]))[0], /is closed/, 'a second device receiving the same order');
+  assert.match((await reasons([doc('e1', 'stock.order_edited', { orderId: 'p1', lines: [{ itemId: 'inv-0001', packs: 9 }] })]))[0], /already being received/);
+  assert.deepEqual(await reasons([order, grn('g1')]), [], 'sent again: nothing new to refuse');
+
+  // A manager's name on the device is not enough: it must be a real manager of this shop.
+  const o2 = doc('p2', 'stock.ordered', { supplierId: 'sup', lines: [{ itemId: 'inv-0001', packs: 2 }] });
+  const short = grn('g3', { orderId: 'p2', lines: [{ itemId: 'inv-0001', ordered: 2, received: 1, accepted: 1 }], shortDecision: 'close' });
+  assert.match((await reasons([o2, { ...short, approvedBy: { id: 'made-up', name: 'Boss', role: 'owner' } }]))[0], /not from a manager or the owner/);
+  assert.deepEqual(await reasons([{ ...short, approvedBy: by }]), []);
+  await s.stop();
+});
+
+test('sync retry: pushing the same documents again stores them once and numbers them once', async () => {
+  const s = await staffed();
+  await s.login('2580');
+  const by = { id: s.manager.id, name: 'Ravi', role: 'manager' };
+  const events = [
+    { id: 'p1', shopId: SHOP, at: 5000, orderNumber: 0, actor: by, type: 'stock.ordered', supplierId: 'sup', lines: [{ itemId: 'inv-0001', packs: 2 }] },
+    { id: 'g1', shopId: SHOP, at: 5000, orderNumber: 0, actor: by, type: 'stock.grn', orderId: 'p1', supplierId: 'sup', lines: [{ itemId: 'inv-0001', ordered: 2, received: 2, accepted: 2 }], approvedBy: null },
+  ];
+  for (let i = 0; i < 3; i++) assert.deepEqual(((await (await s.push(s.tokens.counter, events)).json()).rejected ?? []), []);
+  const all = ((await (await s.call('/api/v1/events?after=0', s.tokens.counter)).json()).events as { event: { id: string; type: string } }[]).map((e) => `${e.event.type}:${e.event.id}`);
+  assert.deepEqual(all.sort(), ['stock.grn:g1', 'stock.numbered:num-g1', 'stock.numbered:num-p1', 'stock.ordered:p1']);
+  await s.stop();
+});
+
+test('menu: only a logged-in owner changes prices and names; a manager may mark things sold out', async () => {
   const s = await staffed();
   const owner = await s.store.addStaff(SHOP, 'Nisal', 'owner', '1234');
   await s.login('2580');
@@ -252,12 +444,101 @@ test('menu: a logged-in owner or manager changes it (cashiers: auth.test)', asyn
     ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor: who(role), type: 'menu.item_set', itemId: 'margherita', before: {}, after: { prices: { M: 160000 } } });
   const sold = (id: string, role: 'manager' | 'owner') =>
     ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor: who(role), type: 'menu.sold_out', itemId: 'seafood', until: 9999 });
-  const price = (id: string, role: 'manager' | 'owner') =>
-    ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor: who(role), type: 'menu.price_set', itemId: 'margherita', before: {}, after: { prices: { M: 160000 } } });
-  const r = await (await s.push(s.tokens.counter, [
-    set('set-by-owner', 'owner'), set('set-by-manager', 'manager'), price('price-by-manager', 'manager'), sold('sold-by-manager', 'manager'),
-  ])).json();
-  assert.deepEqual(r.accepted.map((a: { id: string }) => a.id), ['set-by-owner', 'set-by-manager', 'price-by-manager', 'sold-by-manager']);
-  assert.equal(r.rejected, undefined);
+  const r = await (await s.push(s.tokens.counter, [set('price-by-owner', 'owner'), set('price-by-manager', 'manager'), sold('sold-by-manager', 'manager')])).json();
+  assert.deepEqual(r.accepted.map((a: { id: string }) => a.id), ['price-by-owner', 'sold-by-manager']);
+  assert.deepEqual(r.rejected.map((x: { id: string }) => x.id), ['price-by-manager']);
   await s.stop();
+});
+
+// ----- the manager's phone and shelf photos (SCRUM-94) -----
+
+const counted = (id: string, actor: { id: string; name: string; role: string }, photo?: string) =>
+  ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor, type: 'stock.counted', itemId: 'inv-0006', counted: 1000, expected: 2000,
+    entries: [], reason: 'unknown', valueCents: -260000, tier: 'daily', ...(photo ? { photo } : {}) });
+
+test('a manager-kind device (the phones\' inbox) opens for managers and owners only, and records stock only', async () => {
+  const store = memoryStore();
+  await store.addStaff(SHOP, 'Nimal', 'cashier', '1111');
+  const manager = await store.addStaff(SHOP, 'Ravi', 'manager', '2580');
+  const s = await start(store);
+  const phone = await store.addDevice(SHOP, 'Shop A', 'manager');
+  const login = (pin: string) => s.call('/api/v1/login', phone.token, { pin, purpose: 'shift' });
+  assert.equal((await login('1111')).status, 401, "a cashier's PIN does not open the manager phone");
+  assert.equal((await login('2580')).status, 200);
+
+  const ravi = { id: manager.id, name: 'Ravi', role: 'manager' };
+  const r = await (await s.push(phone.token, [counted('c', ravi), order('o', 'order.sent', ravi), ev('tap')])).json();
+  assert.deepEqual(r.accepted.map((a: { id: string }) => a.id), ['c']);
+  assert.deepEqual(r.rejected.map((x: { id: string }) => x.id), ['o', 'tap']);
+  await s.stop();
+});
+
+test('only the owner sets how often an item is counted, even sending the event itself', async () => {
+  const store = memoryStore();
+  const manager = await store.addStaff(SHOP, 'Ravi', 'manager', '2580');
+  const owner = await store.addStaff(SHOP, 'Owner', 'owner', '9999');
+  const s = await start(store);
+  await s.call('/api/v1/login', s.tokens.counter, { pin: '2580', purpose: 'shift' });
+  await s.call('/api/v1/login', s.tokens.counter, { pin: '9999', purpose: 'shift' });
+  const tier = (id: string, actor: { id: string; name: string; role: string }) =>
+    ({ id, shopId: SHOP, at: 5000, orderNumber: 0, actor, type: 'stock.tier_set', itemId: 'inv-0006', tier: 'daily' });
+  const r = await (await s.push(s.tokens.counter, [
+    tier('m', { id: manager.id, name: 'Ravi', role: 'manager' }), tier('o', { id: owner.id, name: 'Owner', role: 'owner' }),
+  ])).json();
+  assert.deepEqual(r.accepted.map((a: { id: string }) => a.id), ['o']);
+  assert.deepEqual(r.rejected.map((x: { id: string }) => x.id), ['m']);
+  await s.stop();
+});
+
+test('photos at the counter: from the cloud the first time, then from this PC; never on the kitchen tablet', async () => {
+  const saved = new Map<string, Buffer>();
+  const photos = {
+    save: (t: string, id: string, b: Buffer) => { if (!saved.has(`${t}/${id}`)) saved.set(`${t}/${id}`, b); },
+    read: (t: string, id: string) => saved.get(`${t}/${id}`) ?? null,
+  };
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+  let asked = 0;
+  const cloudPhoto = async (_t: string, id: string) => { asked++; return id === 'ph-abcdefgh12' ? jpeg : null; };
+  const s = await start(memoryStore(), undefined, { photos, cloudPhoto });
+  const id = 'ph-abcdefgh12';
+  for (let i = 0; i < 2; i++) {
+    const back = await s.call(`/api/v1/photos/${id}`, s.tokens.counter);
+    assert.equal(back.headers.get('content-type'), 'image/jpeg');
+    assert.deepEqual(Buffer.from(await back.arrayBuffer()), jpeg);
+  }
+  assert.equal(asked, 1, 'kept on this PC after the first time');
+  assert.equal((await s.call('/api/v1/photos/ph-unknown123', s.tokens.counter)).status, 404);
+  assert.equal((await s.call(`/api/v1/photos/${id}`, s.tokens.kitchen)).status, 403);
+  assert.equal((await s.call('/api/v1/photos', s.tokens.counter, { id, data: jpeg.toString('base64') })).status, 404, 'phones send photos to the cloud, not here');
+  await s.stop();
+});
+
+// ----- voice at the counter (SCRUM-145) -----
+
+test("voice: the counter's request goes to the cloud as it is and the answer comes back; never from a kitchen tablet", async () => {
+  const asked: { tenantId: string; task: string; body: string; type: string }[] = [];
+  const cloudAi: AppOptions['cloudAi'] = async (tenantId, task, body, type) => {
+    asked.push({ tenantId, task, body: body.toString('utf8'), type });
+    return { status: 200, body: Buffer.from(task === 'command' ? '{"id":"stock","cached":false}' : '{"text":"open stock"}') };
+  };
+  const s = await start(memoryStore(), undefined, { cloudAi });
+  const pick = await s.call('/api/v1/ai/command', s.tokens.counter, { text: 'open stock', commands: [{ id: 'stock', label: 'Stock' }] });
+  assert.deepEqual(await pick.json(), { id: 'stock', cached: false });
+  assert.equal(asked[0].tenantId, SHOP);
+  assert.equal(asked[0].task, 'command');
+  assert.match(asked[0].body, /open stock/);
+  assert.equal((await s.call('/api/v1/ai/command', s.tokens.kitchen, { text: 'x', commands: [] })).status, 403);
+  assert.equal((await s.call('/api/v1/ai/command', null, { text: 'x', commands: [] })).status, 401);
+  await s.stop();
+});
+
+test('voice without the cloud answers 503, so the counter says it needs the internet', async () => {
+  const s = await start(memoryStore(), undefined, { cloudAi: async () => null });
+  const r = await s.call('/api/v1/ai/transcribe', s.tokens.counter, {});
+  assert.equal(r.status, 503);
+  assert.equal(((await r.json()) as { error: string }).error, 'unavailable');
+  const none = await start();
+  assert.equal((await none.call('/api/v1/ai/command', none.tokens.counter, {})).status, 503);
+  await s.stop();
+  await none.stop();
 });

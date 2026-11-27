@@ -1,140 +1,220 @@
-import type { StartingMenu } from '../domain/menuEdits.ts';
-import type { MenuUpdate } from '../domain/menuUpdate.ts';
-import type { MenuItem, Section } from '../domain/types.ts';
+import type { Actor } from '../domain/auth.ts';
+import { MENU } from '../domain/menu.ts';
+import type { MenuEvent, NewItem } from '../domain/menuEdits.ts';
+import type { SectionSetting } from '../domain/sections.ts';
+import type { Category, MenuItem } from '../domain/types.ts';
 
 /*
- * possaas is Bata Kade's POS (2026-10-30): this is the shop's real menu. A new Bata Kade shop server
- * adds it once, the first time its counter connects with no menu yet (server/firstMenu.ts); the
- * rice demo (/?demo=rice) shows it too. Change it here only from the owner's own menu, and list every
- * change to an item a shop already has in BATA_KADE_UPDATES below, or running shops keep the old one.
+ * Bata Kade's menu (possaas, 2026-11-16): ERP's counter, copied as it is, sells Bata Kade's food. The
+ * menu goes in as ERP's own menu events (sections, items, the printed CheesyBeez items hidden), sent
+ * by the shop server on the counter's first pull (server/firstMenu.ts). Names, Sinhala names and
+ * prices = possaas main's menu as it stands (price list 2026-11-13, changes 2026-11-14), copied by
+ * running that code. ERP gives a section one set of sizes and no extras, so an item with its own
+ * kinds is one card per kind ("Water (1 L)") and an extra is its own item ("Bread extra: Egg").
+ *
+ * Every item is sold all day. Rice & curry has a breakfast price and a lunch & dinner price: two
+ * sections, Breakfast and Lunch, two tabs the cashier picks from (MEAL_TABS). ERP has one kitchen:
+ * everything goes to it.
  */
 
+/** Who added the menu: the POS itself, not a person (it shows in the audit as this). */
+export const MENU_INSTALLER: Actor = { id: 'lume-pos', name: 'Lume POS', role: 'owner' };
+
+const PORTIONS: SectionSetting['sizes'] = [{ id: 'x1', label: 'Half' }, { id: 'x2', label: 'Full' }];
+
 /**
- * Bata Kade's own menu, its prices and Sinhala names copied from the shop's menu (given by the
- * developer 2026-10-30, new price list from the shop 2026-11-13). Sinhala names only where the shop
- * wrote one; never translated here. "Fish / Egg" lines are one item each so the kitchen knows which.
- *
- * Every item is on sale all day (developer, 2026-11-13); only rice & curry's price changes with the
- * time: a breakfast price and a lunch & dinner price, two sections of the same name, each sold at its
- * own hours, so the counter always shows one Rice & Curry. The HOURS ARE PLACEHOLDERS until the owner
- * gives them.
+ * Rice & curry's two prices are two tabs, Breakfast and Lunch, both all day: the cashier opens the
+ * one he needs (2026-11-26; before, one "Rice & Curry" tab changed with the clock). No Sinhala name
+ * until the owner gives one.
  */
-const PORTIONS = [{ id: 'normal', label: 'Normal' }, { id: 'full', label: 'Full' }];
-/** Fried rice, biriyani and kottu: the shop calls the small one Half. Same size id, so old orders stay. */
-const HALF_FULL = [{ id: 'normal', label: 'Half' }, { id: 'full', label: 'Full' }];
-const BREAKFAST = { from: 5 * 60, to: 11 * 60 };
-const LUNCH_AND_DINNER = { from: 11 * 60, to: 5 * 60 };
-// Two kitchens (asked for by the developer, 2026-10-29): rice and the rest on the left, kottu and fried rice on the right.
-const RICE_MORNING_SECTION: Section = { id: 'rice-morning', name: 'Rice & Curry · බත් සහ කරි', cookMinutes: 3, sizes: PORTIONS, adds: [], station: 'left', hours: BREAKFAST };
-const RICE_DAY_SECTION: Section = { id: 'rice-day', name: 'Rice & Curry · බත් සහ කරි', cookMinutes: 3, sizes: PORTIONS, adds: [], station: 'left', hours: LUNCH_AND_DINNER };
-const FRIED_RICE_SECTION: Section = { id: 'fried-rice', name: 'Fried Rice · ෆ්‍රයිඩ් රයිස්', cookMinutes: 8, sizes: HALF_FULL, adds: [], station: 'right' };
-const MEALS_SECTION: Section = { id: 'meals', name: 'Meals · ආහාර', cookMinutes: 3, sizes: [], adds: [], station: 'left' };
-const KOTTU_SECTION: Section = { id: 'kottu', name: 'Kottu · කොත්තු', cookMinutes: 8, sizes: HALF_FULL, adds: [], station: 'right' };
-const OTHER_SECTION: Section = { id: 'other', name: 'Other · වෙනත් ආහාර', cookMinutes: 2, sizes: [], adds: [], station: 'left' };
-const ROTI_SECTION: Section = { id: 'roti', name: 'String Hoppers, Roti & Rolls · ඉඳිආප්ප / රොටි / රෝල්ස්', cookMinutes: 2, sizes: [], adds: [], station: 'left' };
-const DRINKS_SECTION: Section = { id: 'drinks', name: 'Drinks · බීම', cookMinutes: 1, sizes: [], adds: [], station: 'left' };
-const names = (en: string, si: string) => (si ? { en, si } : { en });
-/** Prices by size, in rupees; a size without a price is not offered. */
-const sized = (category: string, id: string, name: string, si: string, aliases: string[], prices: Record<string, number>, sizes = PORTIONS): MenuItem => ({
-  id, category, name: names(name, si), description: '', aliases,
-  variants: sizes.flatMap((z) => (prices[z.id] ? [{ ...z, price: prices[z.id] * 100 }] : [])), adds: [], leaveOut: [],
-});
-const halfFull = (category: string, id: string, name: string, si: string, aliases: string[], half: number, full: number): MenuItem =>
-  sized(category, id, name, si, aliases, { normal: half, full }, HALF_FULL);
-const one = (category: string, id: string, name: string, si: string, aliases: string[], price: number): MenuItem => ({
-  id, category, name: names(name, si), description: '', aliases, price: price * 100, adds: [], leaveOut: [],
-});
-export const BATA_KADE_MENU: StartingMenu = {
-  sections: [RICE_MORNING_SECTION, RICE_DAY_SECTION, FRIED_RICE_SECTION, KOTTU_SECTION, MEALS_SECTION, OTHER_SECTION, ROTI_SECTION, DRINKS_SECTION],
-  items: [
-    // The same names and aliases at breakfast and later: only one of the two is sold at a time.
-    sized('rice-morning', 'rc-m-vege', 'Vegetable Rice & Curry', 'බත් එළවළු', ['vegetable rice', 'vege rice', 'veg rice', 'elawalu bath'], { normal: 200 }),
-    sized('rice-morning', 'rc-m-fish', 'Fish Rice & Curry', 'බත් මාළු', ['fish rice', 'malu bath'], { normal: 250 }),
-    sized('rice-morning', 'rc-m-egg', 'Egg Rice & Curry', 'බත් බිත්තර', ['egg rice', 'biththara bath'], { normal: 230 }),
-    sized('rice-morning', 'rc-m-chicken', 'Chicken Rice & Curry', 'බත් චිකන්', ['chicken rice', 'chicken bath'], { normal: 300 }),
-    // The shop gave Special Rice a lunch price only; it sells at that price all day.
-    sized('rice-morning', 'rc-m-special', 'Special Rice', 'ස්පෙෂල් රයිස්', ['special rice', 'special'], { normal: 330 }),
-    sized('rice-day', 'rc-d-vege', 'Vegetable Rice & Curry', 'බත් එළවළු', ['vegetable rice', 'vege rice', 'veg rice', 'elawalu bath'], { normal: 220 }),
-    sized('rice-day', 'rc-d-fish', 'Fish Rice & Curry', 'බත් මාළු', ['fish rice', 'malu bath'], { normal: 300 }),
-    sized('rice-day', 'rc-d-egg', 'Egg Rice & Curry', 'බත් බිත්තර', ['egg rice', 'biththara bath'], { normal: 280 }),
-    sized('rice-day', 'rc-d-chicken', 'Chicken Rice & Curry', 'බත් චිකන්', ['chicken rice', 'chicken bath'], { normal: 350 }),
-    sized('rice-day', 'rc-d-special', 'Special Rice', 'ස්පෙෂල් රයිස්', ['special rice', 'special'], { normal: 330 }),
-    halfFull('fried-rice', 'fr-chicken', 'Chicken Fried Rice', 'චිකන් ෆ්‍රයිඩ් රයිස්', ['chicken fried rice', 'chicken fried', 'fried rice'], 450, 750),
-    halfFull('fried-rice', 'fr-egg', 'Egg Fried Rice', 'බිත්තර ෆ්‍රයිඩ් රයිස්', ['egg fried rice', 'egg fried'], 400, 650),
-    halfFull('fried-rice', 'fr-mixed', 'Mixed Fried Rice', 'මික්ස් ෆ්‍රයිඩ් රයිස්', ['mixed fried rice', 'mix fried rice', 'mixed fried'], 600, 1200),
-    halfFull('fried-rice', 'fr-biriyani-chicken', 'Chicken Biriyani', 'චිකන් බිරියානි', ['chicken biriyani', 'chicken biryani', 'biriyani', 'biryani'], 450, 750),
-    halfFull('fried-rice', 'fr-biriyani-egg', 'Egg Biriyani', 'බිත්තර බිරියානි', ['egg biriyani', 'egg biryani'], 400, 650),
-    halfFull('fried-rice', 'fr-biriyani-mixed', 'Mixed Biriyani', 'මික්ස් බිරියානි', ['mixed biriyani', 'mix biriyani', 'mixed biryani'], 600, 1200),
-    halfFull('kottu', 'kt-egg', 'Egg Kottu', 'බිත්තර කොත්තු', ['egg kottu'], 450, 650),
-    halfFull('kottu', 'kt-chicken', 'Chicken Kottu', 'චිකන් කොත්තු', ['chicken kottu', 'kottu'], 500, 800),
-    one('meals', 'ml-bread-dhal', 'Bread with Dhal', 'පාන් පරිප්පු සමඟ', ['bread dhal', 'bread parippu', 'bread', 'paan', 'bread gravy'], 150),
-    one('meals', 'ml-bread-potato', 'Bread with Potato Curry', 'පාන් අල හොදි සමඟ', ['bread potato', 'bread ala'], 150),
-    one('meals', 'ml-bread-egg', 'Bread with Gravy & Egg', 'පාන් හොදි බිත්තර', ['bread egg', 'bread biththara'], 200),
-    one('meals', 'ml-bread-fish', 'Bread with Fish', '', ['bread fish', 'bread malu'], 250),
-    one('meals', 'ml-bread-chicken', 'Bread with Chicken', '', ['bread chicken'], 270),
-    one('meals', 'ml-milk-rice', 'Milk Rice (1 piece)', 'කිරිබත් කෑලි 01', ['milk rice', 'kiribath', 'kiribat'], 100),
-    one('meals', 'ml-pol-roti', 'Coconut Roti (1)', 'පොල් රොටි 01', ['coconut roti', 'pol roti'], 60),
-    one('meals', 'ml-green-gram', 'Green Gram', 'මුං ඇට', ['green gram', 'mung', 'mun ata'], 150),
-    one('meals', 'ml-chickpeas', 'Chickpeas', 'කඩල', ['chickpeas', 'kadala'], 150),
-    one('meals', 'ml-noodles', 'Noodles', 'නූඩ්ල්ස්', ['noodles', 'noodle'], 160),
-    one('meals', 'ml-string-hoppers', 'String Hoppers (10)', 'ඉඳි ආප්ප 10', ['string hoppers', 'string hopper', 'idiyappam', 'indiappa'], 120),
-    one('meals', 'ml-string-hoppers-15', 'String Hoppers (15)', 'ඉඳි ආප්ප 15', ['string hoppers 15', 'indiappa 15'], 160),
-    one('meals', 'ml-string-hoppers-20', 'String Hoppers (20)', 'ඉඳි ආප්ප 20', ['string hoppers 20', 'indiappa 20'], 200),
-    one('other', 'ot-plain-tea', 'Plain Tea', 'ප්ලේන් ටී', ['plain tea', 'plaintea', 'tea'], 50),
-    one('other', 'ot-milk-tea', 'Milk Tea', 'කිරි තේ', ['milk tea', 'kiri the'], 120),
-    one('other', 'ot-coffee', 'Coffee', 'කෝපි', ['coffee', 'kopi'], 70),
-    one('other', 'ot-milk-coffee', 'Milk Coffee', 'කිරි කෝපි', ['milk coffee', 'kiri kopi'], 130),
-    one('other', 'ot-popsicle', 'Popsicle', 'පොප්සිකල්', ['popsicle'], 120),
-    one('other', 'ot-nestomalt', 'Nestomalt', 'පොස්ට්මෝල්ට්', ['nestomalt', 'postmalt', 'nesto'], 120),
-    one('other', 'ot-milo', 'Milo', 'මයිලෝ', ['milo'], 120),
-    one('other', 'ot-kahata', 'Plain Tea with Jaggery', 'කහට හකුරු සමඟ', ['kahata', 'jaggery tea'], 30),
-    one('other', 'ot-buns', 'Buns', 'ඊම් බනිස්', ['buns', 'bun', 'banis'], 100),
-    one('other', 'ot-muffin', 'Muffin', 'මෆින්', ['muffin'], 150),
-    one('other', 'ot-yoghurt', 'Yoghurt', '', ['yoghurt', 'yogurt', 'curd'], 80),
-    one('other', 'ot-jelly', 'Jelly', '', ['jelly'], 80),
-    one('other', 'ot-watalappan', 'Watalappan', '', ['watalappan', 'watalappam'], 120),
-    // As the shop wrote it; what it is is still to be asked (150 was crossed out for 250).
-    one('other', 'ot-campa', 'Campa / N.K.G.', '', ['campa', 'nkg'], 250),
-    one('roti', 'rt-egg-roll', 'Egg Roll', 'බිත්තර රෝල්ස්', ['egg roll', 'egg rolls'], 100),
-    one('roti', 'rt-fish-roll', 'Fish Roll', '', ['fish roll', 'fish rolls'], 100),
-    one('roti', 'rt-veg-roti', 'Vegetable Roti', 'එළවළු රොටි', ['vegetable roti', 'vege roti', 'veg roti'], 80),
-    one('roti', 'rt-egg-roti', 'Egg Roti', 'බිත්තර රොටි', ['egg roti'], 100),
-    one('roti', 'rt-egg-roti-gravy', 'Egg Roti with Gravy', 'බිත්තර රොටි හොදි සමඟ', ['egg roti gravy'], 120),
-    one('roti', 'rt-paratha', 'Paratha with Gravy', 'පරාට හොදි', ['paratha', 'parata'], 60),
-    one('roti', 'rt-wade', 'Parippu Wade', 'පරිප්පු වඩේ', ['parippu wade', 'dhal wade', 'wade', 'vadai'], 30),
-    one('roti', 'rt-ulundu-wade', 'Ulundu Wade', 'උළුඳු වඩේ', ['ulundu wade', 'ulundu'], 60),
-    one('roti', 'rt-ulundu-wade-gravy', 'Ulundu Wade with Gravy', 'උළුඳු වඩේ හොදි සමඟ', ['ulundu wade gravy', 'ulundu gravy'], 70),
-    one('drinks', 'dr-water-500', 'Water (500 ml)', '', ['water', 'water 500'], 80),
-    one('drinks', 'dr-water-1000', 'Water (1 L)', '', ['water 1l', 'water 1 l', 'big water'], 120),
-    one('drinks', 'dr-water-1500', 'Water (1.5 L)', '', ['water 1.5', 'water 1.5l'], 150),
-    one('drinks', 'dr-sun-crush', 'Sun Crush', '', ['sun crush', 'suncrush'], 150),
-    one('drinks', 'dr-faluda', 'Faluda / Rose Drink', '', ['faluda', 'rose drink'], 100),
-    one('drinks', 'dr-beer', 'Beer / Malt Drink', 'බියර්', ['beer', 'malt'], 180),
-    one('drinks', 'dr-pepsi-400', 'Pepsi (400 ml)', '', ['pepsi'], 200),
-    one('drinks', 'dr-coke-400', 'Coca-Cola (400 ml)', '', ['coke', 'coca cola'], 200),
-    one('drinks', 'dr-sprite-400', 'Sprite (400 ml)', '', ['sprite'], 200),
-    one('drinks', 'dr-mirinda-400', 'Mirinda (400 ml)', '', ['mirinda'], 200),
-    one('drinks', 'dr-7up-400', '7UP (400 ml)', '', ['7up', 'seven up'], 200),
-    one('drinks', 'dr-pepsi-1000', 'Pepsi (1 L)', '', ['pepsi 1l', 'big pepsi'], 300),
-    one('drinks', 'dr-coke-1000', 'Coca-Cola (1 L)', '', ['coke 1l', 'big coke'], 300),
-    one('drinks', 'dr-egb-1000', 'EGB (1 L)', '', ['egb', 'ginger beer 1l'], 300),
-    one('drinks', 'dr-soda-1500', 'Cream Soda / Ginger Beer (1.5 L)', '', ['cream soda', 'ginger beer'], 420),
-    one('drinks', 'dr-cola-1500', 'Coca-Cola / Pepsi (1.5 L)', '', ['coke 1.5', 'pepsi 1.5'], 420),
-  ],
+const MEAL_TABS: Record<'sec-rice-morning' | 'sec-rice', SectionSetting> = {
+  'sec-rice-morning': { name: { en: 'Breakfast' }, cookMinutes: 3 },
+  'sec-rice': { name: { en: 'Lunch' }, cookMinutes: 3 },
 };
 
-/**
- * Changes to what a running shop already has (new items reach it by themselves: they have new ids).
- * Each update is sent once, by Lume POS, after the menu (src/domain/menuUpdate.ts); its prices, names
- * and sections come from BATA_KADE_MENU above. Never edit an update once released: add a new one.
- */
-export const BATA_KADE_UPDATES: MenuUpdate[] = [
-  {
-    // The shop's new price list (2026-11-13): new prices, Half / Full, fried rice all day, biriyani by kind.
-    id: '2026-11-13',
-    sections: ['fried-rice', 'kottu'],
-    prices: ['rc-m-egg', 'rc-d-egg', 'ml-noodles', 'ml-string-hoppers', 'rt-egg-roti', 'rt-veg-roti', 'rt-egg-roll'],
-    names: ['ml-bread-dhal', 'ml-bread-potato', 'ml-bread-egg'],
-    removed: ['rt-biriyani'],
-  },
+const SECTIONS: { id: `sec-${string}`; setting: SectionSetting }[] = [
+  { id: 'sec-rice-morning', setting: MEAL_TABS['sec-rice-morning'] },
+  { id: 'sec-rice', setting: MEAL_TABS['sec-rice'] },
+  { id: 'sec-fried-rice', setting: { name: { en: 'Fried Rice', si: 'ෆ්‍රයිඩ් රයිස්' }, cookMinutes: 8, sizes: PORTIONS } },
+  { id: 'sec-kottu', setting: { name: { en: 'Kottu', si: 'කොත්තු' }, cookMinutes: 8, sizes: PORTIONS } },
+  { id: 'sec-meals', setting: { name: { en: 'Meals', si: 'ආහාර' }, cookMinutes: 3 } },
+  { id: 'sec-drinks', setting: { name: { en: 'Drinks', si: 'බීම' }, cookMinutes: 1 } },
+  { id: 'sec-other', setting: { name: { en: 'Other', si: 'වෙනත් ආහාර' }, cookMinutes: 2 } },
 ];
+
+const rs = (n: number) => n * 100;
+const one = (category: Category, id: string, en: string, si: string, price: number) =>
+  ({ id: `new-${id}`, item: { category, name: { en, si }, description: '', prices: { one: rs(price) } } as NewItem });
+const sized = (category: Category, id: string, en: string, si: string, normal: number, full: number) =>
+  ({ id: `new-${id}`, item: { category, name: { en, si }, description: '', prices: { x1: rs(normal), x2: rs(full) } } as NewItem });
+
+export const BATA_KADE_ITEMS: { id: string; item: NewItem }[] = [
+  one('sec-rice-morning', 'rc-m-vege', 'Vegetable Rice & Curry', 'බත් එළවළු', 200),
+  one('sec-rice-morning', 'rc-m-fish', 'Fish Rice & Curry', 'බත් මාළු', 250),
+  one('sec-rice-morning', 'rc-m-egg', 'Egg Rice & Curry', 'බත් බිත්තර', 230),
+  one('sec-rice-morning', 'rc-m-chicken', 'Chicken Rice & Curry', 'බත් චිකන්', 300),
+  one('sec-rice-morning', 'rc-m-special', 'Special Rice', 'ස්පෙෂල් රයිස්', 330),
+  one('sec-rice', 'rc-d-vege', 'Vegetable Rice & Curry', 'බත් එළවළු', 220),
+  one('sec-rice', 'rc-d-fish', 'Fish Rice & Curry', 'බත් මාළු', 300),
+  one('sec-rice', 'rc-d-egg', 'Egg Rice & Curry', 'බත් බිත්තර', 280),
+  one('sec-rice', 'rc-d-chicken', 'Chicken Rice & Curry', 'බත් චිකන්', 350),
+  one('sec-rice', 'rc-d-special', 'Special Rice', 'ස්පෙෂල් රයිස්', 330),
+  sized('sec-fried-rice', 'fr-chicken', 'Chicken Fried Rice', 'චිකන් ෆ්‍රයිඩ් රයිස්', 450, 750),
+  sized('sec-fried-rice', 'fr-egg', 'Egg Fried Rice', 'බිත්තර ෆ්‍රයිඩ් රයිස්', 400, 650),
+  sized('sec-fried-rice', 'fr-mixed', 'Mixed Fried Rice', 'මික්ස් ෆ්‍රයිඩ් රයිස්', 600, 1200),
+  sized('sec-kottu', 'kt-egg', 'Egg Kottu', 'බිත්තර කොත්තු', 450, 650),
+  sized('sec-kottu', 'kt-chicken', 'Chicken Kottu', 'චිකන් කොත්තු', 500, 750),
+  one('sec-meals', 'ml-biriyani', 'Biriyani', 'බිරියානි', 330),
+  one('sec-meals', 'ml-milk-rice', 'Milk Rice (1 piece)', 'කිරිබත් කෑලි 01', 100),
+  one('sec-meals', 'ml-pol-roti', 'Coconut Roti (1)', 'පොල් රොටි 01', 60),
+  one('sec-meals', 'ml-green-gram', 'Green Gram', 'මුං ඇට', 150),
+  one('sec-meals', 'ml-chickpeas', 'Chickpeas', 'කඩල', 150),
+  one('sec-meals', 'ml-noodles', 'Noodles', 'නූඩ්ල්ස්', 160),
+  one('sec-meals', 'br-bread-dhal', 'Bread (Dhal)', 'පාන් (Dhal)', 150),
+  one('sec-meals', 'br-bread-potato', 'Bread (Potato)', 'පාන් (Potato)', 150),
+  one('sec-meals', 'br-bread-add-egg', 'Bread extra: Egg', '', 50),
+  one('sec-meals', 'br-bread-add-fish', 'Bread extra: Fish', '', 100),
+  one('sec-meals', 'br-bread-add-chicken', 'Bread extra: Chicken', '', 120),
+  one('sec-meals', 'sh-string-hoppers-10', 'String Hoppers (10)', 'ඉඳි ආප්ප (10)', 120),
+  one('sec-meals', 'sh-string-hoppers-15', 'String Hoppers (15)', 'ඉඳි ආප්ප (15)', 160),
+  one('sec-meals', 'sh-string-hoppers-20', 'String Hoppers (20)', 'ඉඳි ආප්ප (20)', 200),
+  one('sec-meals', 'sh-string-hoppers-add-5-more', 'String Hoppers: 5 more', '', 40),
+  one('sec-meals', 'sh-string-hoppers-add-10-more', 'String Hoppers: 10 more', '', 80),
+  one('sec-meals', 'rt-egg-roll-egg', 'Roll (Egg)', 'රෝල්ස් (Egg)', 100),
+  one('sec-meals', 'rt-egg-roll-fish', 'Roll (Fish)', 'රෝල්ස් (Fish)', 100),
+  one('sec-meals', 'rt-veg-roti', 'Vegetable Roti', 'එළවළු රොටි', 80),
+  one('sec-meals', 'rt-egg-roti-plain', 'Egg Roti (Plain)', 'බිත්තර රොටි (Plain)', 100),
+  one('sec-meals', 'rt-egg-roti-gravy', 'Egg Roti (Gravy)', 'බිත්තර රොටි (Gravy)', 120),
+  one('sec-meals', 'rt-paratha', 'Paratha with Gravy', 'පරාට හොදි', 60),
+  one('sec-meals', 'rt-wade', 'Parippu Wade', 'පරිප්පු වඩේ', 30),
+  one('sec-meals', 'rt-ulundu-wade-plain', 'Ulundu Wade (Plain)', 'උළුඳු වඩේ (Plain)', 60),
+  one('sec-meals', 'rt-ulundu-wade-gravy', 'Ulundu Wade (Gravy)', 'උළුඳු වඩේ (Gravy)', 70),
+  one('sec-drinks', 'ot-plain-tea', 'Plain Tea', 'ප්ලේන් ටී', 50),
+  one('sec-drinks', 'ot-milk-tea', 'Milk Tea', 'කිරි තේ', 120),
+  one('sec-drinks', 'ot-coffee', 'Coffee', 'කෝපි', 70),
+  one('sec-drinks', 'ot-milk-coffee', 'Milk Coffee', 'කිරි කෝපි', 130),
+  one('sec-drinks', 'ot-nestomalt', 'Nestomalt', 'පොස්ට්මෝල්ට්', 120),
+  one('sec-drinks', 'ot-milo', 'Milo', 'මයිලෝ', 120),
+  one('sec-drinks', 'dr-drink-buddy', 'Drink (Buddy)', 'බීම (Buddy)', 100),
+  one('sec-drinks', 'dr-drink-medium', 'Drink (Medium)', 'බීම (Medium)', 180),
+  one('sec-drinks', 'dr-water-500ml', 'Water (500 ml)', 'වතුර (500 ml)', 80),
+  one('sec-drinks', 'dr-water-1l', 'Water (1 L)', 'වතුර (1 L)', 120),
+  one('sec-drinks', 'dr-water-1-5l', 'Water (1.5 L)', 'වතුර (1.5 L)', 150),
+  one('sec-drinks', 'dr-sun-crush', 'Sun Crush', 'සන් ක්‍රෂ්', 150),
+  one('sec-drinks', 'dr-faluda', 'Faluda / Rose Drink', 'ෆලූඩා / රෝස් බීම', 100),
+  one('sec-drinks', 'dr-pepsi-400ml', 'Pepsi (400 ml)', 'පෙප්සි (400 ml)', 200),
+  one('sec-drinks', 'dr-pepsi-1l', 'Pepsi (1 L)', 'පෙප්සි (1 L)', 300),
+  one('sec-drinks', 'dr-pepsi-1-5l', 'Pepsi (1.5 L)', 'පෙප්සි (1.5 L)', 420),
+  one('sec-drinks', 'dr-coke-400ml', 'Coca-Cola (400 ml)', 'කොකා කෝලා (400 ml)', 200),
+  one('sec-drinks', 'dr-coke-1l', 'Coca-Cola (1 L)', 'කොකා කෝලා (1 L)', 300),
+  one('sec-drinks', 'dr-coke-1-5l', 'Coca-Cola (1.5 L)', 'කොකා කෝලා (1.5 L)', 420),
+  one('sec-drinks', 'dr-sprite-400', 'Sprite (400 ml)', 'ස්ප්‍රයිට් 400 ml', 200),
+  one('sec-drinks', 'dr-mirinda-400', 'Mirinda (400 ml)', 'මිරින්ඩා 400 ml', 200),
+  one('sec-drinks', 'dr-7up-400', '7UP (400 ml)', 'සෙවන් අප් 400 ml', 200),
+  one('sec-drinks', 'dr-egb-1000', 'EGB (1 L)', 'ඊ.ජී.බී. ලීටර් 1', 300),
+  one('sec-drinks', 'dr-soda-1500', 'Cream Soda / Ginger Beer (1.5 L)', 'ක්‍රීම් සෝඩා / ජින්ජර් බියර් ලීටර් 1.5', 420),
+  one('sec-other', 'ot-popsicle', 'Popsicle', 'පොප්සිකල්', 120),
+  one('sec-other', 'ot-buns', 'Buns', 'ඊම් බනිස්', 100),
+  one('sec-other', 'ot-muffin', 'Muffin', 'මෆින්', 150),
+  one('sec-other', 'ot-yoghurt', 'Yoghurt', 'යෝගට්', 80),
+  one('sec-other', 'ot-jelly', 'Jelly', 'ජෙලි', 80),
+  one('sec-other', 'ot-watalappan', 'Watalappan', 'වටලප්පන්', 120),
+  one('sec-other', 'ot-campa', 'Campa / N.K.G.', 'කැම්පා / එන්.කේ.ජී.', 250),
+];
+
+/**
+ * The menu as events, with fixed ids: the server keeps one event per id, so sending them again is a
+ * no-op, and whatever the owner changes later (newer events) stays.
+ */
+export const bataKadeMenuEvents = (shopId: string, at: number, actor: Actor = MENU_INSTALLER): MenuEvent[] => {
+  const base = { shopId, at, orderNumber: 0 as const, actor };
+  return [
+    ...SECTIONS.map(({ id, setting }): MenuEvent => ({ ...base, id: `bk-menu-${id}`, type: 'menu.section_set', itemId: id, before: null, after: setting })),
+    ...BATA_KADE_ITEMS.map(({ id, item }): MenuEvent => ({ ...base, id: `bk-menu-${id}`, type: 'menu.item_added', itemId: id, item })),
+    // CheesyBeez' printed pizzas, burgers and pastas: hidden (kept, so nothing old breaks).
+    ...MENU.map((m): MenuEvent => ({ ...base, id: `bk-menu-hide-${m.id}`, type: 'menu.item_set', itemId: m.id, before: {}, after: { hidden: true } })),
+    { ...base, id: 'bk-menu-order', type: 'menu.sections_ordered', itemId: 'sections', before: [], after: [...SECTIONS.map((s) => s.id), 'pizza', 'burger', 'pasta'] },
+    // A shop that already stored the timed "Rice & Curry" sections (same ids above, kept once) gets the
+    // two all-day tabs from these, stored after them, so they win; the owner's later changes still win.
+    ...Object.entries(MEAL_TABS).map(([id, setting]): MenuEvent => ({ ...base, id: `bk-menu-tabs-${id}`, type: 'menu.section_set', itemId: id, before: null, after: setting })),
+  ];
+};
+
+/** What staff type for each item ("egg rice", "kottu", "tea"), from possaas' menu: ERP's own items answer only to their full name. */
+const ALIASES: Readonly<Record<string, string[]>> = {
+  'new-rc-m-vege': ['vegetable rice', 'vege rice', 'veg rice', 'elawalu bath'],
+  'new-rc-m-fish': ['fish rice', 'malu bath'],
+  'new-rc-m-egg': ['egg rice', 'biththara bath'],
+  'new-rc-m-chicken': ['chicken rice', 'chicken bath'],
+  'new-rc-m-special': ['special rice', 'special'],
+  'new-rc-d-vege': ['vegetable rice', 'vege rice', 'veg rice', 'elawalu bath'],
+  'new-rc-d-fish': ['fish rice', 'malu bath'],
+  'new-rc-d-egg': ['egg rice', 'biththara bath'],
+  'new-rc-d-chicken': ['chicken rice', 'chicken bath'],
+  'new-rc-d-special': ['special rice', 'special'],
+  'new-fr-chicken': ['chicken fried rice', 'chicken fried', 'fried rice'],
+  'new-fr-egg': ['egg fried rice', 'egg fried'],
+  'new-fr-mixed': ['mixed fried rice', 'mix fried rice', 'mixed fried'],
+  'new-kt-egg': ['egg kottu'],
+  'new-kt-chicken': ['chicken kottu', 'kottu'],
+  'new-ml-biriyani': ['biriyani', 'biryani', 'buriyani'],
+  'new-ml-milk-rice': ['milk rice', 'kiribath', 'kiribat'],
+  'new-ml-pol-roti': ['coconut roti', 'pol roti'],
+  'new-ml-green-gram': ['green gram', 'mung', 'mun ata'],
+  'new-ml-chickpeas': ['chickpeas', 'kadala'],
+  'new-ml-noodles': ['noodles', 'noodle'],
+  'new-br-bread-dhal': ['bread', 'paan', 'bread gravy', 'bread dhal', 'bread parippu', 'dhal bread'],
+  'new-br-bread-potato': ['bread potato', 'bread ala', 'potato bread'],
+  'new-br-bread-add-egg': ['bread egg'],
+  'new-br-bread-add-fish': ['bread fish'],
+  'new-br-bread-add-chicken': ['bread chicken'],
+  'new-sh-string-hoppers-10': ['string hoppers', 'string hopper', 'idiyappam', 'indiappa', 'string hoppers 10', '10 string hoppers'],
+  'new-sh-string-hoppers-15': ['string hoppers 15', '15 string hoppers'],
+  'new-sh-string-hoppers-20': ['string hoppers 20', '20 string hoppers'],
+  'new-sh-string-hoppers-add-5-more': ['string hoppers 5 more'],
+  'new-sh-string-hoppers-add-10-more': ['string hoppers 10 more'],
+  'new-rt-egg-roll-egg': ['roll', 'rolls', 'egg roll', 'egg rolls', 'roll egg'],
+  'new-rt-egg-roll-fish': ['fish roll', 'fish rolls', 'roll fish'],
+  'new-rt-veg-roti': ['vegetable roti', 'vege roti', 'veg roti'],
+  'new-rt-egg-roti-plain': ['egg roti', 'egg roti plain', 'plain egg roti'],
+  'new-rt-egg-roti-gravy': ['egg roti gravy', 'gravy egg roti'],
+  'new-rt-paratha': ['paratha', 'parata'],
+  'new-rt-wade': ['parippu wade', 'dhal wade', 'wade', 'vadai'],
+  'new-rt-ulundu-wade-plain': ['ulundu wade', 'ulundu', 'ulundu wade plain', 'plain ulundu wade'],
+  'new-rt-ulundu-wade-gravy': ['ulundu wade gravy', 'ulundu gravy', 'gravy ulundu wade'],
+  'new-ot-plain-tea': ['plain tea', 'plaintea', 'tea'],
+  'new-ot-milk-tea': ['milk tea', 'kiri the'],
+  'new-ot-coffee': ['coffee', 'kopi'],
+  'new-ot-milk-coffee': ['milk coffee', 'kiri kopi'],
+  'new-ot-nestomalt': ['nestomalt', 'postmalt', 'nesto'],
+  'new-ot-milo': ['milo'],
+  'new-dr-drink-buddy': ['drink', 'buddy', 'small drink', 'drink buddy', 'buddy drink'],
+  'new-dr-drink-medium': ['medium', 'medium drink', 'drink medium'],
+  'new-dr-water-500ml': ['water', 'water 500 ml', '500 ml water'],
+  'new-dr-water-1l': ['water 1 l', '1 l water'],
+  'new-dr-water-1-5l': ['big water', 'water 1.5 l', '1.5 l water'],
+  'new-dr-sun-crush': ['sun crush', 'suncrush'],
+  'new-dr-faluda': ['faluda', 'rose drink'],
+  'new-dr-pepsi-400ml': ['pepsi', 'pepsi 400 ml', '400 ml pepsi'],
+  'new-dr-pepsi-1l': ['pepsi 1 l', '1 l pepsi'],
+  'new-dr-pepsi-1-5l': ['big pepsi', 'pepsi 1.5 l', '1.5 l pepsi'],
+  'new-dr-coke-400ml': ['coke', 'coca cola', 'coke 400 ml', '400 ml coke'],
+  'new-dr-coke-1l': ['coke 1 l', '1 l coke'],
+  'new-dr-coke-1-5l': ['big coke', 'coke 1.5 l', '1.5 l coke'],
+  'new-dr-sprite-400': ['sprite'],
+  'new-dr-mirinda-400': ['mirinda'],
+  'new-dr-7up-400': ['7up', 'seven up'],
+  'new-dr-egb-1000': ['egb', 'ginger beer 1l'],
+  'new-dr-soda-1500': ['cream soda', 'ginger beer'],
+  'new-ot-popsicle': ['popsicle'],
+  'new-ot-buns': ['buns', 'bun', 'banis'],
+  'new-ot-muffin': ['muffin'],
+  'new-ot-yoghurt': ['yoghurt', 'yogurt', 'curd'],
+  'new-ot-jelly': ['jelly'],
+  'new-ot-watalappan': ['watalappan', 'watalappam'],
+  'new-ot-campa': ['campa', 'nkg'],
+};
+
+/** The menu with Bata Kade's typing words added, for typed shorthand (ShorthandBar). */
+export const withShopAliases = (items: readonly MenuItem[]): MenuItem[] =>
+  items.map((m) => (ALIASES[m.id] ? { ...m, aliases: [...new Set([...m.aliases, ...ALIASES[m.id]])] } : m));
